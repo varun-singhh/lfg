@@ -1362,27 +1362,52 @@ class PrReviewTest(unittest.TestCase):
         with self.assertRaises(PR.Invalid):
             PR.ask(rid, self.root, 1, "  ")
 
-    def test_threads_keep_people_and_bot_inline_comments_only(self):
+    def test_threads_include_every_unresolved_comment_people_and_bots(self):
         PR = self.PR
+
         def node(i, who, body, typ="User"):
             return {"databaseId": i, "author": {"login": who, "__typename": typ}, "body": body, "url": "u%d" % i}
-        data = {"data": {"repository": {"pullRequest": {
-            "reviewThreads": {"nodes": [
-                {"isResolved": False, "isOutdated": False, "path": "a.py", "line": 4,
-                 "comments": {"nodes": [node(1, "coderabbitai", "<!-- state -->Null check?", "Bot"),
-                                        node(2, "me", "on it")]}},
-                {"isResolved": True, "path": "a.py", "line": 2, "comments": {"nodes": [node(3, "kim", "typo")]}},
-                {"isResolved": False, "path": "a.py", "line": 1, "comments": {"nodes": [node(4, "me", "note")]}}]},
-            "reviews": {"nodes": [node(5, "kim", "Looks good but see a.py"), node(6, "coderabbitai", "Summary", "Bot"),
-                                  node(7, "kim", "")]},
-            "comments": {"nodes": [node(8, "vercel", "Deployed", "Bot"), node(9, "lee", "Can we ship today?")]}}}}}
-        ok = subprocess.CompletedProcess([], 0, json.dumps(data), "")
-        with mock.patch.object(PR, "_gh", lambda *a, **k: ok), mock.patch.object(PR, "me", lambda root: "me"):
+        summary = ("**Actionable comments posted: 1**\n> **Outside diff range comments (1)**\n> <details>\n"
+                   "> <summary>Minor · Fix the count · <code>sync.ts:88-91</code></summary><blockquote>\n>\n"
+                   "> `src/sync.ts:88-91`\n> **Correctness** | **Minor**\n>\n> **Fix the count.**\n>\n"
+                   "> <details>\n> <summary>🤖 Prompt for AI Agents</summary>\n> do this\n> </details>\n"
+                   "> <!-- cr-comment:v1:aa11 -->\n> </blockquote></details>\n"
+                   "<details>\n<summary>🧹 Nitpick comments: 1</summary><blockquote>\n<details>\n"
+                   "<summary>src/util.ts: 1</summary><blockquote>\n\n`12-14`: **Style** | **Trivial**\n\n"
+                   "**Rename x.**\n\n<!-- cr-comment:v1:bb22 -->\n</blockquote></details>\n")
+        page1 = {"reviewThreads": {"pageInfo": {"hasNextPage": True, "endCursor": "c1"}, "nodes": [
+                     {"isResolved": False, "isOutdated": False, "path": "a.py", "line": 4,
+                      "comments": {"nodes": [node(1, "coderabbitai", "<!-- state -->Null check?", "Bot"),
+                                             node(2, "me", "on it")]}},
+                     {"isResolved": True, "path": "a.py", "line": 2,
+                      "comments": {"nodes": [node(3, "kim", "typo")]}}]},
+                 "reviews": {"nodes": [node(5, "kim", "Looks good but see a.py"),
+                                       node(6, "coderabbitai", summary, "Bot"),
+                                       node(7, "devin-ai-integration", "**Devin Review** found 8 potential issues.",
+                                            "Bot")]},
+                 "comments": {"nodes": [node(8, "vercel", "[vc]: #abc=", "Bot"), node(9, "lee", "Can we ship today?"),
+                                        node(10, "sonarqubecloud", "## Quality Gate Failed\n3 new issues", "Bot"),
+                                        node(11, "coderabbitai", "No actionable comments were generated in the recent "
+                                                                 "review.", "Bot")]}}
+        page2 = {"reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [
+                     {"isResolved": False, "path": "b.py", "line": 9,
+                      "comments": {"nodes": [node(12, "devin-ai-integration", "Race here", "Bot")]}}]},
+                 "reviews": {"nodes": []}, "comments": {"nodes": []}}
+        pages = iter([page1, page2])
+
+        def gh(root, *a, **k):
+            body = json.dumps({"data": {"repository": {"pullRequest": next(pages)}}})
+            return subprocess.CompletedProcess([], 0, body, "")
+        with mock.patch.object(PR, "_gh", gh), mock.patch.object(PR, "me", lambda root: "me"):
             ths = PR.threads("/x", "https://github.com/o/app/pull/1", 1)
-        self.assertEqual([(t["id"], t["kind"]) for t in ths],
-                         [("t-1", "inline"), ("t-3", "inline"), ("r-5", "review"), ("c-9", "comment")])
-        self.assertEqual((ths[0]["body"], ths[0]["bot"], ths[0]["you_replied"], ths[1]["resolved"]),
-                         ("Null check?", True, True, True))
+        by = {t["id"]: t for t in ths}
+        self.assertEqual(sorted(by), ["b-aa11", "b-bb22", "c-10", "c-9", "r-5", "t-1", "t-12", "t-3"])
+        self.assertEqual((by["b-aa11"]["path"], by["b-aa11"]["line"], by["b-aa11"]["from_summary"]),
+                         ("src/sync.ts", 88, True))
+        self.assertNotIn("Prompt for AI", by["b-aa11"]["body"])
+        self.assertEqual((by["b-bb22"]["path"], by["b-bb22"]["line"]), ("src/util.ts", 12))
+        self.assertTrue(by["t-3"]["resolved"] and by["t-1"]["you_replied"] and by["t-1"]["bot"])
+        self.assertEqual(PR._title(by["b-aa11"]["body"]), "Fix the count.")
 
     def test_triage_decide_and_post_replies_once(self):
         PR, rid, root = self.PR, self.rid, self.root

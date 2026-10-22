@@ -1550,7 +1550,8 @@ async function triagePage(n, unlocked) {
   if (rv.status === "new") return `${header}${rvStart("Read the comments", "data-tr-start", unlocked, "An AI reads every comment on this pull request against your code, the code graphs and the brains, says how likely each is worth fixing, and drafts your reply either way. Nothing is sent until you send it.")}`;
   const dis = working || !unlocked ? " disabled" : "";
   const title = t => {  // a comment's first line, as a person would summarise it: no markup, no emoji
-    const lines = (t.body || "").replace(/<[^>]*>?/g, " ").split("\n").map(l => l.replace(/[#*`>|\[\]]/g, "").replace(/(^|\s)_+|_+(?=\s|$|[.,;:])/g, "$1").replace(/\p{Extended_Pictographic}\uFE0F?/gu, "").replace(/\s+/g, " ").trim()).filter(Boolean);
+    const unlink = l => { let p; do { p = l; l = l.replace(/!?\[([^[\]]*)\]\([^)]*\)/g, "$1"); } while (l !== p); return l; };
+    const lines = (t.body || "").replace(/<[^>]*>?/g, " ").split("\n").map(l => unlink(l).replace(/[#*`>|\[\]]/g, "").replace(/(^|\s)_+|_+(?=\s|$|[.,;:])/g, "$1").replace(/\p{Extended_Pictographic}\uFE0F?/gu, "").replace(/\s+/g, " ").trim()).filter(Boolean);
     const first = lines[0] || "";
     const x = first.length >= 12 ? first : lines.slice(0, 2).join(" ");
     return x.length > 110 ? x.slice(0, 108) + "…" : x;
@@ -1560,7 +1561,7 @@ async function triagePage(n, unlocked) {
     const reasons = [t.reply_wont].concat(t.wont_reasons || []).filter(Boolean);
     const reply = t.reply != null && t.reply !== "" ? t.reply : t.decision === "fix" ? t.reply_fix || "" : t.decision === "wont" ? t.reply_wont || "" : "";
     const bc = botComment(t.body);
-    return `<div class="rv-t" data-t="${esc(t.id)}"><div class="rv-t-row">${score(t)}<details class="grow rv-t-d"><summary><span class="rv-t-title">${esc(title({ body: bc.body }))}</span><span class="rv-t-m">${bc.tags.map(x => tagHtml(x, TAG_TONE[x.toLowerCase()] || "")).join("")}${esc(t.author || "?")}${t.bot ? " (bot)" : ""}${t.path ? ` · <span title="${esc(t.path)}">${esc(t.path.split("/").pop())}${t.line ? ":" + t.line : ""}</span>` : ""}${t.outdated ? " · outdated" : ""}</span></summary>
+    return `<div class="rv-t" data-t="${esc(t.id)}"><div class="rv-t-row">${score(t)}<details class="grow rv-t-d"><summary><span class="rv-t-title">${esc(title({ body: bc.body }))}</span><span class="rv-t-m">${bc.tags.map(x => tagHtml(x, TAG_TONE[x.toLowerCase()] || "")).join("")}${esc(t.author || "?")}${t.bot ? " (bot)" : ""}${t.path ? ` · <span title="${esc(t.path)}">${esc(t.path.split("/").pop())}${t.line ? ":" + t.line : ""}</span>` : ""}${t.outdated ? " · outdated" : ""}${t.from_summary ? ` ${tagHtml("in the review summary", "")}` : ""}</span></summary>
         <div class="rv-t-x">${t.why ? `<p><b>AI:</b> ${txt(t.why)}</p>` : ""}${t.fix ? `<p class="muted">Fix: ${txt(t.fix)}</p>` : ""}<div class="md">${md(bc.body)}</div>${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer" class="small">Open on GitHub ↗</a>` : ""}</div></details>
       <span class="seg">${[["fix", "Fix"], ["wont", "Won't fix"]].map(([k, l]) => `<button class="pill wide${t.decision === k ? " on" : ""}" data-dec="${k}"${dis}>${l}</button>`).join("")}</span></div>
       ${t.decision === "fix" || t.decision === "wont" ? `<div class="rv-reply"><span class="muted">↳</span><textarea class="inline-edit" rows="1"${dis}>${esc(reply)}</textarea></div>` : ""}
@@ -1572,10 +1573,9 @@ async function triagePage(n, unlocked) {
   const main = `<div class="rv-main">
     ${working ? `<p class="rv-note" data-rv-working><span class="spin"></span>The AI is ${rv.job === "triage" ? "reading the comments" : "answering"} · started ${ago(d.working_since)}</p>` : ""}
     ${!working && ((d.chat || []).slice(-1)[0] || {}).error ? `<p class="rv-note bad">The last AI run failed (details on the right).<button class="btn small" data-tr-start${unlocked ? "" : " disabled"}>Try again</button></p>` : ""}
-    <div class="rv-card rv-list-card">${top.length ? top.map(row).join("") : '<p class="muted small">Nothing worth fixing is open.</p>'}</div>
-    ${low.length ? `<details class="rv-card"><summary class="rv-card-h">${low.length} low-score ${low.length === 1 ? "thread" : "threads"}<span class="muted small">under 30%</span></summary>${low.map(row).join("")}</details>` : ""}
+    <div class="rv-card rv-list-card">${top.map(row).join("") || (low.length ? "" : '<p class="muted small">No unresolved comments.</p>')}${low.length ? `<div class="rv-divider">${low.length} under 30% · probably not worth fixing</div>${low.map(row).join("")}` : ""}</div>
     ${closed.length ? `<details class="rv-card"><summary class="rv-card-h">${closed.length} resolved or answered</summary>${closed.map(t => `<div class="meta">${esc(t.author || "?")}${t.path ? ` · ${esc(t.path.split("/").pop())}` : ""} · ${t.posted ? `replied (${t.posted.decision === "fix" ? "fixing" : "won't fix"})` : "resolved"}</div>`).join("")}</details>` : ""}
-    <div class="rv-bar"><span class="muted small">${ready} ${ready === 1 ? "reply" : "replies"} ready${low.length ? ` · ${low.length} low-score hidden` : ""}</span><span class="grow"></span><span class="muted small" id="rv-saved"></span><button class="btn primary" data-tr-preview${ready && !working && unlocked ? "" : " disabled"}>Send replies</button></div></div>`;
+    <div class="rv-bar"><span class="muted small">${open.length} unresolved · ${ready} ${ready === 1 ? "reply" : "replies"} ready</span><span class="grow"></span><span class="muted small" id="rv-saved"></span><button class="btn primary" data-tr-preview${ready && !working && unlocked ? "" : " disabled"}>Send replies</button></div></div>`;
   return `${header}<div class="rv">${main}${rvChat(Object.assign({ mode: "triage" }, d), working, dis)}</div>`;
 }
 

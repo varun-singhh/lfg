@@ -616,12 +616,13 @@ def detail(rid, root, n):
 
 # ---------------------------------------------------------------- your own PRs: triage the comments you got
 
-THREADS_Q = """query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n) {
-  reviewThreads(first: 100) { nodes { id isResolved isOutdated path line originalLine
-    comments(first: 50) { nodes { databaseId author { login __typename } body url createdAt } } } }
-  reviews(first: 60) { nodes { databaseId author { login __typename } body state url } }
+THREADS_Q = """query($o: String!, $r: String!, $n: Int!, $after: String) { repository(owner: $o, name: $r) {
+  pullRequest(number: $n) {
+  reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor }
+    nodes { id isResolved isOutdated path line originalLine
+      comments(first: 50) { nodes { databaseId author { login __typename } body url createdAt } } } }
+  reviews(first: 100) { nodes { databaseId author { login __typename } body state url } }
   comments(first: 100) { nodes { databaseId author { login __typename } body url } } } } }"""
-
 
 def me(root):
     """The signed-in GitHub login (cached a day)."""
@@ -675,21 +676,64 @@ def _bot(a):
     return (a or {}).get("__typename") == "Bot" or (a or {}).get("login", "").endswith("[bot]")
 
 
+# Bot comments that only report status or point elsewhere: no finding to answer.
+BOT_NOISE = re.compile(r"auto-generated comment: summarize by coderabbit|No actionable comments were generated|"
+                       r"^\[vc\]:|linear-linkback|Devin Review\*\* found \d+ potential issue|"
+                       r"auto-generated comment: (?:release notes|walkthrough)", re.I | re.M)
+CR_MARK = re.compile(r"<!--\s*cr-comment:v\d+:([0-9a-f]+)\s*-->")
+
+
+def bot_review_items(body):
+    """Findings a review bot put only in its review summary (CodeRabbit's "Outside diff range" and "Nitpick"
+    sections, which GitHub won't take as inline comments): one item each, with its file and lines."""
+    items, cur_file, start, buf = [], None, None, []
+    for raw in (body or "").splitlines():
+        line = re.sub(r"^(>\s?)+", "", raw)
+        mfile = re.match(r"\s*<summary>([^<]*[/.][^<]*?):\s*\d+\s*</summary>", line)
+        if mfile and start is None:
+            cur_file = mfile.group(1).strip()
+            continue
+        mpath = re.match(r"\s*`([^`\s]+):(\d+)(?:-\d+)?`\s*$", line)          # `full/path.ts:88-91`
+        mlines = re.match(r"\s*`(\d+)(?:-\d+)?`:\s*(.*)$", line)               # `123-134`: **label** under a file
+        if mpath or (mlines and cur_file):
+            start = (mpath.group(1), int(mpath.group(2))) if mpath else (cur_file, int(mlines.group(1)))
+            buf = [] if mpath else [mlines.group(2)]
+            continue
+        mark = CR_MARK.search(line)
+        if mark and start:
+            items.append({"cr": mark.group(1), "path": start[0], "line": start[1], "body": "\n".join(buf)})
+            start, buf = None, []
+            continue
+        if start is not None:
+            buf.append(line)
+    return items
+
+
 def threads(root, url, n):
-    """Every comment thread on the PR that someone else started: inline review threads (with resolved/outdated),
-    review summaries and general comments from people. Bots' inline comments count; their summaries and notices
-    don't."""
+    """Every unresolved comment someone else left on the PR, people and bots alike: inline review threads (all
+    pages, with resolved/outdated), findings bots put only in their review summary, review summaries and general
+    comments from people, and bot comments that say something (a failed quality gate), skipping pure status notes."""
     m = re.match(r"https://github\.com/([^/]+)/([^/]+)/pull/\d+", url or "")
     if not m:
         raise Invalid("couldn't tell which GitHub repo this PR is in")
-    cp = _gh(root, "api", "graphql", "-f", "query=" + THREADS_Q, "-f", "o=" + m.group(1), "-f", "r=" + m.group(2),
-             "-F", "n=%d" % n, timeout=120)
-    if cp.returncode:
-        raise Invalid("gh couldn't read the comments: %s" % (cp.stderr or cp.stdout).strip()[-300:])
-    pr = (((json.loads(cp.stdout).get("data") or {}).get("repository") or {}).get("pullRequest")) or {}
+    pr, nodes, after = {}, [], None
+    while True:
+        args = ["api", "graphql", "-f", "query=" + THREADS_Q, "-f", "o=" + m.group(1), "-f", "r=" + m.group(2),
+                "-F", "n=%d" % n] + (["-f", "after=" + after] if after else [])
+        cp = _gh(root, *args, timeout=120)
+        if cp.returncode:
+            raise Invalid("gh couldn't read the comments: %s" % (cp.stderr or cp.stdout).strip()[-300:])
+        page = (((json.loads(cp.stdout).get("data") or {}).get("repository") or {}).get("pullRequest")) or {}
+        pr = pr or page
+        rt = page.get("reviewThreads") or {}
+        nodes += rt.get("nodes") or []
+        info = rt.get("pageInfo") or {}
+        if not info.get("hasNextPage") or len(nodes) >= 1000:
+            break
+        after = info.get("endCursor")
     who = me(root)
-    out = []
-    for t in (pr.get("reviewThreads") or {}).get("nodes") or []:
+    out, seen = [], set()
+    for t in nodes:
         cs = (t.get("comments") or {}).get("nodes") or []
         if not cs or (cs[0].get("author") or {}).get("login") == who:
             continue
@@ -704,12 +748,25 @@ def threads(root, url, n):
     for kind, key in (("review", "reviews"), ("comment", "comments")):
         for c in (pr.get(key) or {}).get("nodes") or []:
             a = c.get("author") or {}
-            body = _clean(c.get("body"))
-            if not body or _bot(a) or a.get("login") == who:
+            raw = c.get("body") or ""
+            if a.get("login") == who or not raw.strip():
                 continue
-            out.append({"id": "%s-%s" % (kind[0], c["databaseId"]), "kind": kind, "author": a.get("login"),
-                        "bot": False, "url": c.get("url"), "body": body, "state": c.get("state"),
-                        "resolved": False, "replies": []})
+            if _bot(a) and kind == "review":  # a bot's review summary: only the findings inside it
+                for it in bot_review_items(raw):
+                    if it["cr"] in seen:
+                        continue
+                    seen.add(it["cr"])
+                    out.append({"id": "b-%s" % it["cr"], "kind": "review", "author": a.get("login"), "bot": True,
+                                "path": it["path"], "line": it["line"], "url": c.get("url"),
+                                "body": _clean(it["body"]), "resolved": False, "replies": [], "from_summary": True})
+                continue
+            if _bot(a) and BOT_NOISE.search(raw):
+                continue
+            body = _clean(raw)
+            if body:
+                out.append({"id": "%s-%s" % (kind[0], c["databaseId"]), "kind": kind, "author": a.get("login"),
+                            "bot": _bot(a), "url": c.get("url"), "body": body, "state": c.get("state"),
+                            "resolved": False, "replies": []})
     return out
 
 
@@ -814,6 +871,22 @@ def decide(rid, n, decisions):
     return {"saved": True}
 
 
+def _title(body):
+    """A comment's headline: its first line that isn't a bot's label line ("Correctness | Minor | Quick win"),
+    with markdown links and images reduced to their text and emphasis dropped."""
+    for i, line in enumerate((body or "").splitlines()):
+        if i == 0 and "|" in line and "**" in line:
+            continue
+        prev = None
+        while prev != line:  # [![alt](img)](link) needs two passes
+            prev, line = line, re.sub(r"!?\[([^\[\]]*)\]\([^)]*\)", r"\1", line)
+        line = re.sub(r"[#*`>]", " ", line)
+        line = re.sub(r"\s+", " ", re.sub(r"[^\w\s.,:;()'\"/@%+=<>?!-]", "", line)).strip()
+        if line:
+            return line
+    return ""
+
+
 def replies_out(rid, n):
     """Exactly what Post replies sends: one reply per decided thread that has text and wasn't posted yet."""
     n = _num(n)
@@ -821,9 +894,9 @@ def replies_out(rid, n):
     out = []
     for i, t in (tri.get("threads") or {}).items():
         if t.get("decision") in ("fix", "wont") and (t.get("reply") or "").strip() and not t.get("posted"):
-            quote = "" if t["kind"] == "inline" else "> @%s: %s\n\n" % (t.get("author"), (t.get("body") or "")
-                                                                         .splitlines()[0][:200] if t.get("body")
-                                                                         else "")
+            where = " on `%s:%s`" % (t["path"], t["line"]) if t.get("path") and t.get("line") else ""
+            quote = "" if t["kind"] == "inline" else "> @%s%s: %s\n\n" % (t.get("author"), where,
+                                                                          _title(t.get("body"))[:200])
             out.append({"id": i, "kind": t["kind"], "decision": t["decision"], "author": t.get("author"),
                         "path": t.get("path"), "line": t.get("line"), "reply_to": t.get("reply_to"),
                         "body": quote + t["reply"].strip()})
