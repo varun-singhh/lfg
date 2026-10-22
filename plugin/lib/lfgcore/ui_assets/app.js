@@ -1520,6 +1520,21 @@ function rvChat(d, working, dis) {
     <div class="rv-send"><textarea id="rv-text" rows="2" placeholder="${d.mode === "triage" ? "Why only 30% on the null check?" : "Ask or push back"}"${dis}></textarea><button class="btn small" data-rv-ask${dis}>Send</button></div></aside>`;
 }
 
+/* Review bots (CodeRabbit, Devin and the like) open with a label line ("Stability | Major | Quick win") and wrap
+   parts in HTML: the label becomes tags, the AI-agent prompt goes, <summary> becomes a bold line. */
+function botComment(body) {
+  let b = String(body || "").replace(/<details>\s*<summary>[^<]*Prompt for AI[^<]*<\/summary>[\s\S]*?<\/details>/gi, "")
+    .replace(/<summary>\s*([\s\S]*?)\s*<\/summary>/gi, "\n**$1**\n").replace(/<\/?details>/gi, "").replace(/<\/?(br|p|div|span|b|i|em|strong)\b[^>]*>/gi, "");
+  const lines = b.split("\n"), i0 = lines.findIndex(l => l.trim());
+  let tags = [];
+  if (i0 >= 0 && lines[i0].includes("|") && lines[i0].length < 160) {
+    tags = lines[i0].split("|").map(x => x.replace(/[*_`]/g, "").replace(/\p{Extended_Pictographic}\uFE0F?/gu, "").trim()).filter(Boolean);
+    lines.splice(i0, 1);
+  }
+  return { tags, body: lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() };
+}
+const TAG_TONE = { critical: "bad", major: "warn" };
+
 /* Your own PR: every comment thread, the AI's read on it, and the reply you'll send */
 async function triagePage(n, unlocked) {
   const d = await api("triage", { n });
@@ -1535,7 +1550,7 @@ async function triagePage(n, unlocked) {
   if (rv.status === "new") return `${header}${rvStart("Read the comments", "data-tr-start", unlocked, "An AI reads every comment on this pull request against your code, the code graphs and the brains, says how likely each is worth fixing, and drafts your reply either way. Nothing is sent until you send it.")}`;
   const dis = working || !unlocked ? " disabled" : "";
   const title = t => {  // a comment's first line, as a person would summarise it: no markup, no emoji
-    const lines = (t.body || "").replace(/<[^>]*>?/g, " ").split("\n").map(l => l.replace(/[#*_`>|\[\]]/g, "").replace(/\p{Extended_Pictographic}\uFE0F?/gu, "").replace(/\s+/g, " ").trim()).filter(Boolean);
+    const lines = (t.body || "").replace(/<[^>]*>?/g, " ").split("\n").map(l => l.replace(/[#*`>|\[\]]/g, "").replace(/(^|\s)_+|_+(?=\s|$|[.,;:])/g, "$1").replace(/\p{Extended_Pictographic}\uFE0F?/gu, "").replace(/\s+/g, " ").trim()).filter(Boolean);
     const first = lines[0] || "";
     const x = first.length >= 12 ? first : lines.slice(0, 2).join(" ");
     return x.length > 110 ? x.slice(0, 108) + "…" : x;
@@ -1544,8 +1559,9 @@ async function triagePage(n, unlocked) {
   const row = t => {
     const reasons = [t.reply_wont].concat(t.wont_reasons || []).filter(Boolean);
     const reply = t.reply != null && t.reply !== "" ? t.reply : t.decision === "fix" ? t.reply_fix || "" : t.decision === "wont" ? t.reply_wont || "" : "";
-    return `<div class="rv-t" data-t="${esc(t.id)}"><div class="rv-t-row">${score(t)}<details class="grow rv-t-d"><summary><span class="rv-t-title">${esc(title(t))}</span><span class="rv-t-m">${esc(t.author || "?")}${t.bot ? " (bot)" : ""}${t.path ? ` · <span title="${esc(t.path)}">${esc(t.path.split("/").pop())}${t.line ? ":" + t.line : ""}</span>` : ""}${t.outdated ? " · outdated" : ""}</span></summary>
-        <div class="rv-t-x">${t.why ? `<p><b>AI:</b> ${txt(t.why)}</p>` : ""}${t.fix ? `<p class="muted">Fix: ${txt(t.fix)}</p>` : ""}<div class="md">${md(t.body || "")}</div>${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer" class="small">Open on GitHub ↗</a>` : ""}</div></details>
+    const bc = botComment(t.body);
+    return `<div class="rv-t" data-t="${esc(t.id)}"><div class="rv-t-row">${score(t)}<details class="grow rv-t-d"><summary><span class="rv-t-title">${esc(title({ body: bc.body }))}</span><span class="rv-t-m">${bc.tags.map(x => tagHtml(x, TAG_TONE[x.toLowerCase()] || "")).join("")}${esc(t.author || "?")}${t.bot ? " (bot)" : ""}${t.path ? ` · <span title="${esc(t.path)}">${esc(t.path.split("/").pop())}${t.line ? ":" + t.line : ""}</span>` : ""}${t.outdated ? " · outdated" : ""}</span></summary>
+        <div class="rv-t-x">${t.why ? `<p><b>AI:</b> ${txt(t.why)}</p>` : ""}${t.fix ? `<p class="muted">Fix: ${txt(t.fix)}</p>` : ""}<div class="md">${md(bc.body)}</div>${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer" class="small">Open on GitHub ↗</a>` : ""}</div></details>
       <span class="seg">${[["fix", "Fix"], ["wont", "Won't fix"]].map(([k, l]) => `<button class="pill wide${t.decision === k ? " on" : ""}" data-dec="${k}"${dis}>${l}</button>`).join("")}</span></div>
       ${t.decision === "fix" || t.decision === "wont" ? `<div class="rv-reply"><span class="muted">↳</span><textarea class="inline-edit" rows="1"${dis}>${esc(reply)}</textarea></div>` : ""}
       ${t.decision === "wont" && reasons.length > 1 ? `<div class="reasons">${reasons.map((r, i) => `<button class="chip${reply === r ? " on" : ""}" data-reason="${i}" title="${esc(r)}"${dis}>${esc(r.length > 48 ? r.slice(0, 46) + "…" : r)}</button>`).join("")}</div>` : ""}</div>`;
@@ -1872,6 +1888,7 @@ async function route(opts) {
   crumbs(key);
   document.title = `${TITLES[key]} · LFG`;
   const seq = ++renderSeq, view = $("#view"), y = window.scrollY;
+  view.classList.toggle("wide", key === "review" && !!arg);  // the review screens are two panes: use the width
   const open = soft ? $$("details[open]", view).map((d, i) => d.id || "i" + i) : [];
   if (!soft) view.innerHTML = '<div class="skeleton" style="height:60px;width:40%"></div><div class="skeleton mt"></div><div class="skeleton mt" style="height:220px"></div>';
   let html;

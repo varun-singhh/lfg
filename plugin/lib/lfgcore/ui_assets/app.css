@@ -639,3 +639,40 @@ details.rv-card[open] > summary::after { transform: rotate(90deg); }
 .mono { font-family: var(--mono, ui-monospace, monospace); }
 @media (max-width: 900px) { .sq-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .rv-note.bad { color: var(--red-tx, var(--red)); background: var(--red-bg); padding: 8px 12px; border-radius: 8px; justify-content: space-between; }
+/* long comments and code never push the page wider than its column */
+.rv-main, .rv-card, .rv-t, .rv-t-row > .grow, .rv-t-d, .rv-t-x { min-width: 0; }
+.rv-t-x { overflow-wrap: anywhere; }
+.rv-main pre, .rv-chat pre { max-width: 100%; overflow-x: auto; white-space: pre; }
+.rv-t-x .md > * { max-width: 100%; }
+.rv-t-m .tg { height: 18px; font-size: 11px; padding: 0 6px; }
+.rv-t-d[open] > summary .rv-t-title { font-weight: 500; }
+.rv-main, .rv-card, .rv-q, .rv-t, .rv-t-x, .rv-t-d > summary, .sq-head, .rv-row .grow { grid-template-columns: minmax(0, 1fr); }
+.rv-t-row { max-width: 100%; }
+/* the review screens use big screens: wider page, chat grows with it, text fills its column */
+.view.wide { max-width: 1760px; }
+.view.wide .rv { grid-template-columns: minmax(0, 1fr) clamp(340px, 28vw, 520px); }
+.view.wide .rv .md, .view.wide .rv .readable { max-width: none; }
+@media (min-width: 1700px) { .view.wide .rv { gap: 32px; } .view.wide .rv-chat { height: calc(100vh - 120px); } }
+
+@media (max-width: 1100px) { .view.wide .rv { grid-template-columns: minmax(0, 1fr); } }
+/* small screens: rows wrap instead of squeezing; settings stack label over control */
+@media (max-width: 640px) {
+  .rv-row { flex-wrap: wrap; align-items: flex-start; }
+  .rv-row .grow { flex: 1 1 calc(100% - 44px); }
+  .rv-side { flex-direction: row; flex-wrap: wrap; align-items: center; width: 100%; padding-left: 44px; }
+  .int-panel { padding: 4px 14px 14px; }
+  .int-field { flex-direction: column; align-items: stretch; gap: 6px; }
+  .int-field input[type=text], .int-field input[type=number], .int-field select { width: 100%; }
+  .int-field .tgl-wrap { align-self: flex-start; }
+  .int-panel .dictate-opts > label:not(.row) { flex-direction: column; align-items: stretch; }
+  .int-panel .dictate-opts select { width: 100%; }
+  .rvh { flex-wrap: wrap; }
+  .rv-bar { flex-wrap: wrap; }
+  .sq-line .grow { display: none; }
+  .sq-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rv-t-row { flex-wrap: wrap; }
+  .rv-t-row .seg { margin-left: 54px; }
+  .rv-reply, .reasons { margin-left: 0; }
+}
+/* big monitors: the regular pages get a little more room too */
+@media (min-width: 1600px) { .view { max-width: 1240px; } .view.wide { max-width: 1760px; } }

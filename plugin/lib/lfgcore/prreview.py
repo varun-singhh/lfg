@@ -661,8 +661,13 @@ def mine(rid, root, fresh=False):
 
 
 def _clean(body):
-    """A comment as a person reads it: no hidden HTML comments (bots stash state there), trimmed."""
+    """A comment as a person reads it: no hidden HTML comments (bots stash state there), no "Prompt for AI Agents"
+    block (instructions aimed at whoever reads the comment, which the AI reviewer must not take as orders),
+    `<summary>` titles as bold lines and the rest of the HTML tags dropped. Code blocks stay."""
     body = re.sub(r"<!--.*?-->", "", body or "", flags=re.S)
+    body = re.sub(r"<details>\s*<summary>[^<]*Prompt for AI[^<]*</summary>.*?</details>", "", body, flags=re.S | re.I)
+    body = re.sub(r"<summary>\s*(.*?)\s*</summary>", r"\n**\1**\n", body, flags=re.S | re.I)
+    body = re.sub(r"</?(details|summary|br|p|div|span|sub|sup|b|i|em|strong)\b[^>]*>", "", body, flags=re.I)
     return re.sub(r"\n{3,}", "\n\n", body).strip()[:8000]
 
 
