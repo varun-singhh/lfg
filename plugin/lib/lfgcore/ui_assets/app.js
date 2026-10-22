@@ -574,7 +574,7 @@ function fieldInput(f, locked) {
 }
 function settingsGeneral() {
   const { cfg, unlocked } = state.settings;
-  return `<div>${cfg.fields.map(f => `<label class="set-row" for="cfg-${esc(f.key)}"><div><div class="set-label">${esc(f.label)}</div><div class="set-help">${esc(f.help || "")}</div></div><div class="set-input">${fieldInput(f, !unlocked)}</div></label>`).join("")}</div>
+  return `<div>${cfg.fields.filter(f => !f.owner).map(f => `<label class="set-row" for="cfg-${esc(f.key)}"><div><div class="set-label">${esc(f.label)}</div><div class="set-help">${esc(f.help || "")}</div></div><div class="set-input">${fieldInput(f, !unlocked)}</div></label>`).join("")}</div>
     <div class="set-actions"><button class="btn primary" id="cfg-save" ${unlocked ? "" : "disabled"}>Save</button><span class="save-msg" id="cfg-msg"></span></div>`;
 }
 function settingsSkills() {
@@ -704,14 +704,11 @@ async function loadClaudeCode() {
     <div class="set-section"><h4>Where LFG is on</h4><p class="muted">In other repos Claude Code works exactly as if LFG weren't installed: no skills, hooks or MCP servers.</p>
       <label class="row"><input type="checkbox" data-cc="everywhere" ${R.everywhere ? "checked" : ""} ${dis}> Turn LFG on in every repo <span class="muted small">(not recommended)</span></label>
       <div class="box mt">${repoRows ? `<ul class="list">${repoRows}</ul>` : empty("No repos yet", "Run <code>lfg enable</code> in a repo, or open one in Claude Code after enabling it.")}</div></div>
-    <div class="set-section"><h4>Feature packs</h4><p class="muted">Core is all LFG needs. The rest install their tools only when you add them. Tools stay installed when you turn a pack off.</p>
-      <div class="box"><ul class="list">${packRows}</ul></div></div>
+    <div class="set-section"><h4>Integrations</h4><p class="muted">Feature packs (Headroom, SonarQube, Dictate, pentest with Ollama and Strix, and the rest) and their settings are on the <a href="#integrations">Integrations</a> page.</p></div>
     <div class="set-section"><h4>Safety</h4>
       <div class="box pad"><div class="row">${dot("ok")}<div class="grow"><b>Guard</b><div class="meta">On in every LFG repo: blocks pushes, secret reads, deploys and the rest of the 18 rules (Settings → Rules), and asks you before any commit. Recently blocked: ${d.blocked.length ? d.blocked.slice(0, 3).map(b => `rule ${esc(b.rule)} (${esc(b.tool)})`).join(", ") : "nothing"}.</div></div></div>
       <label class="row mt"><input type="checkbox" data-cc="commits" ${d.allow_commits ? "checked" : ""} ${dis}><span><b>Let Claude commit when I ask</b><span class="meta"> · each commit becomes an approval prompt in Claude Code; pushing, merging, rebasing, PRs, secrets and deploys stay blocked</span></span></label>
       <label class="row mt"><input type="checkbox" data-cc="hardened" ${d.hardened ? "checked" : ""} ${dis}><span><b>Hardened mode</b><span class="meta"> · also add Claude Code deny rules (git commit/push, secret files…) to each LFG repo's <code>.claude/settings.local.json</code>, never to your user settings</span></span></label></div></div>
-    <div class="set-section"><h4>Headroom (context compression)</h4><p class="muted">A local proxy that shrinks what Claude Code sends. ${hr.live ? `Running, forwarding to ${esc(hr.upstream)}.` : hr.scope !== "off" ? `<span class="row" style="gap:8px">${dot("bad")}<span>Not running, and Claude Code is pointed at it, so terminal sessions can't reach Claude. Run <code>lfg headroom restart</code> in a terminal.</span></span>` : "Not running."}</p>
-      <div class="row"><select id="cc-hr" ${dis || (hrBlocked && hr.scope === "off" ? "disabled" : "")}>${hrOpts.map(([v, l]) => `<option value="${v}" ${v === hr.scope ? "selected" : ""}>${esc(l)}</option>`).join("")}</select><button class="btn" data-cc="headroom" ${dis}>Apply</button><span class="muted small">${esc(hrBlocked)}</span></div></div>
     <div class="set-section"><h4>MCP servers LFG brings</h4><p class="muted">Only in LFG repos. One that isn't set up stays quiet and offers no tools.</p>
       <div class="box"><ul class="list">${d.mcp.map(m => `<li>${dot(m.ready ? "ok" : "")}<div class="grow"><div class="title">${esc(m.name)}</div><div class="meta">${m.ready ? "ready" : fmtWhy(m.why)}</div></div></li>`).join("")}</ul></div></div>
     <div class="set-section"><h4>Your Claude Code setup <span class="muted small">(read-only; LFG leaves these alone)</span></h4>
@@ -746,6 +743,80 @@ async function loadClaudeCode() {
   if (state.pendingTour && $('[data-pack="dictate"]', box)) { const t = state.pendingTour; state.pendingTour = null; setTimeout(() => startTour(t), 250); }
   clearTimeout(ccTimer);
   if (Object.values(d.jobs).some(j => j.status === "running")) ccTimer = setTimeout(() => { if (document.body.contains(box)) loadClaudeCode(); }, 2000);
+}
+
+// ------------------------------------------------------------------ integrations: every tool LFG works with, on one page
+async function integrationsPage() {
+  const [cfg, unlocked] = await Promise.all([api("settings"), isUnlocked()]);
+  state.settings = Object.assign(state.settings || {}, { cfg, unlocked });
+  return `${head("Integrations", "The tools LFG works with. Turn one on and its settings appear on its card; everything installs locally and can be turned off again.")}
+    ${unlocked ? "" : `<div class="callout">Read-only. To change anything, run <code>lfg ui</code> in your own terminal; it opens this page unlocked.</div>`}
+    <span class="save-msg" id="int-msg"></span><div id="int-box"><div class="loading">Checking each integration…</div></div>`;
+}
+let intTimer = null;
+const INT_ICON = { core: "code", knowledge: "knowledge", headroom: "compress", sonarqube: "checks", dictate: "mic", pentest: "target", security: "lock", shipcheck: "box", linear: "issues", github: "branch" };
+async function loadIntegrations() {
+  const box = $("#int-box");
+  if (!box) return;
+  const d = await api("integrations"), un = state.settings.unlocked, dis = un ? "" : "disabled";
+  const claude = await api("claude").catch(() => ({}));
+  state.intOpen = state.intOpen || new Set();
+  if (state.pendingTour) state.intOpen.add("dictate");
+  const job = name => { const j = d.jobs[name]; return j ? `<div class="int-job"><span class="meta">${j.status === "running" ? "Installing…" : j.status === "done" ? "Installed" : "Install failed"}</span>${j.log.length ? `<pre class="joblog">${esc(j.log.slice(-8).join("\n"))}</pre>` : ""}</div>` : ""; };
+  const sw = i => i.fixed || i.name === "core" ? '<span class="muted small nowrap">Always on</span>'
+    : `<button class="tgl${i.on ? " on" : ""}" role="switch" aria-checked="${i.on}" aria-label="${i.on ? "Turn off" : "Turn on"} ${esc(i.title)}" data-int-switch="${esc(i.name)}" ${dis || ((d.jobs[i.name] || {}).status === "running" ? "disabled" : "")}></button>`;
+  const field = f => `<label class="int-field"><span class="grow"><span class="set-label">${esc(f.label.replace(/^(Headroom|Ship check|SonarQube|Dictate|Pentest|Linear)\s*:?\s*/i, "").replace(/^./, c => c.toUpperCase()))}</span>${f.help ? `<span class="set-help">${esc(f.help)}</span>` : ""}</span>${f.type === "bool" ? `<span class="tgl-wrap"><input type="checkbox" data-cfg="${esc(f.key)}" aria-label="${esc(f.label)}" ${f.value ? "checked" : ""} ${dis}><span class="tgl" aria-hidden="true"></span></span>` : fieldInput(f, !un)}</label>`;
+  const extra = i => {
+    if (i.name === "headroom" && claude.headroom) {
+      const hr = claude.headroom, opts = [["off", "Off"], ["repos", "LFG repos"], ["everywhere", "Every session"]];
+      return `<label class="int-field"><span class="grow"><span class="set-label">Route Claude Code through it</span><span class="set-help">${hr.cloud_provider ? `Not available: Claude Code uses ${esc(hr.cloud_provider)} here.` : "New sessions pick it up."}</span></span><select id="int-hr" data-int-act="headroom" ${dis}>${opts.map(([v, l]) => `<option value="${v}" ${v === hr.scope ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
+    }
+    if (i.name === "knowledge") return `<div class="int-acts"><button class="btn small" data-int-act="omnigraph_restart" ${dis}>Restart the servers</button></div>`;
+    if (i.name === "sonarqube") return `<div class="int-acts">${/needs a restart/.test(i.status) ? `<button class="btn small primary" data-int-act="sonar_apply" ${dis}>Restart to apply</button>` : ""}<a class="btn small" href="http://127.0.0.1:9000" target="_blank" rel="noopener noreferrer">Open SonarQube ↗</a><span class="muted small">sign in as admin · <code>lfg sonar login</code></span></div>`;
+    if (i.name === "dictate" && i.settings) return dictateControls(i.settings, dis);
+    if (i.name === "pentest" && i.on) return '<div class="int-sub"><div class="set-label">Local AI models (Ollama)</div><div id="ollama-box"><div class="loading">Asking the local Ollama…</div></div></div>';
+    return "";
+  };
+  const fieldsOf = i => i.name === "dictate" ? [] : i.name === "pentest" ? i.fields.filter(f => f.key !== "pentest.model") : i.fields;
+  const hasPanel = i => !!((i.on || i.name === "dictate") && (fieldsOf(i).length || extra(i) || i.missing.length || d.jobs[i.name]));
+  const status = i => i.on ? (i.status ? `<span class="int-st ${i.tone === "warn" || i.tone === "bad" ? i.tone : ""}">${fmtWhy(i.status)}</span>` : "")
+    : `<span class="int-st">${esc((i.about || "").split(/(?<=\.)\s/)[0].replace(/\.$/, ""))}</span>`;
+  const row = i => {
+    const open = state.intOpen.has(i.name) && hasPanel(i);
+    return `<div class="int-item${open ? " open" : ""}" data-pack="${esc(i.name)}"><div class="int-row"><button class="int-main" ${hasPanel(i) ? `data-int-open="${esc(i.name)}" aria-expanded="${open}"` : "tabindex=\"-1\""} title="${esc(i.about || "")}">${icon(INT_ICON[i.name] || "settings")}<span class="grow"><span class="int-nm">${esc(i.title.replace(/ \((experimental|local)\)/, ""))}${i.experimental ? ' <span class="tag">Experimental</span>' : ""}</span>${status(i)}</span>${hasPanel(i) ? icon(open ? "chevron-up" : "chevron-down", "ico chev") : ""}</button>${sw(i)}</div>
+      ${open ? `<div class="int-panel">${i.missing.length && i.on ? `<div class="int-acts"><span class="int-st warn">Missing: ${esc(i.missing.map(m => m.split(":").pop()).join(", "))}</span><button class="btn small" data-cc="pack_add" data-name="${esc(i.name)}" ${dis}>Install missing</button></div>` : ""}${fieldsOf(i).map(field).join("")}${extra(i)}${job(i.name)}</div>` : ""}</div>`;
+  };
+  box.innerHTML = `<div class="int-list">${d.integrations.map(row).join("")}</div>
+    <details class="int-tools"><summary class="muted small">Command-line tools LFG uses</summary><div id="int-tools" class="mt"><div class="loading">Checking…</div></div></details>`;
+  const msg = $("#int-msg");
+  const said = r => { if (msg) saidMsg(msg, r, r.ok ? "Saved" : ""); };
+  $$("[data-int-open]", box).forEach(b => b.onclick = () => { const k = b.dataset.intOpen; state.intOpen.has(k) ? state.intOpen.delete(k) : state.intOpen.add(k); loadIntegrations(); });
+  $$("[data-int-switch]", box).forEach(b => b.onclick = async () => {
+    const name = b.dataset.intSwitch, on = b.classList.contains("on");
+    if (on && !confirm(`Turn off ${name}? Its tools stay installed; you can turn it on again any time.`)) return;
+    b.disabled = true; b.classList.toggle("on", !on);
+    if (!on) state.intOpen.add(name);
+    said(await save(on ? "pack_remove" : "pack_add", { name })); loadIntegrations();
+  });
+  $$("[data-cfg]", box).forEach(el => el.addEventListener("change", async () => {
+    const v = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
+    const r = await save("config", { values: { [el.dataset.cfg]: v } }); said(r); if (r.ok) loadIntegrations();
+  }));
+  $$("[data-dict]", box).forEach(el => el.onchange = async () => { el.disabled = true; said(await save("config", { values: { [el.dataset.dict]: el.type === "checkbox" ? el.checked : el.value } })); loadIntegrations(); });
+  $$("[data-cc]", box).forEach(b => b.onclick = async () => { b.disabled = true; said(await save(b.dataset.cc, { name: b.dataset.name })); loadIntegrations(); });
+  $$("[data-int-act]", box).forEach(b => b[b.tagName === "SELECT" ? "onchange" : "onclick"] = async () => {
+    const act = b.dataset.intAct;
+    if (act === "sonar_apply" && !confirm("Restart SonarQube with the new setting? It takes a minute or two; your login and results are kept.")) return;
+    b.disabled = true; if (b.tagName === "BUTTON") b.textContent = "Working…";
+    said(await save(act, act === "headroom" ? { scope: b.value } : {})); loadIntegrations();
+  });
+  $$("[data-tour-start]", box).forEach(l => l.onclick = e => { e.preventDefault(); startTour(l.dataset.tourStart); });
+  if (state.pendingTour && $('[data-pack="dictate"]', box)) { const t = state.pendingTour; state.pendingTour = null; setTimeout(() => startTour(t), 250); }
+  if ($("#ollama-box", box)) loadOllama();
+  api("tools").then(t => { const el = $("#int-tools"); if (!el) return; const miss = t.tools.filter(x => !x.installed);
+    el.innerHTML = miss.length ? `<div class="box"><ul class="list">${miss.map(x => `<li>${dot(x.required ? "bad" : "")}<div class="grow"><div class="title">${esc(x.tool)} is not installed</div><div class="meta">${esc(x.purpose)}</div></div></li>`).join("")}</ul></div>` : `<p class="muted small">All ${n(t.tools.length)} tools are installed.</p>`; });
+  clearTimeout(intTimer);
+  if (Object.values(d.jobs).some(j => j.status === "running")) intTimer = setTimeout(() => { if (document.body.contains(box)) loadIntegrations(); }, 2000);
 }
 
 function settingsTools() {
@@ -855,6 +926,7 @@ function wireSettings(root) {
   if ($("#ollama-box", root)) loadOllama();
   if ($("#storage-box", root)) loadStorage();
   if ($("#tools-box", root)) loadTools();
+  if ($("#int-box", root)) loadIntegrations();
   wireRules(root);
   const cs = $("#cfg-save", root);
   if (cs) cs.onclick = async () => {
@@ -928,8 +1000,8 @@ function dictateTour(on) {
     { sel: '[data-dict="dictate.shortcut"]', title: "Shortcut", body: () => `Which keys start Dictate: Option+Space, Right Option, Fn (globe), Control+Space or Command+Shift+Space. Right Option and Fn work on their own. Pick another one if an app already uses yours (the ChatGPT app and Raycast like Option+Space).${pre}` },
     { sel: '[data-dict="dictate.insert"]', title: "Put text in by", body: () => `Your words always go two places: where your cursor is, and your clipboard, so you can paste them again anywhere with ⌘V. <b>Pasting</b> is instant. <b>Typing</b> is for the odd app that blocks pasting; it's slower for long text.${pre}` },
     { sel: '[data-dict="dictate.cleanup"]', title: "Clean up with Claude", body: () => `On by default. Removes filler words ("um", "like"), applies spoken corrections ("Tuesday, no, Wednesday") and fixes punctuation: the text, never the audio, goes to Claude with your Claude Code sign-in. Untick it to keep everything on your Mac.${pre}` },
-    on ? { sel: '[data-pack="dictate"] [data-cc="pack_remove"]', title: "Turn it off", body: () => "Stops Dictate and deletes everything it installed: the model, its app and its login item. You can add it again any time." }
-       : { sel: '[data-pack="dictate"] [data-cc="pack_add"]', title: "Turn it on", body: () => '<b>Add</b> downloads the speech model (about 90 MB, into ~/.lfg/dictate) and starts Dictate. macOS then asks for <b>Microphone</b> and <b>Accessibility</b> permission for "LFG Dictate". After that, the controls above come alive.' },
+    on ? { sel: '[data-pack="dictate"] [data-int-switch]', title: "Turn it off", body: () => "Stops Dictate and deletes everything it installed: the model, its app and its login item. You can add it again any time." }
+       : { sel: '[data-pack="dictate"] [data-int-switch]', title: "Turn it on", body: () => '<b>Add</b> downloads the speech model (about 90 MB, into ~/.lfg/dictate) and starts Dictate. macOS then asks for <b>Microphone</b> and <b>Accessibility</b> permission for "LFG Dictate". After that, the controls above come alive.' },
     { title: "From the terminal", body: () => `The same controls, if you prefer typing:<pre class="out">lfg add dictate                    # turn it on\nlfg dictate status\nlfg dictate shortcut right_option\nlfg dictate insert type            # or paste\nlfg dictate cleanup off            # or on\nlfg remove dictate                 # turn it off</pre>Replay this tour any time with <b>Take the tour</b> on the Dictate row.` },
   ];
 }
@@ -1005,14 +1077,14 @@ async function offerTours() {
         <div class="promo-text">Hold <b>Option+Space</b> anywhere on your Mac, speak, and let go: the words appear where your cursor is. Your voice is transcribed on this Mac and never saved; Claude tidies up the text.</div></div>
       <div class="promo-actions"><button class="btn small primary" data-promo="on">Turn it on</button><button class="btn small" data-promo="tour">Take the tour</button>
         <button class="icon-btn" data-promo="close" aria-label="Close" title="Don't show again">&times;</button></div></div>`;
-    const go = () => { sessionStorage.setItem("lfg.tab.settings", "claudecode"); if ((location.hash.slice(1) || "home").split("/")[0] === "settings") route(); else location.hash = "#settings"; };
+    const go = () => { if ((location.hash.slice(1) || "home").split("/")[0] === "integrations") route(); else location.hash = "#integrations"; };
     $('[data-promo="close"]', promo).onclick = () => { remember("dictate-banner", "closed"); promo.innerHTML = ""; };
     $('[data-promo="tour"]', promo).onclick = () => { state.pendingTour = "dictate-intro"; go(); };
     $('[data-promo="on"]', promo).onclick = async e => {
       const r = await save("pack_add", { name: "dictate" });
       if (!r.ok) { e.target.closest(".promo").querySelector(".promo-text").innerHTML = `${fmtWhy(r.why || "Couldn't start it.")} You can also run <code>lfg add dictate</code> in your terminal.`; return; }
       promo.innerHTML = "";
-      go();  // Settings → Claude Code shows the download's progress
+      go();  // Integrations shows the download's progress
     };
     return;
   }
@@ -1028,14 +1100,13 @@ async function offerTours() {
   $('[data-p="go"]', card).onclick = () => {
     card.remove();
     state.pendingTour = "dictate";
-    sessionStorage.setItem("lfg.tab.settings", "claudecode");
-    if ((location.hash.slice(1) || "home").split("/")[0] === "settings") route(); else location.hash = "#settings";
+    if ((location.hash.slice(1) || "home").split("/")[0] === "integrations") route(); else location.hash = "#integrations";
   };
 }
 
 // ------------------------------------------------------------------ pages
-const NAV = [["home", "Home"], ["runs", "Runs"], ["issues", "Issues"], ["checks", "Checks"], ["code", "Code"], ["docs", "Docs"],
-  ["knowledge", "Knowledge"], ["usage", "Usage"], ["skills", "Skills"], ["settings", "Settings"], ["help", "Help"]];
+const NAV = [["home", "Home"], ["runs", "Runs"], ["issues", "Issues"], ["review", "Reviews"], ["checks", "Checks"], ["code", "Code"], ["docs", "Docs"],
+  ["knowledge", "Knowledge"], ["usage", "Usage"], ["skills", "Skills"], ["integrations", "Integrations"], ["settings", "Settings"], ["help", "Help"]];
 const TITLES = Object.fromEntries(NAV);
 const PAGES = {};
 
@@ -1185,6 +1256,45 @@ PAGES.issues = async () => {
     ])}`;
 };
 
+/* Local SonarQube: what SonarCloud would flag, found before you push */
+function sonarTab(q) {
+  const m = q.measures || {};
+  const SEV = { BLOCKER: "bad", CRITICAL: "bad", HIGH: "bad", MAJOR: "warn", MEDIUM: "warn" };
+  const KIND = { BUG: "Bug", VULNERABILITY: "Vulnerability", CODE_SMELL: "Code smell", SECURITY_HOTSPOT: "Hotspot" };
+  const gate = q.gate === "OK" ? tagHtml("Gate passed", "ok") : q.gate === "ERROR" ? tagHtml("Gate failed", "bad") : q.gate ? tagHtml(q.gate, "warn") : tagHtml("Not scanned yet", "");
+  const scan = q.server !== "up" ? "" : q.scanning ? `<span class="rv-note" data-sq-scanning><span class="spin"></span>Scanning · started ${ago(q.scanning)}</span>` : `<button class="btn small" data-sq-scan>${icon("refresh")} Scan now</button>`;
+  const what = q.ts ? `scanned <span class="brtag">${esc(q.branch || "?")}</span>${q.head ? ` at <span class="brtag">${esc(q.head)}</span>` : ""}${q.base_name ? ` vs <span class="brtag">${esc(q.base_name)}</span>` : ""} · ${ago(q.ts)}` : "";
+  const tile = (k, v) => `<div class="sq-tile"><div class="k">${k}</div><div class="v">${esc(v ?? "–")}</div></div>`;
+  const issue = r => `<div class="sq-row">${tagHtml((words(String(r.severity || "").toLowerCase()) || "–").replace(/^./, c => c.toUpperCase()), SEV[r.severity] || "")}${tagHtml(KIND[r.kind] || words(String(r.kind || "").toLowerCase()), "")}<span class="grow"><span class="sq-msg">${esc(r.message || "")}</span><span class="rv-row-m"><span class="brtag" title="${esc(r.path || "")}">${esc((r.path || "").split("/").pop())}${r.line ? ":" + r.line : ""}</span><span class="mono">${esc(r.rule || "")}</span></span></span></div>`;
+  const mine = (q.issues || []).filter(i => i.mine), rest = (q.issues || []).filter(i => !i.mine);
+  const byKind = Object.entries(q.rest_by_kind || {}).map(([k, v]) => tagHtml(`${KIND[k] || words(k.toLowerCase())} ${v}`, "")).join("");
+  return `${q.server !== "up" ? `<div class="callout warn">SonarQube isn't running (${esc(q.server)}). Turn it on in <a href="#integrations">Integrations</a>.</div>` : ""}
+    <div class="rv-card sq-head"><div class="sq-line">${gate}<span class="rv-row-m">${what}</span><span class="grow"></span>${scan}</div>
+      ${q.ts ? `<div class="sq-tiles">${tile("Bugs", m.bugs)}${tile("Vulnerabilities", m.vulnerabilities)}${tile("Code smells", m.code_smells)}${tile("Hotspots", m.security_hotspots)}${tile("Duplication", m.duplicated_lines_density != null ? m.duplicated_lines_density + "%" : null)}</div>` : ""}
+      ${(q.conditions || []).filter(c => c.status === "ERROR").map(c => `<div class="sq-line">${tagHtml("Failed", "bad")}<span>${esc(words(c.metricKey))} is ${esc(c.actualValue)} (limit ${esc(c.comparator)} ${esc(c.errorThreshold)})</span></div>`).join("")}
+      <div class="sq-line" id="sq-cloud"><span class="muted small">Checking SonarCloud…</span></div></div>
+    ${q.ts ? `<div class="rv-card-h sq-sub">On your branch<span class="muted small">${plural(mine.length, "issue")} on lines it changed</span></div>
+      <div class="rv-card sq-list">${mine.length ? mine.map(issue).join("") : '<p class="muted small">Nothing on the lines this branch changed.</p>'}</div>` : ""}
+    ${rest.length ? `<details class="rv-card"><summary class="rv-card-h">Rest of the repo · ${plural(rest.length, "issue")}<span class="sq-kinds">${byKind}</span></summary><div class="sq-list">${rest.map(issue).join("")}</div></details>` : ""}
+    ${q.url ? `<p class="muted small">Full report in <a href="${esc(q.url)}" target="_blank" rel="noopener noreferrer">SonarQube ↗</a> · sign in as admin, <code>lfg sonar login</code> shows the password</p>` : ""}`;
+}
+async function wireSonar(root) {
+  $$("[data-sq-scan]", root).forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = "Starting…";
+    const r = await save("sonar_scan", { repo: state.repo });
+    if (!r.ok) { alert(String(r.why || "Couldn't start the scan.").replace(/`/g, "")); b.disabled = false; b.textContent = "Scan now"; return; }
+    route({ soft: true });
+  });
+  if ($("[data-sq-scanning]", root)) setTimeout(() => { if (location.hash.startsWith("#checks") && $("[data-sq-scanning]")) route({ soft: true }); }, 10000);
+  const box = $("#sq-cloud", root);
+  if (box) {
+    const c = await api("sonar_cloud");
+    const failed = c && /fail|cancel/i.test(`${c.conclusion} ${c.title}`), crashed = c && /analysis failed/i.test(c.title || c.summary || "");
+    box.innerHTML = !c || !c.found ? '<span class="muted small">No SonarCloud check on this commit (not pushed yet, or the repo doesn\'t use SonarCloud)</span>'
+      : `${tagHtml(`SonarCloud: ${crashed ? "analysis failed" : c.conclusion || c.status || "?"}`, c.conclusion === "success" ? "ok" : failed ? "bad" : "warn")}<span class="rv-row-m">on <span class="brtag">${esc(String(c.sha).slice(0, 7))}</span>${crashed ? " · their side, not your code" : c.title ? ` · ${esc(c.title)}` : ""}${c.url ? ` · <a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">open ↗</a>` : ""}</span>`;
+  }
+}
+
 PAGES.checks = async () => {
   const [r, s] = await Promise.all([api("reviews"), api("security")]);
   const last = s.secure[0], ship = s.shipcheck[0], rev = r.verdicts[0];
@@ -1208,6 +1318,7 @@ PAGES.checks = async () => {
         { onRow: x => openDrawer("Security test", `<div class="readable">${JSON_VIEWS["05-pentest.json"](x)}</div>`) })}</div>`],
       ["ship", "Ship checks", s.shipcheck.length, () => `<div class="box">${table(s.shipcheck, [{ k: "pass", label: "Result", html: x => st(x.pass ? "pass" : "fail") }, { k: "ok", label: "Passed", html: x => `${x.ok} of ${x.total}` }, { k: "failed", label: "What failed", html: x => esc((x.failed || []).join(", ") || "—") }, { k: "ts", label: "When", html: x => `<span class="nowrap">${ago(x.ts)}</span>` }],
         { onRow: x => openDrawer("Ship check", `<div class="readable"><p>${st(x.pass ? "pass" : "fail")}</p>${x.note ? `<p class="muted">${txt(x.note)}</p>` : ""}<div class="items">${shipChecks(x.checks)}</div></div>`) })}</div>`],
+      ...(s.sonar ? [["sonar", "SonarQube", s.sonar.mine || null, () => sonarTab(s.sonar)]] : []),
       ["stopped", "Stopped actions", r.blocked.length, () => `<p class="muted">Actions an agent tried that break a rule, so LFG stopped them. Nothing here needs you; it shows the guard working.</p><div class="box">${table(r.blocked, [{ k: "why", label: "What was stopped", html: x => esc(x.why || x.tool) }, { k: "rule", label: "Rule", html: x => `rule ${esc(x.rule)}` }, { k: "ts", label: "When", html: x => `<span class="nowrap">${ago(x.ts)}</span>` }])}</div>`],
     ])}</div>`;
 };
@@ -1327,6 +1438,219 @@ function addRows(rs, keys) {
   for (const r of rs) for (const [m, v] of Object.entries(r.models || {})) { const t = models[m] || (models[m] = {}); for (const [k2, x] of Object.entries(v)) t[k2] = (t[k2] || 0) + x; }
   return { ...o, models };
 }
+// ------------------------------------------------------------------ reviews (other people's pull requests)
+const RV_SAY = { new: ["Not started", ""], working: ["AI is working", "warn"], ready: ["Ready for you", "ok"], posted: ["Posted", "ok"], closed: ["Closed", ""] };
+const tagHtml = (t, tone) => `<span class="tg ${tone || ""}">${esc(t)}</span>`;
+const initials = name => (String(name || "?").replace(/[-_.\d]+/g, " ").trim().split(/\s+|(?=[A-Z])/).filter(Boolean).slice(0, 2).map(x => x[0]).join("") || "?").toUpperCase();
+const RV_TAG = { new: ["Not started", ""], working: ["AI working", "on"], ready: ["Ready for you", "ok"], posted: ["Posted", "ok"], closed: ["Closed", ""] };
+const rvTag = rv => { const [t, tone] = RV_TAG[(rv || {}).status] || [(rv || {}).status || "", ""]; return `${tagHtml(t, tone)}${rv && rv.new_commits ? tagHtml("New commits", "warn") : ""}`; };
+/* one pull request row: who, which branch into which, size, and where it stands */
+function prRow(p, href, who, side) {
+  const size = p.changedFiles ? `${plural(p.changedFiles, "file")} <span class="add">+${n(p.additions || 0)}</span> <span class="del">−${n(p.deletions || 0)}</span>` : "";
+  return `<a class="rv-row" href="${href}"><span class="av" title="${esc(p.author || "")}">${esc(initials(p.author))}</span><span class="grow"><span class="rv-row-t">${esc(p.title || "#" + p.number)} <span class="muted">#${p.number}</span></span>
+    <span class="rv-row-m">${who ? `${who} · ` : ""}<span class="brtag" title="${esc(p.headRefName || "")}">${esc(p.headRefName || "?")}</span><span class="arrow">→</span><span class="brtag">${esc(p.baseRefName || "?")}</span>${size ? ` · ${size}` : ""}${p.updatedAt ? ` · ${ago(p.updatedAt)}` : ""}</span></span>${side}</a>`;
+}
+const pill = (t, tone) => `<span class="st"><span class="dot ${tone}"></span>${esc(t)}</span>`;
+const rvChip = rv => { const [t, tone] = RV_SAY[(rv || {}).status] || [rv && rv.status || "", ""]; return `<span class="rv-chips">${pill(t, tone)}${rv && rv.new_commits ? pill("New commits", "warn") : ""}</span>`; };
+const EVENT_SAY = { COMMENT: "Comment", REQUEST_CHANGES: "Request changes", APPROVE: "Approve" };
+
+PAGES.review = async arg => {
+  const n = parseInt(arg, 10);
+  const unlocked = await isUnlocked();
+  if (/^yours\//.test(arg)) return triagePage(parseInt(arg.slice(6), 10), unlocked);
+  if (!n) {
+    const fresh = state.prFresh ? { fresh: "1" } : {};
+    const [d, y] = await Promise.all([api("prs", fresh), api("mine", fresh)]);
+    state.prFresh = false;
+    const top = `<div class="rv-top"><span class="muted small">${d.fetched_at ? `checked ${ago(d.fetched_at)}` : ""}</span><button class="btn small" data-rv-refresh>Refresh</button></div>`;
+    if (d.available === false) return `${head("Reviews")}${top}${unavailable(d, "Couldn't read your review requests")}`;
+    const rows = d.prs.map(p => prRow(p, `#review/${p.number}`, `${esc(p.author || "?")}${p.requested === false ? " · no longer asks you" : ""}`,
+      `<span class="rv-side">${rvTag(p.review)}${p.review && p.review.worktree_name ? `<span class="brtag">${icon("folder")}${esc(p.review.worktree_name)}</span>` : ""}</span>`)).join("");
+    const DEC = { APPROVED: ["Approved", "ok"], CHANGES_REQUESTED: ["Changes requested", "warn"], REVIEW_REQUIRED: ["Review required", ""] };
+    const yours = y.available === false ? unavailable(y, "Couldn't read your pull requests") : y.prs.length ? `<div class="box rv-list">${y.prs.map(p => prRow(p, `#review/yours/${p.number}`,
+      p.reviewDecision ? tagHtml(...(DEC[p.reviewDecision] || [words(p.reviewDecision), ""])) : "",
+      `<span class="rv-side">${p.review && p.review.status === "working" ? tagHtml("AI reading", "on") : p.review && p.review.status !== "new" ? `${p.worth_open ? tagHtml(`${p.worth_open} worth fixing`, "bad") : tagHtml("Nothing to fix", "ok")}${p.low_open ? tagHtml(`${p.low_open} low`, "") : ""}${p.decided ? tagHtml(`${p.decided} ready to send`, "on") : ""}` : tagHtml("Not read yet", "")}</span>`)).join("")}</div>` : empty("No open pull requests", "You have no open pull request in this repo.");
+    return `${head("Reviews", `Pull requests in ${esc(repoName())}. Each one is read in its own worktree, so your checkout stays as it is, and nothing goes to GitHub until you post.`)}${top}
+      ${tabs("rvl", [["waiting", "Waiting on you", d.prs.length, () => d.prs.length ? `<div class="box rv-list">${rows}</div>` : empty("Nothing waiting on you", "No open pull request in this repo asks for your review.")],
+        ["yours", "Your pull requests", y.available === false ? null : y.prs.length, () => yours]])}`;
+  }
+  const d = await api("pr", { n });
+  if (d.available === false) return unavailable(d);
+  state.pr = d;
+  const p = d.pr || {}, rv = d.review || {}, dr = d.draft || {}, working = rv.status === "working";
+  crumbs("review", `#${n}`);
+  const header = rvHeader(d, n, p, rv, `@${esc(p.author || "?")} · ${esc(p.baseRefName || "")} ← ${esc(p.headRefName || "")}`,
+    rv.new_commits ? `<button class="btn small" data-rv-update${working || !unlocked ? " disabled" : ""}>Pull new commits</button>` : "", "data-rv-refresh");
+  if (rv.status === "new") return `${header}${rvStart("Start review", "data-rv-start", unlocked, "An AI reviewer reads it in its own worktree with LFG's code review skill, the code graphs and the brains. You talk it through and post when you're happy.")}`;
+  const dis = working || rv.status === "posted" || !unlocked ? " disabled" : "";
+  const ratings = dr.ratings || [], comments = dr.comments || [], questions = dr.questions || [];
+  const ai = ratings.map(r => r.ai).filter(Boolean);
+  const score = r => `<div class="rv-score" title="${esc(r.why || "")}"><span class="grow">${esc(r.area)}</span>${r.ai ? `<span class="muted small">AI ${r.ai}</span>` : ""}<span class="pills" data-area="${esc(r.area)}">${[1, 2, 3, 4, 5].map(v => `<button class="pill${r.mine === v ? " on" : ""}" data-v="${v}"${dis}>${v}</button>`).join("")}</span></div>`;
+  const comment = c => `<div class="rv-c" data-c="${esc(c.id)}" data-path="${esc(c.path || "")}" data-line="${c.line || ""}" data-sev="${esc(c.severity || "")}" data-src="${esc(c.source || "")}"><input type="checkbox" aria-label="Include this comment"${c.include !== false ? " checked" : ""}${dis}><div class="grow"><div class="rv-c-m"><span title="${esc(c.path || "")}">${esc((c.path || "general").split("/").pop())}${c.line ? ":" + c.line : ""}</span>${c.severity ? ` · ${esc(c.severity)}` : ""} · ${c.inline ? "on the line" : "in the summary"}</div><textarea class="inline-edit" rows="1"${dis}>${esc(c.body || "")}</textarea></div><button class="icon-btn" data-rv-drop title="Remove" aria-label="Remove"${dis}>&times;</button></div>`;
+  const question = q => `<div class="rv-q" data-q="${esc(q.id)}"><div>${txt(q.ask)}${q.why ? `<div class="meta">${txt(q.why)}</div>` : ""}</div><textarea class="inline-edit" rows="1" placeholder="Your answer"${dis}>${esc(q.answer || "")}</textarea><a href="#" class="small" data-rv-discuss="${esc(q.id)}">Discuss</a></div>`;
+  const more = (items, keep, fn, what) => items.slice(0, keep).map(fn).join("") + (items.length > keep ? `<div class="rv-more" hidden>${items.slice(keep).map(fn).join("")}</div><a href="#" class="rv-more-link small" data-more>+${items.length - keep} more ${what}</a>` : "");
+  const kept = comments.filter(c => c.include !== false).length;
+  const main = `<div class="rv-main">
+    ${working ? `<p class="rv-note" data-rv-working><span class="spin"></span>The AI is ${rv.job === "review" ? "reviewing the pull request" : "answering"} · started ${ago(d.working_since)}</p>` : ""}
+    ${!working && ((d.chat || []).slice(-1)[0] || {}).error ? `<p class="rv-note bad">The last AI run failed (details on the right).<button class="btn small" data-rv-start${unlocked ? "" : " disabled"}>Try again</button></p>` : ""}
+    ${rv.posted ? `<p class="rv-note ok">Posted ${ago(rv.posted.at)} as ${esc((EVENT_SAY[rv.posted.event] || rv.posted.event).toLowerCase())}${rv.posted.url ? ` · <a href="${esc(rv.posted.url)}" target="_blank" rel="noopener noreferrer">see it on GitHub</a>` : ""}</p>` : ""}
+    <div class="rv-card"><div class="rv-card-h">Summary for the author${dr.ai_verdict ? `<span class="muted small">AI's call: ${esc(dr.ai_verdict)}</span>` : ""}</div><textarea id="rv-summary" class="inline-edit" rows="2" placeholder="What you'll tell the author"${dis}>${esc(dr.summary || "")}</textarea></div>
+    ${ratings.length ? `<div class="rv-card"><div class="rv-card-h">Your scores${ai.length ? `<span class="muted small">AI suggests ${Math.min(...ai)}–${Math.max(...ai)}</span>` : ""}</div>${more(ratings, 2, score, "areas")}</div>` : ""}
+    <div class="rv-card"><div class="rv-card-h">Comments<span class="muted small">${kept} to post</span></div>${comments.length ? more(comments, 3, comment, "comments") : '<p class="muted small">No comments yet.</p>'}</div>
+    ${questions.length ? `<details class="rv-card"><summary class="rv-card-h">${questions.length} ${questions.length === 1 ? "question" : "questions"} to settle</summary>${questions.map(question).join("")}</details>` : ""}
+    ${(dr.context || []).length ? `<details class="rv-card"><summary class="rv-card-h">What the brains added<span class="muted small">${dr.context.length}</span></summary><ul class="small">${dr.context.map(x => `<li>${txt(x)}</li>`).join("")}</ul></details>` : ""}
+    ${rv.posted ? `<div class="rv-bar"><span class="grow"></span><button class="btn small" data-rv-close${!unlocked || working ? " disabled" : ""}>Done: remove the worktree</button></div>`
+      : `<div class="rv-bar"><input type="hidden" id="rv-event" value="${esc(dr.event || "COMMENT")}"><span class="seg">${Object.entries(EVENT_SAY).map(([k, v]) => `<button class="pill wide${(dr.event || "COMMENT") === k ? " on" : ""}" data-ev="${k}"${dis}>${v}</button>`).join("")}</span><label class="small muted"><input type="checkbox" id="rv-rates"${dr.include_ratings !== false ? " checked" : ""}${dis}> scores</label><span class="grow"></span><span class="muted small" id="rv-saved"></span><button class="btn primary" data-rv-preview${dis}>Post review</button></div>`}
+  </div>`;
+  return `${header}<div class="rv">${main}${rvChat(d, working, dis)}</div>`;
+};
+
+function rvHeader(d, n, p, rv, meta, extra, refresh) {
+  const wt = rv.worktree_name || (d.worktree_to_be || "").split("/").pop();
+  return `<div class="rvh"><div class="grow"><h1>${esc(p.title || "Pull request")} <span class="muted">#${n}</span></h1>
+    <div class="rvh-m">${meta} · <span class="wtchip" title="${esc((d.meta || {}).worktree || d.worktree_to_be || "")}">${icon("folder")}${esc(wt)}</span>${p.url ? ` · <a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>` : ""}</div></div>
+    <div class="rvh-a">${extra}${rv.status === "new" ? "" : `<button class="icon-btn" ${refresh} title="Refresh" aria-label="Refresh">${icon("refresh")}</button>`}</div></div>`;
+}
+function rvStart(label, attr, unlocked, text) {
+  return `<div class="rv-empty"><p>${text}</p><button class="btn primary" ${attr}${unlocked ? "" : ' disabled title="Run lfg ui in your terminal to unlock"'}>${label}</button></div>`;
+}
+function rvChat(d, working, dis) {
+  const msgs = (d.chat || []).map(m => `<div class="msg ${m.role === "me" ? "me" : "ai"}${m.error ? " bad" : ""}">${m.role === "me" ? esc(m.text) : `<div class="md">${md(m.text)}</div>`}${m.changed && m.changed.length ? `<div class="meta">Updated ${esc(m.changed.join(", "))}</div>` : ""}</div>`).join("");
+  return `<aside class="rv-chat"><div class="rv-chat-head">Talk it through</div><div class="rv-msgs" id="rv-msgs">${msgs || '<p class="muted small">The AI\'s read lands here. Push back, answer its questions, or ask for changes.</p>'}${working ? '<div class="msg ai muted"><span class="spin"></span>Thinking…</div>' : ""}</div>
+    <div class="rv-send"><textarea id="rv-text" rows="2" placeholder="${d.mode === "triage" ? "Why only 30% on the null check?" : "Ask or push back"}"${dis}></textarea><button class="btn small" data-rv-ask${dis}>Send</button></div></aside>`;
+}
+
+/* Your own PR: every comment thread, the AI's read on it, and the reply you'll send */
+async function triagePage(n, unlocked) {
+  const d = await api("triage", { n });
+  if (d.available === false) return unavailable(d);
+  state.pr = d;
+  const p = d.pr || {}, rv = d.review || {}, working = rv.status === "working";
+  crumbs("review", `Yours #${n}`, `#review/yours/${n}`);
+  const all = Object.values((d.triage || {}).threads || {});
+  const open = all.filter(t => !t.resolved && !t.posted).sort((a, b) => (b.worth ?? -1) - (a.worth ?? -1));
+  const closed = all.filter(t => t.resolved || t.posted);
+  const header = rvHeader(d, n, p, rv, `your pull request · ${esc(p.baseRefName || "")} ← ${esc(p.headRefName || "")}`, "",
+    `data-tr-start${working || !unlocked ? " disabled" : ""}`);
+  if (rv.status === "new") return `${header}${rvStart("Read the comments", "data-tr-start", unlocked, "An AI reads every comment on this pull request against your code, the code graphs and the brains, says how likely each is worth fixing, and drafts your reply either way. Nothing is sent until you send it.")}`;
+  const dis = working || !unlocked ? " disabled" : "";
+  const title = t => {  // a comment's first line, as a person would summarise it: no markup, no emoji
+    const lines = (t.body || "").replace(/<[^>]*>?/g, " ").split("\n").map(l => l.replace(/[#*_`>|\[\]]/g, "").replace(/\p{Extended_Pictographic}\uFE0F?/gu, "").replace(/\s+/g, " ").trim()).filter(Boolean);
+    const first = lines[0] || "";
+    const x = first.length >= 12 ? first : lines.slice(0, 2).join(" ");
+    return x.length > 110 ? x.slice(0, 108) + "…" : x;
+  };
+  const score = t => t.worth == null ? `<span class="score">${working ? "…" : "–"}</span>` : `<span class="score ${t.worth >= 70 ? "hi" : t.worth >= 40 ? "mid" : "lo"}" title="How likely it's worth fixing">${t.worth}%</span>`;
+  const row = t => {
+    const reasons = [t.reply_wont].concat(t.wont_reasons || []).filter(Boolean);
+    const reply = t.reply != null && t.reply !== "" ? t.reply : t.decision === "fix" ? t.reply_fix || "" : t.decision === "wont" ? t.reply_wont || "" : "";
+    return `<div class="rv-t" data-t="${esc(t.id)}"><div class="rv-t-row">${score(t)}<details class="grow rv-t-d"><summary><span class="rv-t-title">${esc(title(t))}</span><span class="rv-t-m">${esc(t.author || "?")}${t.bot ? " (bot)" : ""}${t.path ? ` · <span title="${esc(t.path)}">${esc(t.path.split("/").pop())}${t.line ? ":" + t.line : ""}</span>` : ""}${t.outdated ? " · outdated" : ""}</span></summary>
+        <div class="rv-t-x">${t.why ? `<p><b>AI:</b> ${txt(t.why)}</p>` : ""}${t.fix ? `<p class="muted">Fix: ${txt(t.fix)}</p>` : ""}<div class="md">${md(t.body || "")}</div>${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer" class="small">Open on GitHub ↗</a>` : ""}</div></details>
+      <span class="seg">${[["fix", "Fix"], ["wont", "Won't fix"]].map(([k, l]) => `<button class="pill wide${t.decision === k ? " on" : ""}" data-dec="${k}"${dis}>${l}</button>`).join("")}</span></div>
+      ${t.decision === "fix" || t.decision === "wont" ? `<div class="rv-reply"><span class="muted">↳</span><textarea class="inline-edit" rows="1"${dis}>${esc(reply)}</textarea></div>` : ""}
+      ${t.decision === "wont" && reasons.length > 1 ? `<div class="reasons">${reasons.map((r, i) => `<button class="chip${reply === r ? " on" : ""}" data-reason="${i}" title="${esc(r)}"${dis}>${esc(r.length > 48 ? r.slice(0, 46) + "…" : r)}</button>`).join("")}</div>` : ""}</div>`;
+  };
+  state.trReasons = Object.fromEntries(all.map(t => [t.id, [t.reply_wont].concat(t.wont_reasons || []).filter(Boolean)]));
+  const top = open.filter(t => t.worth == null || t.worth >= 30 || t.decision), low = open.filter(t => !top.includes(t));
+  const ready = open.filter(t => t.decision === "fix" || t.decision === "wont").length;
+  const main = `<div class="rv-main">
+    ${working ? `<p class="rv-note" data-rv-working><span class="spin"></span>The AI is ${rv.job === "triage" ? "reading the comments" : "answering"} · started ${ago(d.working_since)}</p>` : ""}
+    ${!working && ((d.chat || []).slice(-1)[0] || {}).error ? `<p class="rv-note bad">The last AI run failed (details on the right).<button class="btn small" data-tr-start${unlocked ? "" : " disabled"}>Try again</button></p>` : ""}
+    <div class="rv-card rv-list-card">${top.length ? top.map(row).join("") : '<p class="muted small">Nothing worth fixing is open.</p>'}</div>
+    ${low.length ? `<details class="rv-card"><summary class="rv-card-h">${low.length} low-score ${low.length === 1 ? "thread" : "threads"}<span class="muted small">under 30%</span></summary>${low.map(row).join("")}</details>` : ""}
+    ${closed.length ? `<details class="rv-card"><summary class="rv-card-h">${closed.length} resolved or answered</summary>${closed.map(t => `<div class="meta">${esc(t.author || "?")}${t.path ? ` · ${esc(t.path.split("/").pop())}` : ""} · ${t.posted ? `replied (${t.posted.decision === "fix" ? "fixing" : "won't fix"})` : "resolved"}</div>`).join("")}</details>` : ""}
+    <div class="rv-bar"><span class="muted small">${ready} ${ready === 1 ? "reply" : "replies"} ready${low.length ? ` · ${low.length} low-score hidden` : ""}</span><span class="grow"></span><span class="muted small" id="rv-saved"></span><button class="btn primary" data-tr-preview${ready && !working && unlocked ? "" : " disabled"}>Send replies</button></div></div>`;
+  return `${header}<div class="rv">${main}${rvChat(Object.assign({ mode: "triage" }, d), working, dis)}</div>`;
+}
+
+function rvDraft(root) {
+  const g = s => $(s, root);
+  return {
+    summary: g("#rv-summary") ? g("#rv-summary").value : undefined,
+    event: g("#rv-event") ? g("#rv-event").value : undefined,
+    include_ratings: g("#rv-rates") ? g("#rv-rates").checked : undefined,
+    ratings: $$(".pills", root).map(p => ({ area: p.dataset.area, mine: +(($(".pill.on", p) || {}).dataset || {}).v || null })),
+    questions: $$(".rv-q", root).map(q => ({ id: q.dataset.q, answer: $("textarea", q).value })),
+    comments: $$(".rv-c", root).map(c => ({ id: c.dataset.c, path: c.dataset.path, line: c.dataset.line ? +c.dataset.line : null, severity: c.dataset.sev, source: c.dataset.src, body: $("textarea", c).value, include: $("input[type=checkbox]", c).checked })),
+  };
+}
+let rvTimer = null, rvPoll = null;
+function wireReview(root) {
+  const d = state.pr, n = d && d.number;
+  clearTimeout(rvPoll);
+  $$("[data-rv-refresh]", root).forEach(b => b.onclick = () => { state.prFresh = true; if (n) api("prs", { fresh: "1" }).then(() => route({ soft: true })); else route(); });
+  if (!n || !/^#review\/(yours\/)?\d+/.test(location.hash)) return;
+  const act = async (what, extra, btn, label) => {
+    if (btn) { btn.disabled = true; btn.textContent = label || "Working…"; }
+    const r = await save(what, Object.assign({ repo: state.repo, n }, extra || {}));
+    if (!r.ok) { alert(String(r.why || "That didn't work.").replace(/`/g, "")); if (btn) btn.disabled = false; }
+    route({ soft: true });
+    return r;
+  };
+  const msgs = $("#rv-msgs", root);
+  if (msgs) msgs.scrollTop = msgs.scrollHeight;
+  $$("[data-rv-start]", root).forEach(b => b.onclick = () => act("pr_start", {}, b, "Setting up the worktree…"));
+  $$("[data-rv-update]", root).forEach(b => b.onclick = () => act("pr_update", {}, b, "Pulling…"));
+  $$("[data-rv-close]", root).forEach(b => b.onclick = () => confirm("Remove this review's worktree? The chat and draft are kept.") && act("pr_close", {}, b));
+  const send = $("[data-rv-ask]", root), box = $("#rv-text", root);
+  if (send) send.onclick = () => box.value.trim() && act("pr_ask", { text: box.value }, send, "Sending…");
+  if (box) box.onkeydown = e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send.click(); };
+  $$("[data-rv-discuss]", root).forEach(b => b.onclick = e => { e.preventDefault(); const q = (d.draft.questions || []).find(x => x.id === b.dataset.rvDiscuss); box.value = `About ${q.id} (“${q.ask}”): `; box.focus(); });
+  const CAP = 66;  // comments show three lines until you click into them
+  const grow = t => { t.style.height = "auto"; const full = t.scrollHeight + 2, cap = t.closest(".rv-c, .rv-reply") && document.activeElement !== t;
+    t.style.height = (cap ? Math.min(full, CAP) : full) + "px"; t.classList.toggle("clipped", cap && full > CAP); };
+  $$(".inline-edit", root).forEach(t => { grow(t); ["input", "focus", "blur"].forEach(ev => t.addEventListener(ev, () => grow(t))); });
+  $$("[data-more]", root).forEach(a => a.onclick = e => { e.preventDefault(); const m = a.previousElementSibling; m.hidden = false; $$(".inline-edit", m).forEach(grow); a.remove(); });
+  const saved = $("#rv-saved", root);
+  const persist = () => { clearTimeout(rvTimer); if (saved) saved.textContent = "…"; rvTimer = setTimeout(async () => { const r = await save("pr_draft", { repo: state.repo, n, draft: rvDraft(root) }); if (saved) saved.textContent = r.ok ? "saved" : (r.why || "not saved"); }, 700); };
+  $$(".rv-main textarea, .rv-main select, .rv-main input", root).filter(el => !el.closest(".rv-t")).forEach(el => el.addEventListener(el.tagName === "TEXTAREA" ? "input" : "change", persist));
+  $$("[data-ev]", root).forEach(b => b.onclick = () => { $$("[data-ev]", root).forEach(x => x.classList.toggle("on", x === b)); $("#rv-event", root).value = b.dataset.ev; persist(); });
+  $$(".pills .pill", root).forEach(b => b.onclick = () => { const on = b.classList.contains("on"); $$(".pill", b.parentNode).forEach(x => x.classList.remove("on")); if (!on) b.classList.add("on"); persist(); });
+  $$("[data-rv-drop]", root).forEach(b => b.onclick = () => { b.closest(".rv-c").remove(); persist(); });
+  $$("[data-rv-preview]", root).forEach(b => b.onclick = async () => {
+    clearTimeout(rvTimer);
+    await save("pr_draft", { repo: state.repo, n, draft: rvDraft(root) });
+    const o = await api("pr_outgoing", { n });
+    if (o.available === false) return alert(o.why);
+    openDrawer(`Post to #${n}?`, `<div class="readable"><p><b>${esc(EVENT_SAY[o.event] || o.event)}</b> · ${plural(o.comments.length, "comment")} on lines${o.in_body ? ` · ${o.in_body} in the summary` : ""}</p>
+      <div class="md box pad">${md(o.body || "_No summary._")}</div>
+      ${o.comments.map(c => `<div class="box pad mt"><code>${esc(c.path)}:${c.line}</code><div class="md">${md(c.body)}</div></div>`).join("")}
+      <p class="mt"><button class="btn primary" id="rv-post-go">Post to GitHub</button> <span class="muted small">as you, on commit ${esc(o.commit_id.slice(0, 7))}</span></p></div>`);
+    $("#rv-post-go").onclick = async e => { if (!confirm("Post this review to GitHub now?")) return; const r = await act("pr_post", {}, e.target, "Posting…"); if (r.ok) closeDrawer(); };
+  });
+  wireTriage(root, n, act);
+  if ($("[data-rv-working]", root)) rvPoll = setTimeout(() => { if (/^#review\/(yours\/)?\d+/.test(location.hash) && !document.activeElement.closest(".rv-send")) route({ soft: true }); }, 4000);
+}
+
+function wireTriage(root, n, act) {
+  $$("[data-tr-start]", root).forEach(b => b.onclick = () => act("pr_triage", {}, b, "Reading…"));
+  const saved = $("#rv-saved", root);
+  const decisions = () => Object.fromEntries($$(".rv-t", root).map(c => [c.dataset.t, { decision: ($(".seg .pill.on", c) || { dataset: {} }).dataset.dec || null, reply: $("textarea", c) ? $("textarea", c).value : undefined }]));
+  const persist = (rerender) => { clearTimeout(rvTimer); if (saved) saved.textContent = "…"; rvTimer = setTimeout(async () => { const r = await save("pr_decide", { repo: state.repo, n, decisions: decisions() }); if (saved) saved.textContent = r.ok ? "saved" : (r.why || "not saved"); if (rerender) route({ soft: true }); }, rerender ? 0 : 700); };
+  $$(".rv-t .seg .pill", root).forEach(b => b.onclick = () => { const c = b.closest(".rv-t"), on = b.classList.contains("on"); $$(".seg .pill", c).forEach(x => x.classList.remove("on")); if (!on) b.classList.add("on"); const ta = $("textarea", c); if (ta) ta.value = ""; persist(true); });
+  $$(".rv-t [data-reason]", root).forEach(b => b.onclick = () => { const c = b.closest(".rv-t"); $("textarea", c).value = state.trReasons[c.dataset.t][+b.dataset.reason]; $$("[data-reason]", c).forEach(x => x.classList.toggle("on", x === b)); persist(); });
+  $$(".rv-t textarea", root).forEach(t => t.addEventListener("input", () => persist()));
+  $$("[data-tr-preview]", root).forEach(b => b.onclick = async () => {
+    clearTimeout(rvTimer);
+    await save("pr_decide", { repo: state.repo, n, decisions: decisions() });
+    const o = await api("triage_out", { n });
+    openDrawer(`Post ${o.replies.length} ${o.replies.length === 1 ? "reply" : "replies"} to #${n}?`, `<div class="readable">${o.replies.map(r => `<div class="box pad mt"><div class="meta">to @${esc(r.author || "?")}${r.path ? ` · <code>${esc(r.path)}${r.line ? ":" + r.line : ""}</code>` : ""} · ${r.decision === "fix" ? "fixing" : "won't fix"}</div><div class="md">${md(r.body)}</div></div>`).join("")}
+      <p class="mt"><button class="btn primary" id="tr-post-go">Post to GitHub</button> <span class="muted small">as you, each under its comment</span></p></div>`);
+    $("#tr-post-go").onclick = async e => { if (!confirm("Post these replies to GitHub now?")) return; const r = await act("pr_replies", {}, e.target, "Posting…"); if (r.ok) closeDrawer(); };
+  });
+}
+
+/* Did Claude use LFG in this repo's replies? From each reply's **LFG:** line, recorded by the Stop hook. */
+function lfgReplies(r) {
+  const c = (r || {}).counts || {}, total = Object.values(c).reduce((a, x) => a + x, 0);
+  if (!total) return "";
+  const why = x => x.kind === "missing" ? '<span class="muted">The reply didn\'t say whether it used LFG</span>' : txt(x.detail || "no reason given");
+  return section(`${repoName()}: did Claude use LFG?`, `<div class="cols">${stat("Used an LFG skill", n(c.skill || 0), `of ${n(total)} ${total === 1 ? "reply" : "replies"}`)}${stat("Used LFG's tools", n(c.tools || 0), "graphs, dev-graph, lfg commands")}${stat("Didn't use LFG", n(c["not-used"] || 0), "each with its reason, below")}${stat("Didn't say", n(c.missing || 0), c.missing ? "replies without the LFG line" : "every reply said")}</div>
+    ${(r.recent || []).length ? `<div class="box mt">${table(r.recent, [{ k: "ts", label: "When", html: x => `<span class="nowrap">${ago(x.ts)}</span>` }, { k: "detail", label: "Why not", html: why }], { filter: false })}</div>` : ""}`, "last 30 days");
+}
+
+PAGES.integrations = integrationsPage;
+
 PAGES.usage = async () => {
   const [d, H] = await Promise.all([api("usage", { days: UR.days > 30 ? 90 : 30 }), api("headroom", { days: UR.days > 30 ? 90 : 30 })]);
   const hrDay = Object.fromEntries((((H || {}).when || {}).days || []).map(x => [x.day, x]));
@@ -1359,6 +1683,7 @@ PAGES.usage = async () => {
       : `solid: what was sent (new text, and text reused from cache, hidden until you click its key) and what Claude wrote back. Dashed on top: what Headroom removed before sending, so the whole bar is what would have been sent without it${hrPending ? " (Headroom's numbers are still loading)" : ""}.`)}
     ${(d.models || []).length ? section("By model", `<div class="box">${table(d.models, [{ k: "model", label: "Model" }, { k: "input", label: "Sent", num: true, html: r => compact((r.input || 0) + (r.cache_read || 0) + (r.cache_write || 0)) }, { k: "output", label: "Written", num: true, html: r => compact(r.output) }, { k: "usd", label: "Cost", num: true, html: r => r.usd != null ? usd(r.usd) : "" }], { filter: false })}</div>`, "last " + (d.days || []).length + " days") : ""}
     <div id="hr-detail"><div class="loading">Reading Headroom's logs…</div></div>
+    ${lfgReplies(d.replies)}
     ${(d.runs || []).length ? section(`${repoName()}, by run`, `<div class="box">${table(d.runs, [{ k: "run", label: "Run", html: r => r.run && r.run !== "(no run)" ? `<a href="#runs/${encodeURIComponent(r.run)}">${esc(runName({ slug: r.run.slice(14) }))}</a>` : '<span class="muted">Outside a run</span>' }, { k: "input", label: "Sent", num: true, html: r => compact((r.input || 0) + (r.cache_read || 0)) }, { k: "output", label: "Written", num: true, html: r => compact(r.output) }], { filter: false })}</div>`, "this project only, all time") : ""}`;
 };
 function usageDetail(rows, i) {
@@ -1405,7 +1730,7 @@ PAGES.settings = async () => {
   state.settings = { cfg, sk, cm, unlocked };
   return `${head("Settings", unlocked ? "Changes are checked, refused if they look like a password or key, and backed up." : "")}
     ${unlocked ? "" : `<div class="callout">Read-only. To make changes, run <code>lfg ui</code> in your own terminal; it opens this page unlocked.</div>`}
-    <div class="section">${tabs("settings", [["claudecode", "Claude Code", null, settingsClaudeCode], ["general", "General", null, settingsGeneral], ["tools", "Connections", null, settingsTools], ["ollama", "Local AI models", null, settingsOllama], ["storage", "Disk space", null, settingsStorage], ["rules", "Rules", null, settingsRules], ["claudemd", "Your instructions", null, settingsClaude]])}</div>`;
+    <div class="section">${tabs("settings", [["claudecode", "Claude Code", null, settingsClaudeCode], ["general", "General", null, settingsGeneral], ["storage", "Disk space", null, settingsStorage], ["rules", "Rules", null, settingsRules], ["claudemd", "Your instructions", null, settingsClaude]])}</div>`;
 };
 
 // ------------------------------------------------------------------ skills: every skill Claude Code loads, from every source
@@ -1460,19 +1785,30 @@ PAGES.help = async () => {
 };
 
 // ------------------------------------------------------------------ shell
-const NAV_GROUPS = [["Your work", ["home", "runs", "issues", "checks"]], ["This project", ["code", "docs", "knowledge"]], ["LFG", ["usage", "skills", "settings", "help"]]];
+const NAV_GROUPS = [["Your work", ["home", "runs", "issues", "review", "checks"]], ["This project", ["code", "docs", "knowledge"]], ["LFG", ["usage", "skills", "integrations", "settings", "help"]]];
 /* 24px line icons, drawn for these pages (stroke = currentColor) */
 const ICON = {
   home: "M3 10.5 12 3l9 7.5M5 9v11h5v-6h4v6h5V9",
   runs: "M5 4l14 8-14 8z",
   issues: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
   checks: "M12 3l8 3v6c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V6zM9 12l2 2 4-4",
+  review: "M4 5h16v11H9l-5 4zM8 9h8M8 12h5",
   code: "M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 5l-3 14",
   docs: "M14 3H6v18h12V7zM14 3v4h4M9 12h6M9 16h6",
   folder: "M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z",
   knowledge: "M4 5.5C6.5 4 9.5 4 12 6c2.5-2 5.5-2 8-.5V19c-2.5-1.5-5.5-1.5-8 .5-2.5-2-5.5-2-8-.5zM12 6v13.5",
   usage: "M4 20V10M10 20V4M16 20v-6M2 20h20",
   skills: "M13 2 4 14h7l-1 8 9-12h-7z",
+  integrations: "M9 3v5M15 3v5M6 8h12v4a6 6 0 0 1-12 0zM12 18v3",
+  refresh: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
+  compress: "M4 9h16M4 15h16M10 4l2 3 2-3M10 20l2-3 2 3",
+  mic: "M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3zM5 11a7 7 0 0 0 14 0M12 18v3",
+  target: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 12h.01",
+  lock: "M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4",
+  box: "M3 7l9-4 9 4-9 4zM3 7v10l9 4 9-4V7M12 11v10",
+  branch: "M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9",
+  "chevron-down": "M6 9l6 6 6-6",
+  "chevron-up": "M6 15l6-6 6 6",
   settings: "M4 7h9M17 7h3M4 17h3M11 17h9M15 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM9 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
   help: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4v.3M12 17h.01",
 };
@@ -1545,6 +1881,8 @@ async function route(opts) {
   mountTables(view); mountTabs(view); wire(view);
   $$("[data-href]", view).forEach(li => li.onclick = () => (location.hash = li.dataset.href));
   if (key === "docs") wireDocs();
+  if (key === "review") wireReview(view);
+  if (key === "checks") { $$('[data-tabs="checks"] .tab', view).forEach(t => t.addEventListener("click", () => setTimeout(() => wireSonar(view), 0))); wireSonar(view); }
   if (key === "usage") { wireUsage(view); loadHeadroom(); }
   if (soft) {
     $$("details", view).forEach((d, i) => { if (open.includes(d.id || "i" + i)) d.open = true; });

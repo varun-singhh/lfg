@@ -34,9 +34,10 @@ preflight: graphs
    - `gh pr checks` (if a PR exists),
    - `gh run list --branch <branch> --limit 5`,
    - `gh run view <id> --log-failed` for any failed run. Summarise the failing step; fix it locally if the failure is in code this change touches.
-8. **AI changes only (gate 6):** run the eval suite; score ≥ baseline − tolerance and cost per call ≤ budget, from `02-design.md`.
-9. **Loop.** Any red check → fix the cause → re-run that check, then `lfg gate` again. Stop after 3 attempts on the same failure and report it with its output (suggest `/fix` for a real bug).
-10. **QA matrix.** Map every acceptance criterion in `01-brief.md` (and each ticket's `verification` in `tasks.json`) to the test(s) that prove it. A criterion with no test fails gate 3 (Express: docs-only criteria are waived, say so).
+8. **SonarQube (when `lfg sonar status` exits 0).** `lfg sonar scan` in the worktree or checkout you are checking. Exit 1 means a bug, vulnerability or security hotspot, or a major-or-worse issue, sits on a line this branch changed: fix each at its cause and scan again (fix the code, never the Sonar config). If GitHub's SonarCloud check failed, `lfg sonar cloud` shows its own verdict; "analysis failed" there is SonarCloud's side, not your code, so say so instead of chasing it.
+9. **AI changes only (gate 6):** run the eval suite; score ≥ baseline − tolerance and cost per call ≤ budget, from `02-design.md`.
+10. **Loop.** Any red check → fix the cause → re-run that check, then `lfg gate` again. Stop after 3 attempts on the same failure and report it with its output (suggest `/fix` for a real bug).
+11. **QA matrix.** Map every acceptance criterion in `01-brief.md` (and each ticket's `verification` in `tasks.json`) to the test(s) that prove it. A criterion with no test fails gate 3 (Express: docs-only criteria are waived, say so).
 
 **Done when:** `lfg gate` exits 0 in this run, `lfg ci-local` exits 0, every criterion maps to a passing test, and `04-qa.md` is written. Otherwise: done when the report below says exactly what is still red.
 

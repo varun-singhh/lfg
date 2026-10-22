@@ -64,6 +64,137 @@ def claude_view():
     }
 
 
+# ---------------------------------------------------------------- the Integrations page
+
+def _safe(fn, default=None):
+    try:
+        return fn()
+    except Exception:  # one broken integration must never take the page down
+        return default
+
+
+def _status_core(SU):
+    miss = [t for t in ("code-review-graph", "graphify") if not SU.which(t)]
+    return ("bad", "Missing: %s" % ", ".join(miss)) if miss else ("ok", "code-review-graph and graphify installed")
+
+
+def _status_knowledge(SU):
+    from . import omnigraph as OG
+    gs = _safe(lambda: OG.status()["graphs"], {}) or {}
+    if not gs:
+        return "", "Not set up"
+    down = [n for n, g in gs.items() if not g.get("ready")]
+    loose = [n for n, g in gs.items() if g.get("ready") and not g.get("launchd")]
+    if down:
+        return "bad", "Not answering: %s" % ", ".join(down)
+    if loose:
+        return "warn", "Running, but not kept up by its login agent: %s (Restart fixes it)" % ", ".join(loose)
+    return "ok", "dev-graph and second-brain running"
+
+
+def _status_headroom(SU):
+    from . import headroom as HR
+    hr = _safe(HR.status, {}) or {}
+    if hr.get("live"):
+        return "ok", "Running, forwarding to %s" % hr.get("upstream")
+    if hr.get("scope") not in (None, "off"):
+        return "warn", "Set to route %s, but the proxy is down" % hr.get("scope")
+    return "", "Installed; not routing"
+
+
+def _status_sonarqube(SU):
+    from . import sonar as SQ
+    st = _safe(SQ.server_state, "missing")
+    if st != "up":
+        return ("warn" if st != "missing" else ""), "Server %s" % st
+    priv = _safe(SQ.privacy_applied)
+    shares = (C.config().get("sonarqube") or {}).get("telemetry")
+    if priv is False:
+        return "warn", "Running at %s; the stats setting changed and needs a restart to apply" % SQ.URL
+    return "ok", "Running at %s%s" % (SQ.URL, "; shares usage stats" if shares else "; fully local")
+
+
+def _status_dictate(SU):
+    from . import dictate
+    st = _safe(dictate.status, {}) or {}
+    return ("ok" if st.get("agent") else "warn"), "%s to talk · %s%s" % (
+        st.get("shortcut_label", "?"), "running" if st.get("agent") else "not running",
+        " · %s" % st["error"] if st.get("error") else "")
+
+
+def _status_pentest(SU):
+    from . import settings as S
+    o = _safe(S.ollama_models, {}) or {}
+    model = C.config()["pentest"].get("model") or ""
+    bits = ["Strix %s" % ("installed" if SU.which("strix") else "not installed"),
+            "Ollama %s" % ("running" if o.get("running") else "not running"),
+            "model: %s" % (model or "none chosen")]
+    ok = SU.which("strix") and o.get("running") and model
+    return ("ok" if ok else "warn"), " · ".join(bits)
+
+
+def _status_tools(name):
+    def f(SU):
+        miss = SU.pack_missing(name)
+        return ("warn", "Missing: %s" % ", ".join(m.split(":", 1)[-1] for m in miss)) if miss else ("ok", "Installed")
+    return f
+
+
+def _status_shipcheck(SU):
+    if not SU.which("docker"):
+        return "bad", "Docker isn't installed"
+    up = C.run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=10)
+    return ("ok", "Docker %s running" % up.stdout.strip()) if up.returncode == 0 else ("warn", "Docker isn't running")
+
+
+def _status_linear(SU):
+    return ("ok", "Connected through /mcp") if not SU.pack_missing("linear") else \
+        ("warn", "Not signed in: run /mcp in Claude Code and sign in to Linear")
+
+
+STATUS = {"core": _status_core, "knowledge": _status_knowledge, "headroom": _status_headroom,
+          "sonarqube": _status_sonarqube, "dictate": _status_dictate, "pentest": _status_pentest,
+          "security": _status_tools("security"), "shipcheck": _status_shipcheck, "linear": _status_linear}
+ORDER = ["core", "knowledge", "headroom", "sonarqube", "dictate", "pentest", "security", "shipcheck", "linear"]
+
+
+def integrations_view():
+    """Every integration on one page: what it is, whether it's on, how it's doing, and its settings."""
+    from . import settings as S
+    from . import setup as SU
+    fields = S.config_view()["fields"]
+    packs = {p["name"]: p for p in SU.packs_view()}
+    out = []
+    for name in ORDER + [n for n in packs if n not in ORDER]:
+        p = packs.get(name)
+        if not p:
+            continue
+        fn = STATUS.get(name) if p["on"] else None
+        tone, line = _safe(lambda f=fn: f(SU), ("", "")) if fn else ("", "")
+        out.append(dict(p, tone=tone, status=line, fields=[f for f in fields if f.get("owner") == name]))
+    from . import hooks as H
+    gh = _safe(H._gh_signed_in)
+    out.append({"name": "github", "title": "GitHub", "about": "Pull requests, CI status and reviews, through the gh "
+                "CLI. Read-only, except the review replies you post yourself from the Reviews page.",
+                "on": True, "fixed": True, "missing": [] if SU.which("gh") else ["gh"],
+                "tone": "ok" if gh else "warn", "status": "Signed in" if gh else "Not signed in: run `gh auth login`",
+                "fields": []})
+    return {"integrations": out, "jobs": JOBS}
+
+
+def omnigraph_restart():
+    from . import omnigraph as OG
+    return {"restarted": [n for n in OG.cfg()["graphs"] if OG.restart(n)]}
+
+
+def sonar_apply():
+    from . import sonar as SQ
+    try:
+        return SQ.apply_privacy(log=lambda m: None)
+    except SQ.Problem as e:
+        raise Invalid(str(e)) from None
+
+
 def _known_root(root):
     from . import setup as SU
     roots = {r["root"] for r in SU.repos_view()["repos"]}

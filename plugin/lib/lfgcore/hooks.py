@@ -138,6 +138,25 @@ CONTEXT = [
 ]
 
 
+# Visibility: the user sees in every reply whether LFG did the work, and why not when it didn't.
+TAG_RULE = (
+    "Use LFG without being asked: when a request fits an LFG skill, use it even if the user didn't type the command "
+    "(a bug or failing test: /lfg:fix; a feature or change: /lfg:lfg; how does X work: /lfg:explain; what does this "
+    "change touch: /lfg:impact; review: /lfg:expert; checks: /lfg:check; security: /lfg:secure; ship: /lfg:ship; "
+    "save a fact: /lfg:note; not sure: /lfg:which). Start every reply to the user with one line saying whether you "
+    "used LFG, so they can see when you deviate from it: `**LFG:** /lfg:<skill>` when you followed an LFG skill or "
+    "agent; `**LFG:** tools only (<which>)` when you used LFG's code graphs, dev-graph, second-brain or `lfg` "
+    "commands without a skill; `**LFG:** not used - <reason>` otherwise, with the real reason in a few words (for "
+    "example: a question about something outside this repo, a one-line change no skill covers, or the user asked "
+    "not to). Never claim LFG was used when it wasn't. Subagent reports and tool calls don't need the line.")
+TAG_REMINDER = ("LFG is on in this repo: use an LFG skill if one fits this request, and start your reply with "
+                "`**LFG:** /lfg:<skill>`, `**LFG:** tools only (<which>)` or `**LFG:** not used - <reason>`.")
+
+
+def _tag_on():
+    return bool((C.config().get("replies") or {}).get("lfg_tag", True))
+
+
 def _gh_signed_in():
     """`gh auth status` touches the network, so its answer is cached for an hour."""
     p = C.lfg_path("state", "gh.json")
@@ -152,7 +171,7 @@ def _gh_signed_in():
 def session_start(data):
     from . import graphs as G
     root, rid = _repo(data)
-    lines = [CONTEXT[0] % C.VERSION] + CONTEXT[1:]
+    lines = [CONTEXT[0] % C.VERSION] + CONTEXT[1:] + ([TAG_RULE] if _tag_on() else [])
     notice = None
     try:
         from . import settings as S
@@ -219,17 +238,21 @@ def session_start(data):
 # ---------------------------------------------------------------- prompt
 
 def prompt(data):
-    """Every prompt, before it is sent: is the Headroom proxy this session goes through still answering? A crash is
+    """Every prompt, before it is sent: a one-line reminder to use LFG and say so (TAG_REMINDER, unless switched off
+    in settings), and is the Headroom proxy this session goes through still answering? A crash is
     restarted by launchd within seconds, but an unloaded agent or a proxy that keeps failing stays down, and Claude
     Code would then retry for minutes with nothing on screen saying why. A refused connection fails at once, so
     this costs a few milliseconds when the proxy is up."""
     from . import headroom as HR
     root, _rid = _repo(data)
-    if not HR.routed(root) or HR.bypassed() or HR.live(timeout=1):
-        return 0
-    back = HR.revive()
-    C.audit("headroom-down", {"restarted": back})
-    print(json.dumps({"systemMessage": "Headroom proxy was down; LFG restarted it." if back else HR.down_message()}))
+    out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": TAG_REMINDER}} \
+        if _tag_on() else {}
+    if HR.routed(root) and not HR.bypassed() and not HR.live(timeout=1):
+        back = HR.revive()
+        C.audit("headroom-down", {"restarted": back})
+        out["systemMessage"] = "Headroom proxy was down; LFG restarted it." if back else HR.down_message()
+    if out:
+        print(json.dumps(out))
     return 0
 
 
@@ -243,7 +266,57 @@ def usage_db():
     db.execute("CREATE TABLE IF NOT EXISTS usage (session TEXT, ts TEXT, repo TEXT, run TEXT, model TEXT, "
                "input INTEGER, output INTEGER, cache_read INTEGER, cache_write INTEGER, "
                "PRIMARY KEY (session, model))")
+    db.execute("CREATE TABLE IF NOT EXISTS replies (prompt TEXT PRIMARY KEY, session TEXT, ts TEXT, repo TEXT, "
+               "kind TEXT, detail TEXT)")
     return db
+
+
+TAG_RX = re.compile(r"^[\W_]{0,6}LFG[*_`\s]{0,4}:[*_`\s]*(.*)$", re.I)
+
+
+def reply_tag(text):
+    """(kind, detail) from a reply's LFG line: skill (`/lfg:fix`), tools (`tools only (...)`), not-used (`not used -
+    why`), or missing when the reply's first lines carry no LFG line."""
+    for line in (text or "").strip().splitlines()[:3]:
+        m = TAG_RX.match(line.strip())
+        if not m:
+            continue
+        rest = m.group(1).strip().strip("*_` ").strip()
+        low = rest.lower()
+        if low.startswith("not used"):
+            return "not-used", re.sub(r"^not used\W*", "", rest, flags=re.I)[:300]
+        if low.startswith("tools"):
+            return "tools", re.sub(r"^tools( only)?\W*", "", rest, flags=re.I).strip("() ")[:300]
+        return "skill", rest[:300]
+    return "missing", ""
+
+
+def _last_reply(path):
+    """(prompt id, first text the assistant showed after the latest user prompt) from the end of the transcript."""
+    if not path or not os.path.exists(path):
+        return None, ""
+    with open(path, "rb") as f:
+        f.seek(max(0, os.path.getsize(path) - 2_000_000))
+        lines = f.read().decode("utf-8", "replace").splitlines()
+    prompt_id, text = None, ""
+    for line in lines:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("isSidechain") or ev.get("isMeta"):
+            continue
+        msg = ev.get("message") or {}
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if ev.get("type") == "user":
+            typed = isinstance(content, str) or (isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "text" for b in content))
+            if typed and not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content or []):
+                prompt_id, text = ev.get("uuid") or ev.get("timestamp"), ""
+        elif ev.get("type") == "assistant" and prompt_id and not text and isinstance(content, list):
+            text = next((b.get("text") or "" for b in content if isinstance(b, dict) and b.get("type") == "text"
+                         and (b.get("text") or "").strip()), "")
+    return prompt_id, text
 
 
 def _transcript_usage(path, session=""):
@@ -295,6 +368,15 @@ def stop(data):
                            (data.get("session_id", "?"), C.now_iso(), rid or "", os.path.basename(run or ""),
                             model, t[0], t[1], t[2], t[3]))
         db.close()
+    if _tag_on():
+        prompt_id, text = _last_reply(data.get("transcript_path"))
+        if prompt_id and text:
+            kind, detail = reply_tag(text)
+            db = usage_db()
+            with db:
+                db.execute("INSERT OR REPLACE INTO replies VALUES (?,?,?,?,?,?)",
+                           (prompt_id, data.get("session_id", "?"), C.now_iso(), rid or "", kind, detail))
+            db.close()
     return 0
 
 

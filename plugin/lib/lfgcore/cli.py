@@ -706,6 +706,80 @@ def cmd_headroom(a):
     return 0 if out["live"] or out["scope"] == "off" else 1
 
 
+def _sonar_print(res, limit=40):
+    gate = {"OK": "passed", "ERROR": "FAILED", "WARN": "warning"}.get(res.get("gate"), res.get("gate") or "unknown")
+    m = res.get("measures") or {}
+    print("SonarQube (local): quality gate %s · %s bugs, %s vulnerabilities, %s code smells, %s hotspots, %s%% "
+          "duplication" % (gate, m.get("bugs", "?"), m.get("vulnerabilities", "?"), m.get("code_smells", "?"),
+                           m.get("security_hotspots", "?"), m.get("duplicated_lines_density", "?")))
+    for c in res.get("conditions") or []:
+        if c.get("status") == "ERROR":
+            print("  gate condition failed: %s = %s (limit %s %s)" % (c["metricKey"], c.get("actualValue"),
+                                                                      c.get("comparator"), c.get("errorThreshold")))
+    print("On your change (%d changed file(s) against %s): %d issue(s)" % (
+        res.get("changed_files", 0), (res.get("base") or "?")[:12], res.get("mine", 0)))
+    for r in [r for r in res.get("issues") or [] if r["mine"]][:limit]:
+        print("  %s:%s  %s %s  %s  [%s]" % (r["path"], r.get("line") or "-", r.get("severity"), r.get("kind"),
+                                            r.get("message"), r.get("rule")))
+    print("Everything: %s" % res.get("url"))
+
+
+def _sonar_blocking(res):
+    """What fails `lfg sonar scan`: a bug, vulnerability or hotspot, or a major-or-worse issue, on changed lines."""
+    return [r for r in res.get("issues") or [] if r["mine"] and (
+        r.get("kind") in ("BUG", "VULNERABILITY", "SECURITY_HOTSPOT") or
+        str(r.get("severity")) in ("BLOCKER", "CRITICAL", "MAJOR", "HIGH"))]
+
+
+def cmd_sonar(a):
+    from . import sonar as SQ
+    try:
+        if a.action == "setup":
+            out = SQ.setup(log=lambda m: print(m))
+            print("SonarQube is %s at %s. `lfg sonar login` shows the admin password." % (out["state"], out["url"]))
+            return 0
+        if a.action == "status":
+            st = SQ.server_state()
+            print("SonarQube: %s at %s%s" % (st, SQ.URL, "" if SQ.creds().get("token") else
+                                             " (not set up: lfg add sonarqube)"))
+            return 0 if st == "up" else 1
+        if a.action == "login":
+            c = SQ.creds()
+            if not c.get("password"):
+                C.die("not set up yet: lfg add sonarqube", 1)
+            print("%s\nuser: %s\npassword: %s" % (SQ.URL, c["user"], c["password"]))
+            return 0
+        if a.action == "stop":
+            return 0 if SQ.stop() else 1
+        if a.action == "remove":
+            _print(SQ.remove(volumes=a.data))
+            return 0
+        root, rid = C.need_repo()
+        if a.action == "cloud":
+            res = SQ.cloud(root, a.base or "HEAD")
+            if a.json:
+                _print(res)
+            elif not res or not res.get("found"):
+                print("No SonarCloud check on %s (not pushed yet, or the repo doesn't use SonarCloud)."
+                      % ((res or {}).get("sha") or "HEAD")[:12])
+            else:
+                verdict = res.get("conclusion") or res.get("status")
+                print("SonarCloud on %s: %s%s\n%s\n%s" % (res["sha"][:12], verdict,
+                                                         " - " + res["title"] if res.get("title") else "",
+                                                         res.get("summary") or "", res.get("url") or ""))
+            return 0
+        res = SQ.scan(rid, root, base=a.base, log=lambda m: print(m)) if a.action == "scan" else SQ.last(rid)
+        if not res:
+            C.die("no scan yet: lfg sonar scan", 1)
+        if a.json:
+            _print(res)
+        else:
+            _sonar_print(res)
+        return 1 if a.action == "scan" and _sonar_blocking(res) else 0
+    except SQ.Problem as e:
+        C.die(str(e), 2)
+
+
 def cmd_omnigraph(a):
     from . import omnigraph as OG
     if a.action in ("serve", "mcp") and not a.name:
@@ -893,6 +967,12 @@ def main(argv=None):
     us.add_argument("--json", action="store_true")
     ve = sp.add_parser("vendor")
     ve.add_argument("action", choices=["status", "sync", "update"])
+    sq = sp.add_parser("sonar", help="local SonarQube: find what SonarCloud would fail, before you push")
+    sq.add_argument("action", choices=["setup", "status", "scan", "issues", "cloud", "login", "stop", "remove"])
+    sq.add_argument("--base", help="scan: what 'your change' is measured against (default: origin's default branch)"
+                                   "; cloud: the commit to look up (default HEAD)")
+    sq.add_argument("--data", action="store_true", help="remove: also delete the analysis data volumes")
+    sq.add_argument("--json", action="store_true")
     og = sp.add_parser("omnigraph", help="local dev-graph + second-brain (setup, status, restart)")
     og.add_argument("action", choices=["setup", "status", "restart", "serve", "mcp"])
     og.add_argument("name", nargs="?", help="second-brain or dev-graph (serve/mcp/restart)")
@@ -971,7 +1051,8 @@ def main(argv=None):
     return {"init": cmd_init, "graphs": cmd_graphs, "run": cmd_run, "rule": cmd_rule, "repo": cmd_repo,
             "lane": cmd_lane, "gate": cmd_gate, "ci-local": cmd_ci_local, "secure": cmd_secure,
             "pentest": cmd_pentest, "shipcheck": cmd_shipcheck, "watch": cmd_watch, "feedback": cmd_feedback,
-            "usage": cmd_usage, "vendor": cmd_vendor, "omnigraph": cmd_omnigraph, "headroom": cmd_headroom,
+            "usage": cmd_usage, "vendor": cmd_vendor, "omnigraph": cmd_omnigraph, "sonar": cmd_sonar,
+            "headroom": cmd_headroom,
             "playbooks": cmd_playbooks, "issue": cmd_issue, "worktree": cmd_worktree, "setup": cmd_setup,
             "enable": cmd_enable, "disable": cmd_disable, "packs": cmd_packs, "changes": cmd_changes,
             "uninstall": cmd_uninstall}[a.cmd](a)

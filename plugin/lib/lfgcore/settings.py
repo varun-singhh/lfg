@@ -66,6 +66,8 @@ FIELDS = [
     ("headroom.port", "Headroom port", "int", "Local proxy port (restart Claude Code after changing).",
      (1024, 65535)),
     ("ui.port", "Dashboard port", "int", "Used the next time you run lfg ui.", (1024, 65535)),
+    ("replies.lfg_tag", "Say whether LFG was used", "bool", "In LFG repos, Claude starts each reply with the LFG "
+                                                           "skill or tools it used, or why it didn't use LFG.", None),
     ("storage.limit_mb", "Disk space limit (MB)", "int", "Above this, Settings → Disk space offers to delete old "
                                                           "branches' runs and unused graphs.", (50, 100000)),
     ("storage.idle_graph_days", "Unused graph age (days)", "int", "Graphs not synced for this long are offered "
@@ -85,6 +87,11 @@ FIELDS = [
     ("shipcheck.memory", "Ship check container memory", "str", "Docker --memory, e.g. 1g.", None),
     ("shipcheck.cpus", "Ship check container CPUs", "str", "Docker --cpus, e.g. 1.5.", None),
     ("shipcheck.health_timeout_s", "Ship check health timeout (s)", "int", "", (5, 1800)),
+    ("shipcheck.prune_build_cache", "Ship check: prune Docker build cache", "bool", "After each ship check, delete "
+     "the build cache it made (slower next build, less disk).", None),
+    ("sonarqube.telemetry", "SonarQube: share usage stats with SonarSource", "bool", "Off keeps SonarQube fully "
+     "local: no usage statistics and no update checks. Applying a change restarts SonarQube; your login and "
+     "results are kept.", None),
     ("guard.allow_commits", "Let Claude commit when I ask", "bool", "Commits become an approval prompt instead of "
      "a block. Pushing, merging, rebasing, PRs, secrets and deploys stay blocked.", None),
     ("dictate.shortcut", "Dictate shortcut", "choice", "Hold to talk, double-tap for hands-free.",
@@ -141,9 +148,18 @@ def _coerce(field, raw):
     return v
 
 
+# Which integration (pack) a setting belongs to: it shows on that integration's card, not in Settings → General.
+FIELD_OWNER = {"linear.": "linear", "headroom.": "headroom", "graphs.": "core", "pentest.": "pentest",
+               "secure.": "security", "shipcheck.": "shipcheck", "dictate.": "dictate", "sonarqube.": "sonarqube"}
+
+
+def field_owner(key):
+    return next((v for k, v in FIELD_OWNER.items() if key.startswith(k)), None)
+
+
 def config_view():
     cfg = C.config()
-    return {"fields": [{"key": k, "label": lb, "type": t, "help": h,
+    return {"fields": [{"key": k, "label": lb, "type": t, "help": h, "owner": field_owner(k),
                         "options": list(x) if t == "choice" else None,
                         "min": x[0] if t == "int" else None, "max": x[1] if t == "int" else None,
                         "value": _get(cfg, k)} for k, lb, t, h, x in FIELDS],

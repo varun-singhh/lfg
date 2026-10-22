@@ -62,6 +62,11 @@ PACKS = {
                  "about": "Third-party local proxy that rewrites Claude Code's context to compress it; only LFG "
                           "repos unless you choose everywhere.",
                  "uv": ["headroom-ai"]},
+    "sonarqube": {"title": "SonarQube (local)",
+                  "about": "Runs SonarQube on 127.0.0.1:9000 so you can find and fix what SonarCloud would fail before "
+                           "you push (`lfg sonar scan`). Needs Docker; downloads about 1.5 GB of images. Sets the "
+                           "admin login to a generated password (`lfg sonar login`).",
+                  "cask": ["docker"], "needs_cmd": ["docker"], "custom": "sonarqube"},
     "dictate": {"title": "Dictate",
                 "about": "Hold Option+Space anywhere on your Mac to dictate; on-device speech-to-text (Whistle), "
                          "audio never leaves the Mac. Clean up with Claude (text only) is on by default. "
@@ -141,6 +146,10 @@ def pack_missing(name):
         from . import dictate
         if not dictate.installed():
             miss.append("dictate:model")
+    if p.get("custom") == "sonarqube":
+        from . import sonar
+        if not sonar.creds().get("token"):
+            miss.append("sonarqube:server")
     return miss
 
 
@@ -210,6 +219,11 @@ def add_pack(name, yes=False, log=print, allow_scripts=True):
     if name == "dictate":
         from . import dictate
         notes += dictate.install(log)
+    if name == "sonarqube":
+        from . import sonar
+        res = sonar.setup(log)
+        notes.append("SonarQube is %s at %s; `lfg sonar login` shows the admin password, `lfg sonar scan` checks a "
+                     "repo." % (res["state"], res["url"]))
     if name == "headroom":
         from . import headroom as HR
         res = HR.setup(new_scope=C.config()["headroom"].get("scope") if C.config()["headroom"].get("scope")
@@ -235,6 +249,9 @@ def remove_pack(name):
     if name == "dictate":
         from . import dictate
         dictate.uninstall()
+    if name == "sonarqube":
+        from . import sonar
+        sonar.remove(volumes=False)  # the analysis data stays in its volumes; `lfg sonar remove --data` drops it
     _set_pack(name, False)
     return {"pack": name, "on": False}
 

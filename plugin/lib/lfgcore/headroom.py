@@ -80,14 +80,21 @@ def _local_settings(root):
     return os.path.join(root, ".claude", "settings.local.json")
 
 
-def base_url(root=None):
+def in_desktop_app():
+    """True inside the Claude desktop app, whose environment carries its own API address and sign-in that terminal
+    Claude Code sessions never get."""
+    return os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop" or bool(
+        os.environ.get("CLAUDE_CODE_DESKTOP_APP_VERSION"))
+
+
+def base_url(root=None, use_env=True):
     """The ANTHROPIC_BASE_URL Claude Code uses in `root` (repo local settings first), else user settings, else the
-    process environment. Only this one value is ever read out of the settings files."""
+    process environment (unless `use_env` is off). Only this one value is ever read out of the settings files."""
     for p in ([_local_settings(root)] if root else []) + [_settings_path()]:
         env = (C.read_json(p, {}) or {}).get("env") or {}
         if isinstance(env, dict) and env.get("ANTHROPIC_BASE_URL"):
             return str(env["ANTHROPIC_BASE_URL"])
-    return str(os.environ.get("ANTHROPIC_BASE_URL") or "")
+    return str(os.environ.get("ANTHROPIC_BASE_URL") or "") if use_env else ""
 
 
 def routed(root=None):
@@ -210,7 +217,9 @@ def setup(upstream=None, new_scope=None):
         C.die("scope must be repos or everywhere", 2)
     C.ensure_dir(C.lfg_path("headroom"))
     state = C.read_json(_state_path(), {}) or {}
-    current = base_url()
+    # what terminal Claude Code used before: the desktop app's own address is not it (its gateway takes the app's
+    # sign-in, not the claude.ai login a terminal session sends), so it's never adopted as the upstream
+    current = base_url(use_env=not in_desktop_app())
     if not routed():  # forward to what Claude Code used before (a company gateway), else Anthropic
         state["previous"] = current or None
         state["upstream"] = current if current and not _is_local(current) else DEFAULT_UPSTREAM

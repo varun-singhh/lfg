@@ -903,7 +903,34 @@ def security(rid, branch=None):
                       "manual": [c["check"] for c in checks if c.get("manual")],
                       "failed": [c["check"] for c in checks if c["ok"] is False],
                       "checks": checks, "note": (s.get("part_a") or {}).get("note") or ""})
-    return {"secure": sec, "pentest": pen, "shipcheck": ships}
+    return {"secure": sec, "pentest": pen, "shipcheck": ships, "sonar": sonar_view(rid)}
+
+
+def sonar_view(rid):
+    """The local SonarQube's last scan of this repo, for the Checks page (None when the pack is off)."""
+    from . import setup as SU
+    from . import sonar as SQ
+    if not SU.pack_on("sonarqube") and not SQ.last(rid):
+        return None
+    res = SQ.last(rid) or {}
+    run = C.read_json(C.lfg_path("repos", rid, "sonar-running.json"), None)
+    alive = False
+    if isinstance(run, dict):
+        try:
+            os.kill(int(run.get("pid")), 0)
+            alive = True
+        except (OSError, TypeError, ValueError):
+            pass
+    return {"server": SQ.server_state(), "scanning": run.get("started") if alive else None,
+            "ts": res.get("ts"), "gate": res.get("gate"), "conditions": res.get("conditions") or [],
+            "measures": res.get("measures") or {}, "url": res.get("url"), "base": res.get("base"),
+            "root": res.get("root"), "total": res.get("total", 0), "mine": res.get("mine", 0),
+            "branch": res.get("branch"), "head": res.get("head"), "base_name": res.get("base_name"),
+            "rest_by_kind": dict(collections.Counter(i.get("kind") for i in res.get("issues") or []
+                                                     if not i.get("mine"))),
+            "changed_files": res.get("changed_files", 0),
+            "issues": [i for i in res.get("issues") or [] if i.get("mine")][:300] +
+                      [i for i in res.get("issues") or [] if not i.get("mine")][:200]}
 
 
 def shipcheck_items(s):
@@ -1044,9 +1071,24 @@ def usage(rid, days=30):
         out["runs"] = [dict(zip(["run", "input", "output", "cache_read"], r)) for r in db.execute(
             "SELECT COALESCE(run,'(no run)'), sum(input), sum(output), sum(cache_read) FROM usage WHERE repo=? "
             "GROUP BY 1 ORDER BY 2 DESC LIMIT 30", (rid,))]
+        out["replies"] = _replies(db, rid)
     finally:
         db.close()
     return out
+
+
+def _replies(db, rid):
+    """Whether Claude's replies in this repo said they used LFG (the Stop hook records each reply's `**LFG:**`
+    line): counts for the last 30 days, and the latest replies that didn't use LFG or didn't say."""
+    try:
+        counts = dict(db.execute("SELECT kind, count(*) FROM replies WHERE repo=? AND ts >= date('now','-30 day') "
+                                 "GROUP BY 1", (rid,)).fetchall())
+        recent = [dict(zip(["ts", "kind", "detail"], r)) for r in db.execute(
+            "SELECT ts, kind, detail FROM replies WHERE repo=? AND kind IN ('not-used','missing') "
+            "ORDER BY ts DESC LIMIT 15", (rid,))]
+    except sqlite3.OperationalError:  # no replies recorded yet
+        return {"counts": {}, "recent": []}
+    return {"counts": counts, "recent": recent}
 
 
 # ---------------------------------------------------------------- tools + integrations

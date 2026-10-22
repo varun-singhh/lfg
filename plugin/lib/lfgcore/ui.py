@@ -119,6 +119,9 @@ def api(view, q):
     if view == "claude":
         from . import control as K
         return K.claude_view()
+    if view == "integrations":
+        from . import control as K
+        return K.integrations_view()
     if view == "tours":
         from . import control as K
         return K.tours_view()
@@ -136,6 +139,29 @@ def api(view, q):
         return dash.overview(rid, _arg(q, "branch"))
     if view == "issues":
         return dash.issues(rid, _arg(q, "branch"))
+    if view == "sonar_cloud":
+        from . import sonar as SQ
+        root = dash.repo_root(rid)
+        return (SQ.cloud(root) or {"found": False}) if root and os.path.isdir(root) else {"found": False}
+    if view in ("prs", "pr", "pr_outgoing", "mine", "triage", "triage_out"):
+        from . import prreview as PR
+        root = dash.repo_root(rid)
+        if not root or not os.path.isdir(root):
+            return {"available": False, "why": "LFG doesn't know where this project is on disk"}
+        try:
+            if view == "prs":
+                return PR.pending(rid, root, fresh=_arg(q, "fresh") == "1")
+            if view == "pr":
+                return PR.detail(rid, root, _arg(q, "n"))
+            if view == "mine":
+                return PR.mine(rid, root, fresh=_arg(q, "fresh") == "1")
+            if view == "triage":
+                return PR.triage_detail(rid, root, _arg(q, "n"))
+            if view == "triage_out":
+                return PR.replies_out(rid, _arg(q, "n"))
+            return PR.outgoing(rid, _arg(q, "n"))
+        except PR.Invalid as e:
+            return {"available": False, "why": str(e)}
     if view == "runs":
         return dash.runs(rid, _arg(q, "branch"))
     if view == "run":
@@ -186,6 +212,10 @@ def save(what, body):
         return S.save_rule(body.get("name"), body.get("text"))
     if what == "rule_reset":
         return S.reset_rule(body.get("name"))
+    if what.startswith("pr_"):
+        return pr_action(what, body)
+    if what == "sonar_scan":
+        return sonar_scan(str(body.get("repo") or ""))
     if what == "run_checks":
         return run_checks(_rid({"repo": [str(body.get("repo") or "")]}), body.get("run"))
     if what == "graphs_build":
@@ -199,6 +229,7 @@ def save(what, body):
         "legacy_fix": lambda: K.legacy_fix(body.get("id")),
         "skill_auto": lambda: K.skill_auto(body.get("id"), bool(body.get("auto"))),
         "tour_done": lambda: K.tour_done(body.get("name"), body.get("how")),
+        "omnigraph_restart": K.omnigraph_restart, "sonar_apply": K.sonar_apply,
     }
     if what in actions:
         res = actions[what]()
@@ -220,6 +251,58 @@ def build_graphs(rid, what):
     else:
         raise S.Invalid("unknown action")
     return {"started": what}
+
+
+def pr_action(what, body):
+    """The Reviews page's actions. They spend AI tokens (start, ask, update), change the reviewer's draft, remove a
+    worktree, or post to GitHub (only `pr_post`, sent by the Post button after the reviewer confirmed)."""
+    from . import prreview as PR
+    rid = str(body.get("repo") or "")
+    root = dash.repo_root(rid) if rid in dash.repo_ids() else None
+    if not root or not os.path.isdir(root):
+        raise S.Invalid("LFG doesn't know where this project is on disk")
+    n = body.get("n")
+    try:
+        if what == "pr_start":
+            return PR.start(rid, root, n)
+        if what == "pr_ask":
+            return PR.ask(rid, root, n, body.get("text"))
+        if what == "pr_draft":
+            return PR.save_draft(rid, n, body.get("draft"))
+        if what == "pr_update":
+            return PR.update(rid, root, n)
+        if what == "pr_post":
+            return PR.post(rid, root, n)
+        if what == "pr_close":
+            return PR.close(rid, root, n)
+        if what == "pr_triage":
+            return PR.triage(rid, root, n)
+        if what == "pr_decide":
+            return PR.decide(rid, n, body.get("decisions"))
+        if what == "pr_replies":
+            return PR.post_replies(rid, root, n)
+    except PR.Invalid as e:
+        raise S.Invalid(str(e)) from None
+    raise S.Invalid("unknown action")
+
+
+def sonar_scan(rid):
+    """Start `lfg sonar scan` for the repo's checkout in the background (the Checks page's Scan now button)."""
+    import subprocess
+    import sys
+    root = dash.repo_root(rid) if rid in dash.repo_ids() else None
+    if not root or not os.path.isdir(root):
+        raise S.Invalid("LFG doesn't know where this project is on disk")
+    if (dash.sonar_view(rid) or {}).get("scanning"):
+        return {"started": False, "running": True}
+    lfg = C.lfg_bin() if os.path.exists(C.lfg_bin()) else os.path.abspath(sys.argv[0])
+    log = os.path.join(C.ensure_dir(C.lfg_path("repos", rid)), "sonar-scan.log")
+    fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as out:
+        p = subprocess.Popen([sys.executable, lfg, "sonar", "scan"], cwd=root, stdout=out, stderr=out,
+                             stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    C.write_json(C.lfg_path("repos", rid, "sonar-running.json"), {"pid": p.pid, "started": C.now_iso()})
+    return {"started": True}
 
 
 def run_checks(rid, run):

@@ -98,6 +98,8 @@ def prune(root, idle_s=86400):
     for w in listing(root):
         if not w["lfg"] or time.time() - _last_used(w["path"]) < idle_s:
             continue
+        if os.path.basename(w["path"]).startswith("review-pr-"):
+            continue  # a PR review from the dashboard: removed from its Reviews page when the reviewer is done
         if not os.path.isdir(w["path"]):
             continue  # folder deleted by hand: `git worktree prune` territory, not ours
         try:

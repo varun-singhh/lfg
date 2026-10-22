@@ -474,11 +474,13 @@ class HeadroomTest(unittest.TestCase):
                 self.assertIn("Headroom proxy: up.", self.session_start_text())
 
     def prompt_out(self, live, revived=None):
+        """The prompt hook's Headroom part only: the LFG reminder is switched off (LfgTagTest covers it)."""
         import io
         from contextlib import redirect_stdout
         from lfgcore import hooks
         buf = io.StringIO()
         with mock.patch.object(hooks, "_repo", return_value=(None, None)), \
+                mock.patch.object(hooks, "_tag_on", return_value=False), \
                 mock.patch.object(HR, "live", return_value=live), \
                 mock.patch.object(HR, "revive", return_value=revived) as rv, \
                 mock.patch.object(C, "audit"), redirect_stdout(buf):
@@ -1253,6 +1255,348 @@ class RunChecksTest(unittest.TestCase):
             self.assertTrue(dash.run_detail(rid, "20261003-0000-now")["checking"])  # its pid is alive
             self.assertEqual(ui.run_checks(rid, "20261003-0000-now"), {"started": False, "running": True})
             self.assertEqual(len(started), 1)
+
+
+class PrReviewTest(unittest.TestCase):
+    """The Reviews page's flow against a real local "origin" that has refs/pull/1/head; gh and claude are faked."""
+
+    def setUp(self):
+        from lfgcore import prreview as PR
+        self.PR = PR
+        top = tempfile.mkdtemp(prefix="lfg-pr-")
+        origin, self.root = os.path.join(top, "origin.git"), os.path.join(top, "app")
+        def g(cwd, *a):
+            subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True)
+        g(top, "init", "-q", "--bare", origin)
+        g(top, "init", "-q", "-b", "main", self.root)
+        for k, v in (("user.email", "t@example.com"), ("user.name", "t")):
+            g(self.root, "config", k, v)
+        C.write_text(os.path.join(self.root, "a.py"), "one\ntwo\nthree\n")
+        g(self.root, "add", ".")
+        g(self.root, "commit", "-qm", "base")
+        g(self.root, "remote", "add", "origin", origin)
+        g(self.root, "push", "-q", "origin", "main")
+        g(self.root, "checkout", "-qb", "feature")
+        C.write_text(os.path.join(self.root, "a.py"), "one\ntwo\nthree\nfour\n")
+        g(self.root, "commit", "-qam", "add four")
+        g(self.root, "push", "-q", "origin", "feature:refs/pull/1/head")
+        g(self.root, "checkout", "-q", "main")
+        self.rid = "app-%08x" % (abs(hash(self._testMethodName)) % 16 ** 8)  # each test its own review state
+        self.pr = {"number": 1, "title": "Add four", "author": {"login": "kim"}, "url": "https://github.com/o/app/pull/1",
+                   "baseRefName": "main", "headRefName": "feature", "body": "adds a line"}
+        self.runs = []
+        self.patches = [mock.patch.object(PR, "_pr_view", lambda root, n: self.pr),
+                        mock.patch.object(PR, "_run", lambda rid, root, n, kind, prompt, resume:
+                                          self.runs.append((kind, resume)))]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def test_review_flow_from_worktree_to_post(self):
+        PR, rid, root = self.PR, self.rid, self.root
+        out = PR.start(rid, root, 1)
+        wt = out["worktree"]
+        self.assertEqual(os.path.basename(wt), "review-pr-1")
+        self.assertEqual(C.read_text(os.path.join(wt, "a.py")), "one\ntwo\nthree\nfour\n")  # the PR's code
+        self.assertEqual(subprocess.run(["git", "branch", "--show-current"], cwd=root, capture_output=True,
+                                        text=True).stdout.strip(), "main")  # the user's checkout didn't move
+        self.assertEqual(self.runs, [("review", False)])
+        # the AI's answer arrives: chat + draft
+        res = {"result": "**LFG:** /lfg:expert\n\nLooks fine.\n```json\n" + json.dumps({
+            "summary": "Adds a fourth line.", "verdict": "changes",
+            "ratings": [{"area": "Tests", "score": 2, "why": "no test"}],
+            "questions": [{"id": "Q1", "ask": "Why four?", "why": "scope"}],
+            "comments": [{"id": "C1", "path": "a.py", "line": 4, "body": "Name this.", "severity": "minor"},
+                         {"id": "C2", "path": "a.py", "line": 99, "body": "Elsewhere.", "severity": "nit"}],
+            "context": ["dev-graph Principle p-1"]}) + "\n```"}
+        out_file = os.path.join(PR.folder(rid, 1), "job-1.out")
+        C.write_text(out_file, json.dumps(res))
+        C.write_json(os.path.join(PR.folder(rid, 1), "job.json"), {"pid": 999999999, "kind": "review", "out": out_file})
+        d = PR.detail(rid, root, 1)
+        self.assertEqual(d["review"]["status"], "ready")
+        self.assertEqual(d["review"]["worktree_name"], "review-pr-1")
+        self.assertEqual(d["chat"][-1]["text"], "**LFG:** /lfg:expert\n\nLooks fine.")
+        self.assertEqual([(c["id"], c["inline"]) for c in d["draft"]["comments"]], [("C1", True), ("C2", False)])
+        # the reviewer's own edits survive and decide what is posted
+        PR.save_draft(rid, 1, {"summary": "Please add a test.", "event": "REQUEST_CHANGES",
+                               "ratings": [{"area": "Tests", "mine": 1}],
+                               "comments": [{"id": "C1", "path": "a.py", "line": 4, "body": "Name this.",
+                                             "include": True},
+                                            {"id": "C2", "path": "a.py", "line": 99, "body": "Elsewhere.",
+                                             "include": True}]})
+        o = PR.outgoing(rid, 1)
+        self.assertEqual((o["event"], o["comments"], o["in_body"]),
+                         ("REQUEST_CHANGES", [{"path": "a.py", "line": 4, "side": "RIGHT", "body": "Name this."}], 1))
+        self.assertIn("| Tests | 1/5 |", o["body"])
+        self.assertIn("**a.py:99**: Elsewhere.", o["body"])
+        with self.assertRaises(PR.Invalid):  # a secret never goes out, not even in a draft
+            PR.save_draft(rid, 1, {"summary": "key AKIA" + "ABCDEFGHIJKLMNOP"})
+        sent = []
+        ok = subprocess.CompletedProcess([], 0, json.dumps({"html_url": "https://github.com/o/app/pull/1#r1"}), "")
+        with mock.patch.object(PR, "_gh", lambda root, *a, **k: sent.append((a, json.loads(k["input"]))) or ok):
+            self.assertEqual(PR.post(rid, root, 1)["url"], "https://github.com/o/app/pull/1#r1")
+            with self.assertRaises(PR.Invalid):
+                PR.post(rid, root, 1)  # once only
+        self.assertEqual(sent[0][0][:4], ("api", "-X", "POST", "repos/o/app/pulls/1/reviews"))
+        self.assertEqual(sent[0][1]["event"], "REQUEST_CHANGES")
+        # done: the worktree goes, the chat and draft stay
+        self.assertEqual(PR.close(rid, root, 1), {"closed": True})
+        self.assertFalse(os.path.exists(wt))
+        self.assertTrue(PR.chat(rid, 1))
+
+    def test_chat_keeps_the_reviewers_scores_and_switches(self):
+        PR, rid = self.PR, self.rid
+        PR.start(rid, self.root, 1)
+        PR.save_draft(rid, 1, {"ratings": [{"area": "Tests", "mine": 4}]})
+        PR.apply(rid, 1, {"comments": [{"id": "C9", "body": "General point."}],
+                          "ratings": [{"area": "Tests", "score": 2, "why": "thin"}]})
+        PR.save_draft(rid, 1, {"comments": [{"id": "C9", "body": "General point.", "include": False}]})
+        PR.apply(rid, 1, {"comments": [{"id": "C9", "body": "General point, reworded."}]})
+        d = PR._read(rid, 1, "draft.json", {})
+        tests = [r for r in d["ratings"] if r["area"] == "Tests"][0]
+        self.assertEqual((tests["mine"], tests["ai"]), (4, 2))
+        self.assertEqual((d["comments"][0]["body"], d["comments"][0]["include"]), ("General point, reworded.", False))
+        with self.assertRaises(PR.Invalid):
+            PR.ask(rid, self.root, 1, "  ")
+
+    def test_threads_keep_people_and_bot_inline_comments_only(self):
+        PR = self.PR
+        def node(i, who, body, typ="User"):
+            return {"databaseId": i, "author": {"login": who, "__typename": typ}, "body": body, "url": "u%d" % i}
+        data = {"data": {"repository": {"pullRequest": {
+            "reviewThreads": {"nodes": [
+                {"isResolved": False, "isOutdated": False, "path": "a.py", "line": 4,
+                 "comments": {"nodes": [node(1, "coderabbitai", "<!-- state -->Null check?", "Bot"),
+                                        node(2, "me", "on it")]}},
+                {"isResolved": True, "path": "a.py", "line": 2, "comments": {"nodes": [node(3, "kim", "typo")]}},
+                {"isResolved": False, "path": "a.py", "line": 1, "comments": {"nodes": [node(4, "me", "note")]}}]},
+            "reviews": {"nodes": [node(5, "kim", "Looks good but see a.py"), node(6, "coderabbitai", "Summary", "Bot"),
+                                  node(7, "kim", "")]},
+            "comments": {"nodes": [node(8, "vercel", "Deployed", "Bot"), node(9, "lee", "Can we ship today?")]}}}}}
+        ok = subprocess.CompletedProcess([], 0, json.dumps(data), "")
+        with mock.patch.object(PR, "_gh", lambda *a, **k: ok), mock.patch.object(PR, "me", lambda root: "me"):
+            ths = PR.threads("/x", "https://github.com/o/app/pull/1", 1)
+        self.assertEqual([(t["id"], t["kind"]) for t in ths],
+                         [("t-1", "inline"), ("t-3", "inline"), ("r-5", "review"), ("c-9", "comment")])
+        self.assertEqual((ths[0]["body"], ths[0]["bot"], ths[0]["you_replied"], ths[1]["resolved"]),
+                         ("Null check?", True, True, True))
+
+    def test_triage_decide_and_post_replies_once(self):
+        PR, rid, root = self.PR, self.rid, self.root
+        ths = [{"id": "t-1", "kind": "inline", "reply_to": 11, "author": "bot", "path": "a.py", "line": 4,
+                "body": "Null check?", "resolved": False, "replies": []},
+               {"id": "c-9", "kind": "comment", "author": "lee", "body": "Can we ship today?\nthanks",
+                "resolved": False, "replies": []}]
+        with mock.patch.object(PR, "threads", lambda *a: ths):
+            self.assertTrue(PR.triage(rid, root, 1)["started"])
+        self.assertEqual(self.runs, [("triage", False)])
+        PR.apply(rid, 1, {"threads": [{"id": "t-1", "worth": 85, "why": "real", "reply_fix": "Added the check.",
+                                       "reply_wont": "Handled upstream.", "wont_reasons": ["Out of scope."]},
+                                      {"id": "nope", "worth": 5}]})
+        PR.decide(rid, 1, {"t-1": {"decision": "fix", "reply": "Added the check."},
+                           "c-9": {"decision": "wont", "reply": "Not today, after QA."}})
+        out = PR.replies_out(rid, 1)["replies"]
+        self.assertEqual([(r["id"], r["body"]) for r in out],
+                         [("t-1", "Added the check."), ("c-9", "> @lee: Can we ship today?\n\nNot today, after QA.")])
+        sent = []
+        ok = subprocess.CompletedProcess([], 0, "{}", "")
+        with mock.patch.object(PR, "_gh", lambda root, *a, **k: sent.append(a[3]) or ok):
+            self.assertEqual(PR.post_replies(rid, root, 1), {"posted": 2})
+            with self.assertRaises(PR.Invalid):
+                PR.post_replies(rid, root, 1)  # nothing left: never twice
+        self.assertEqual(sent, ["repos/o/app/pulls/1/comments/11/replies", "repos/o/app/issues/1/comments"])
+        tri = PR._read(rid, 1, "triage.json", {})
+        self.assertEqual(tri["threads"]["t-1"]["worth"], 85)
+        with mock.patch.object(PR, "threads", lambda *a: ths):  # a refresh keeps the analysis and what was sent
+            PR.triage(rid, root, 1)
+        self.assertTrue(PR._read(rid, 1, "triage.json", {})["threads"]["t-1"]["posted"])
+
+    def test_review_worktrees_survive_the_idle_clean_up(self):
+        from lfgcore import worktree as W2
+        self.PR.start(self.rid, self.root, 1)
+        with mock.patch.object(W2, "_last_used", lambda p: 0):
+            self.assertEqual(W2.prune(self.root, idle_s=0), [])
+
+
+class SonarTest(unittest.TestCase):
+    def setUp(self):
+        from lfgcore import sonar as SQ
+        self.SQ = SQ
+
+    def test_repo_settings_pass_through_but_nothing_else(self):
+        d = tempfile.mkdtemp()
+        C.write_text(os.path.join(d, ".sonarcloud.properties"),
+                     "# comment\nsonar.sources=src\nsonar.exclusions=**/gen/**\nsonar.host.url=http://evil\n"
+                     "sonar.login=abc\n")
+        self.assertEqual(self.SQ._props(d), {"sonar.sources": "src", "sonar.exclusions": "**/gen/**"})
+
+    def test_setup_replaces_the_stock_login_and_keeps_it_private(self):
+        SQ, calls = self.SQ, []
+
+        def api(path, method="GET", data=None, auth=None, timeout=30):
+            calls.append((path, auth if isinstance(auth, tuple) else "token"))
+            return {"token": "squ_t"} if "user_tokens" in path else {}
+        try:
+            os.remove(SQ.creds_path())
+        except OSError:
+            pass
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(SQ, "_docker", lambda *a, **k: ok), mock.patch.object(SQ, "_api", api), \
+                mock.patch.object(SQ, "server_state", lambda: "up"), mock.patch.object(C, "which", lambda n: "/x"):
+            SQ.setup(log=lambda m: None)
+        c = SQ.creds()
+        self.assertEqual(calls[0], ("/api/users/change_password", ("admin", "admin")))
+        self.assertEqual(calls[1], ("/api/user_tokens/generate", ("admin", c["password"])))
+        self.assertTrue(len(c["password"]) >= 12 and c["password"] != "admin" and c["token"] == "squ_t")
+        self.assertEqual(os.stat(SQ.creds_path()).st_mode & 0o777, 0o600)
+
+    def test_issues_on_changed_lines_come_first_and_decide_the_exit(self):
+        from lfgcore import cli
+        SQ = self.SQ
+        answers = {"/api/qualitygates": {"projectStatus": {"status": "ERROR", "conditions": [
+                       {"metricKey": "new_bugs", "status": "ERROR", "actualValue": "1", "errorThreshold": "0",
+                        "comparator": "GT"}]}},
+                   "/api/issues": {"issues": [
+                       {"key": "a", "type": "CODE_SMELL", "severity": "MINOR", "component": "k:src/x.ts", "line": 9},
+                       {"key": "b", "type": "BUG", "severity": "MAJOR", "component": "k:src/x.ts", "line": 3}],
+                       "paging": {"total": 2}},
+                   "/api/hotspots": {"hotspots": [], "paging": {"total": 0}},
+                   "/api/measures": {"component": {"measures": [{"metric": "bugs", "value": "1"}]}}}
+
+        def api(path, *a, **k):
+            return next(v for p, v in answers.items() if path.startswith(p))
+        with mock.patch.object(SQ, "_api", api), mock.patch.object(SQ, "_base", lambda root, base: "abc"), \
+                mock.patch.object(SQ, "_changed_lines", lambda root, base: {"src/x.ts": {3, 4}}):
+            res = SQ._collect("sq-55555555", "/r", "k", None, "t", 1)
+        self.assertEqual([(i["key"], i["mine"]) for i in res["issues"]], [("b", True), ("a", False)])
+        self.assertEqual((res["gate"], res["mine"]), ("ERROR", 1))
+        self.assertEqual([i["key"] for i in cli._sonar_blocking(res)], ["b"])
+        self.assertEqual(SQ.last("sq-55555555")["mine"], 1)
+
+    def test_scan_copy_has_what_sonarcloud_sees_and_never_secrets(self):
+        d = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-q", d], check=True)
+        for rel, text in (("src/a.ts", "x"), (".gitignore", "*.log\n.env\nout/\n"), (".env", "KEY=1"),
+                          ("out/big.js", "y"), ("debug.log", "z"), ("src/new.ts", "n"), ("config/.env.prod", "S=1")):
+            C.write_text(os.path.join(d, rel), text)
+        subprocess.run(["git", "-C", d, "add", "src/a.ts", ".gitignore"], check=True)
+        subprocess.run(["git", "-C", d, "add", "-f", "config/.env.prod"], check=True)  # even a tracked one stays out
+        snap, copied, skipped = self.SQ.stage("sq-66666666", d)
+        got = sorted(os.path.relpath(os.path.join(r, f), snap) for r, _, fs in os.walk(snap) for f in fs)
+        self.assertEqual(got, [".gitignore", "src/a.ts", "src/new.ts"])
+        self.assertEqual((copied, skipped), (3, 1))
+
+    def test_remove_only_touches_lfg_labelled_containers(self):
+        SQ, ran = self.SQ, []
+
+        def docker(*a, **k):
+            ran.append(a)
+            return subprocess.CompletedProcess(a, 0, "someone-else\n", "")
+        with mock.patch.object(SQ, "_docker", docker):
+            SQ.remove(volumes=True)
+        self.assertFalse([a for a in ran if a[0] in ("rm", "volume") and "inspect" not in a])
+
+
+class LfgTagTest(unittest.TestCase):
+    def test_reply_tags_are_read_from_the_first_lines(self):
+        from lfgcore import hooks as H
+        self.assertEqual(H.reply_tag("**LFG:** /lfg:fix\n\nFixed it."), ("skill", "/lfg:fix"))
+        self.assertEqual(H.reply_tag("**LFG:** tools only (code graph)"), ("tools", "code graph"))
+        self.assertEqual(H.reply_tag("**LFG:** not used - a question about Docker"),
+                         ("not-used", "a question about Docker"))
+        self.assertEqual(H.reply_tag("Done.\n\nLFG wasn't needed"), ("missing", ""))
+
+    def test_last_reply_is_the_first_text_after_the_latest_prompt(self):
+        from lfgcore import hooks as H
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "t.jsonl")
+        evs = [{"type": "user", "uuid": "p1", "message": {"content": "first"}},
+               {"type": "assistant", "message": {"content": [{"type": "text", "text": "**LFG:** /lfg:fix"}]}},
+               {"type": "user", "uuid": "p2", "message": {"content": [{"type": "text", "text": "second"}]}},
+               {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t"}]}},
+               {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t"}]}},
+               {"type": "assistant", "isSidechain": True, "message": {"content": [{"type": "text", "text": "sub"}]}},
+               {"type": "assistant", "message": {"content": [{"type": "text", "text": "**LFG:** not used - x"}]}},
+               {"type": "assistant", "message": {"content": [{"type": "text", "text": "later text"}]}}]
+        C.write_text(path, "\n".join(json.dumps(e) for e in evs) + "\n")
+        self.assertEqual(H._last_reply(path), ("p2", "**LFG:** not used - x"))
+
+    def test_prompt_reminder_follows_the_setting(self):
+        from lfgcore import hooks as H
+        from lfgcore import headroom as HR2
+        import io
+        with mock.patch.object(HR2, "routed", lambda *a: False):
+            for on, want in ((True, H.TAG_REMINDER), (False, None)):
+                with mock.patch.object(H, "_tag_on", return_value=on), \
+                        mock.patch("sys.stdout", new=io.StringIO()) as o:
+                    H.prompt({"cwd": tempfile.mkdtemp()})
+                got = json.loads(o.getvalue())["hookSpecificOutput"]["additionalContext"] if o.getvalue() else None
+                self.assertEqual(got, want)
+
+
+
+
+class IntegrationsTest(unittest.TestCase):
+    def test_each_pack_is_a_card_with_its_own_settings(self):
+        from lfgcore import control as K
+        from lfgcore import hooks as H
+        from lfgcore import setup as SU2
+        packs = [dict(name=n, title=n, about="", on=n in ("core", "sonarqube"), missing=[], requires=[],
+                      experimental=False) for n in ("core", "sonarqube", "dictate", "linear")]
+        boom = mock.Mock(side_effect=RuntimeError("down"))
+        with mock.patch.object(SU2, "packs_view", lambda: packs), mock.patch.object(H, "_gh_signed_in", lambda: True), \
+                mock.patch.dict(K.STATUS, {"core": lambda su: ("ok", "fine"), "sonarqube": boom}):
+            v = K.integrations_view()["integrations"]
+        by = {i["name"]: i for i in v}
+        self.assertEqual(list(by), ["core", "sonarqube", "dictate", "linear", "github"])
+        self.assertEqual((by["core"]["tone"], by["core"]["status"]), ("ok", "fine"))
+        self.assertEqual(by["sonarqube"]["status"], "")  # a broken status check doesn't take the page down
+        self.assertEqual([f["key"] for f in by["sonarqube"]["fields"]], ["sonarqube.telemetry"])
+        self.assertEqual([f["key"] for f in by["linear"]["fields"]], ["linear.team", "linear.workspace"])
+        self.assertEqual(by["dictate"]["status"], "")  # off: no status check runs
+        general = [f for f in ST.config_view()["fields"] if not f["owner"]]
+        self.assertFalse([f for f in general if f["key"].startswith(("sonarqube.", "dictate.", "headroom."))])
+
+    def test_sonarqube_is_fully_local_by_default(self):
+        from lfgcore import sonar as SQ
+        self.assertEqual(SQ.privacy_env(), {"SONAR_TELEMETRY_ENABLE": "false", "SONAR_UPDATECENTER_ACTIVATE": "false"})
+        stock = subprocess.CompletedProcess([], 0, json.dumps(["SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true"]), "")
+        local = subprocess.CompletedProcess([], 0, json.dumps(["SONAR_TELEMETRY_ENABLE=false",
+                                                               "SONAR_UPDATECENTER_ACTIVATE=false"]), "")
+        with mock.patch.object(SQ, "_docker", lambda *a, **k: stock):
+            self.assertFalse(SQ.privacy_applied())  # stock container phones home: needs the restart
+        with mock.patch.object(SQ, "_docker", lambda *a, **k: local):
+            self.assertTrue(SQ.privacy_applied())
+
+
+class HeadroomUpstreamTest(unittest.TestCase):
+    def test_the_desktop_apps_gateway_is_never_taken_as_the_upstream(self):
+        with mock.patch.object(HR, "_settings_path", lambda: os.path.join(tempfile.mkdtemp(), "none.json")), \
+                mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "https://gw.example", "CLAUDE_CODE_ENTRYPOINT":
+                                             "claude-desktop"}):
+            self.assertTrue(HR.in_desktop_app())
+            self.assertEqual(HR.base_url(use_env=not HR.in_desktop_app()), "")
+            self.assertEqual(HR.base_url(), "https://gw.example")  # still what this process itself uses
+
+
+class ReviewRetryTest(unittest.TestCase):
+    def test_a_failed_first_pass_gets_a_fresh_session_and_a_clear_hint(self):
+        from lfgcore import prreview as PR
+        rid = "retry-77777777"
+        C.write_json(os.path.join(PR.folder(rid, 5), "meta.json"), {"number": 5, "session": "old", "ai_started": True})
+        out = os.path.join(PR.folder(rid, 5), "job-1.out")
+        C.write_text(out, json.dumps({"is_error": True, "result": "API Error: 401 Invalid proxy server token passed"}))
+        C.write_json(os.path.join(PR.folder(rid, 5), "job.json"), {"pid": 999999999, "kind": "review", "out": out})
+        PR.settle(rid, 5)
+        meta = PR._read(rid, 5, "meta.json", {})
+        self.assertNotEqual(meta["session"], "old")
+        self.assertFalse(meta["ai_started"])
+        last = PR.chat(rid, 5)[-1]
+        self.assertTrue(last["error"])
+        self.assertIn("refused Claude Code's sign-in", last["text"])
 
 
 class KnowledgeDetailTest(unittest.TestCase):

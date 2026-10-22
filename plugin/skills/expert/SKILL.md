@@ -56,6 +56,41 @@ adapted-from: mattpocock/skills/code-review (MIT, © 2026 Matt Pocock)
 
 Reply with three sections (`## Standards`, `## Spec`, `## Blast radius`), the verdict, and one line per axis: count and worst finding. For `changes`: each item must be fixed (via `/fix`) or deferred with a linked `Issue` before gate 5 passes.
 
+## PR mode (the dashboard's Reviews page)
+
+When the prompt says **PR mode**, you are reviewing someone else's pull request for the human reviewer, in a
+review worktree (`<repo>.worktrees/review-pr-<n>`, detached at the PR head). It changes these things:
+
+- **No run.** Skip `lfg run path` / `lfg run new`. Write no files: no `06-review.json`, no feedback store, no
+  dev-graph `Issue`. The worktree is read-only for you. Never write to GitHub; the reviewer posts.
+- **Base** is the merge-base the prompt gives; the change is `git diff <merge-base>..HEAD`.
+- **Spec** is the PR description (and a linked Linear issue, read only). No brief.
+- **Brains are required.** Run `lfg graphs ensure`, then pull the dev-graph `Component`s the change touches and
+  their `Principle`, `Invariant`, `Decision` and `Gap` nodes, plus second-brain notes on the same areas. Cite each
+  one you rely on; list them in `context`.
+- **Grill the reviewer.** Besides findings, rate each area (Correctness, Design, Tests, Security, Readability,
+  Fits the codebase) 1-5 with a one-line reason, and ask the questions a sharp reviewer needs answered before
+  approving: assumptions the author made, cases nobody tested, trade-offs to accept or push back on.
+- **Comments are drafts for the human.** Put each on a changed line (`path`, `line` on the new side) when you can,
+  written as it would be posted: what, why, and the fix. No praise padding.
+- **Talking it through.** Later messages in the same session are the reviewer pushing back, answering your
+  questions or asking for changes. Re-check the code before conceding a point; when the draft changes, end with
+  the json block of the keys you changed, as the prompt describes.
+
+## Comment triage mode (the Reviews page, on your own pull request)
+
+When the prompt says **comment triage mode**, the PR is the user's own and the threads are what reviewers (people
+and bots) said about it. Same read-only rules as PR mode, and brains are required. For each thread:
+
+- **Check it against the code**, not the commenter's confidence: open the file at the line, follow callers with
+  the graphs, and look for a dev-graph `Principle`, `Invariant` or `Decision` that settles it.
+- **worth (0-100)**: how likely fixing it is the right call. 90+ = a real bug or a broken rule; 50-80 = a fair
+  improvement; under 30 = wrong, already handled, out of scope or taste. Say why in one or two sentences.
+- **Replies** are ready to post as the user: `reply_fix` says what will change, `reply_wont` gives the real
+  reason, and `wont_reasons` offers 2-4 alternative complete replies (already handled at X, out of scope (follow-up
+  ATO-…), intentional per Decision Y, the bot misread Z). Short, specific, polite, no filler.
+- Later messages are the user asking about a thread; re-check the code before changing your view.
+
 ## Rules
 
 - **A run filed under another repo** (this repo's tasks live in another repo's run, e.g. `/lfg` resumed that repo's handoff): write this repo's results as `06-review-<repo>.json`, with `<repo>` the repo's folder name (e.g. `aegis-compliance-portal`), never over the run's own files. The dashboard shows them under this repo, and the owner repo keeps its own.
