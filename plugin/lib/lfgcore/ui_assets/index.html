@@ -21,10 +21,13 @@
   </div>
 </aside>
 <div class="main">
-  <header class="topbar"><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav></header>
+  <header class="topbar"><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><span class="grow"></span>
+    <div class="bell"><button class="icon-btn" id="bell" aria-label="Notifications" aria-haspopup="true" aria-expanded="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="bell-n" id="bell-n" hidden></span></button>
+      <div class="bell-pop" id="bell-pop" hidden></div></div></header>
   <div id="promo" class="promo-slot"></div>
   <main id="view" class="view" tabindex="-1"><div class="loading">Loading…</div></main>
 </div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
 <div class="drawer" id="drawer" hidden>
   <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
     <div class="drawer-head"><div id="drawer-title"></div><button class="icon-btn" id="drawer-close" aria-label="Close">&times;</button></div>

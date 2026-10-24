@@ -680,7 +680,7 @@ class SettingsTest(unittest.TestCase):
         self.assertTrue(ST.remove_claude_md_section().get("edited"))
         self.assertEqual(C.read_text(ST.claude_md_path()), mine)
 
-    def test_writes_need_the_edit_key_and_same_origin(self):
+    def test_writes_need_the_dashboards_own_page(self):
         import http.client
         import threading
         srv = ui.http.server.ThreadingHTTPServer(("127.0.0.1", 0), ui.Handler)
@@ -699,10 +699,10 @@ class SettingsTest(unittest.TestCase):
             finally:
                 c.close()
 
-        self.assertEqual(post({}), 403)
-        self.assertEqual(post({"X-LFG-Key": "wrong"}), 403)
-        self.assertEqual(post({"X-LFG-Key": ST.edit_key(), "Origin": "http://evil.test"}), 403)
-        self.assertEqual(post({"X-LFG-Key": ST.edit_key()}), 200)
+        self.assertEqual(post({"Origin": "http://evil.test"}), 403)  # another site
+        self.assertEqual(post({"X-LFG": "0"}), 403)  # not the dashboard's own script
+        self.assertEqual(post({"Host": "evil.test:%d" % ui.Handler.port}), 403)  # DNS rebinding
+        self.assertEqual(post({}), 200)  # editing is always on for the dashboard itself
 
     def test_ollama_pull_is_local_only_and_validated(self):
         for bad in ("qwen3:cloud", "deepseek-v4-pro:cloud", "rm -rf /", "", "../x"):
@@ -789,7 +789,6 @@ class RulesAndLeanOutputTest(unittest.TestCase):
     def test_graph_build_needs_a_known_repo(self):
         with self.assertRaises(ST.Invalid):
             ui.build_graphs("nope-12345678", "update")
-        self.assertIn("/api/save/graphs_build", ui.NO_KEY)
 
     def test_lean_output_drops_passing_check_logs(self):
         from lfgcore import cli
@@ -1285,7 +1284,10 @@ class PrReviewTest(unittest.TestCase):
         self.pr = {"number": 1, "title": "Add four", "author": {"login": "kim"}, "url": "https://github.com/o/app/pull/1",
                    "baseRefName": "main", "headRefName": "feature", "body": "adds a line"}
         self.runs = []
-        self.patches = [mock.patch.object(PR, "_pr_view", lambda root, n: self.pr),
+        real_which = C.which  # Claude Code isn't installed in CI or a Codespace: these tests never run it anyway
+        fake = {"claude": "/usr/local/bin/claude"}
+        self.patches = [mock.patch.object(C, "which", lambda n: fake.get(n) or real_which(n)),
+                        mock.patch.object(PR, "_pr_view", lambda root, n: self.pr),
                         mock.patch.object(PR, "_run", lambda rid, root, n, kind, prompt, resume:
                                           self.runs.append((kind, resume)))]
         for p in self.patches:
@@ -1331,7 +1333,7 @@ class PrReviewTest(unittest.TestCase):
         self.assertEqual((o["event"], o["comments"], o["in_body"]),
                          ("REQUEST_CHANGES", [{"path": "a.py", "line": 4, "side": "RIGHT", "body": "Name this."}], 1))
         self.assertIn("| Tests | 1/5 |", o["body"])
-        self.assertIn("**a.py:99**: Elsewhere.", o["body"])
+        self.assertIn("`a.py:99`\nElsewhere.", o["body"])
         with self.assertRaises(PR.Invalid):  # a secret never goes out, not even in a draft
             PR.save_draft(rid, 1, {"summary": "key AKIA" + "ABCDEFGHIJKLMNOP"})
         sent = []
@@ -1346,6 +1348,106 @@ class PrReviewTest(unittest.TestCase):
         self.assertEqual(PR.close(rid, root, 1), {"closed": True})
         self.assertFalse(os.path.exists(wt))
         self.assertTrue(PR.chat(rid, 1))
+
+    def test_finished_ai_jobs_are_announced_once_with_their_page(self):
+        from lfgcore import notify as N
+        PR, rid, root = self.PR, self.rid, self.root
+        if os.path.exists(N._path()):
+            os.remove(N._path())
+        PR.start(rid, root, 1)
+        out = os.path.join(PR.folder(rid, 1), "job-9.out")
+        C.write_text(out, json.dumps({"result": "Looks fine.\n```json\n{\"summary\": \"ok\"}\n```"}))
+        C.write_json(os.path.join(PR.folder(rid, 1), "job.json"), {"pid": 999999999, "kind": "review", "out": out})
+        PR.settle(rid, 1)
+        PR.settle(rid, 1)  # the watcher and a page load: still one notification
+        ev = N.recent()["events"]
+        self.assertEqual([(e["title"], e["body"], e["href"], e["repo"]) for e in ev],
+                         [("Review of #1 is ready", "Add four", "#review/1", rid)])
+
+    def test_merged_or_closed_prs_close_their_reviews(self):
+        from lfgcore import notify as N
+        PR, rid, root = self.PR, self.rid, self.root
+        PR.start(rid, root, 1)
+        asked, answer = [], {"state": "OPEN"}
+
+        def gh(root_, *a, **k):
+            asked.append(a)
+            return subprocess.CompletedProcess(a, 0, json.dumps(dict(answer, mergedAt="2026-10-23T18:00:00Z")), "")
+        with mock.patch.object(PR, "_gh", gh):
+            self.assertEqual(PR.sync_states(rid, root, {"prs": []}), [])  # no fresh list: decide nothing
+            self.assertEqual(PR.sync_states(rid, root, {"at": 1, "prs": [{"number": 1}]}), [])  # still open
+            self.assertEqual(asked, [])
+            self.assertEqual(PR.sync_states(rid, root, {"at": 1, "prs": []}), [])  # gone from the list, but open
+            self.assertEqual(len(asked), 1)
+            answer["state"] = "MERGED"
+            self.assertEqual(PR.sync_states(rid, root, {"at": 1, "prs": []}), [1])
+            self.assertEqual(PR.sync_states(rid, root, {"at": 1, "prs": []}), [])  # once
+            self.assertEqual(len(asked), 2)
+        st = PR.state(rid, 1, root)
+        self.assertEqual((st["status"], st["pr_state"], st["ended_at"]), ("closed", "MERGED", "2026-10-23T18:00:00Z"))
+        self.assertTrue(st["worktree_name"])  # the worktree stays until the user removes it
+        self.assertEqual([(c["number"], c["state"]) for c in PR.closed_reviews(rid)], [(1, "MERGED")])
+        self.assertEqual(N.recent()["events"][0]["title"], "#1 was merged, so its review is closed")
+        PR.close(rid, root, 1)
+        self.assertEqual(PR.state(rid, 1, root)["worktree_name"], "")
+        self.assertEqual(PR.closed_reviews(rid)[0]["worktree"], None)
+
+    def test_posted_comments_lead_with_their_severity(self):
+        PR, rid, root = self.PR, self.rid, self.root
+        PR.start(rid, root, 1)
+        PR.apply(rid, 1, {"summary": "Two things.", "comments": [
+            {"id": "C1", "path": "a.py", "line": 4, "body": "Guard the empty list.", "severity": "major"},
+            {"id": "C2", "path": "a.py", "line": 99, "body": "Rename x.", "severity": "nit"},
+            {"id": "C3", "body": "**Minor**\n\nAlready labelled.", "severity": "minor"},
+            {"id": "C4", "path": "a.py", "line": 4, "body": "No label.", "severity": ""}]})
+        o = PR.outgoing(rid, 1)
+        self.assertEqual([c["body"] for c in o["comments"]], ["**Major**\n\nGuard the empty list.", "No label."])
+        self.assertIn("`a.py:99`\n**Nitpick**\n\nRename x.", o["body"])  # not on a diff line: in the summary
+        self.assertEqual(o["body"].count("**Minor**"), 1)  # never doubled
+        PR.save_draft(rid, 1, {"comments": [{"id": "C1", "path": "a.py", "line": 4, "body": "Guard the empty list.",
+                                             "severity": "blocker"}]})  # the reviewer's own call wins
+        self.assertEqual(PR.outgoing(rid, 1)["comments"][0]["body"], "**Blocker**\n\nGuard the empty list.")
+
+    def test_rerun_review_starts_a_fresh_pass_in_the_same_conversation(self):
+        PR, rid, root = self.PR, self.rid, self.root
+        PR.start(rid, root, 1)
+        session = PR._read(rid, 1, "meta.json", {})["session"]
+        PR.start(rid, root, 1)  # Re-run review, same head
+        self.assertEqual(self.runs, [("review", False), ("review", True)])
+        self.assertEqual(PR._read(rid, 1, "meta.json", {})["session"], session)
+        self.assertEqual(PR.chat(rid, 1)[-1]["text"], "Review it again from the top.")
+
+    def test_stack_follows_base_branches_and_never_the_trunk(self):
+        PR = self.PR
+        def pr(n, head, base):
+            return {"number": n, "title": "t%d" % n, "headRefName": head, "baseRefName": base}
+        hit = {"trunk": "main", "prs": [pr(1, "a", "main"), pr(2, "b", "a"), pr(3, "c", "b"), pr(4, "d", "b"),
+                                        pr(5, "e", "main"), pr(6, "main", "release"), pr(7, "x", "y"), pr(8, "y", "x")]}
+
+        def nums(n):
+            return [p["number"] for p in PR.stack(hit, n)]
+        self.assertEqual(nums(2), [1, 2, 3, 4])  # below it, it, then everything stacked on it
+        self.assertEqual(nums(3), [1, 2, 3])  # a sibling (4) isn't part of 3's stack
+        self.assertEqual(nums(5), [])  # straight on the trunk, nothing on top: not a stack
+        self.assertEqual(nums(1), [1, 2, 3, 4])  # a PR whose head is main doesn't pull everything in
+        self.assertEqual(nums(7), [8, 7])  # a cycle ends instead of looping
+        self.assertEqual(PR._stack_pos(hit, 3), {"pos": 3, "size": 3})
+        with mock.patch.object(PR, "open_prs", lambda rid, root, fresh=False: hit):
+            note = PR._stack_note("r", "/x", hit["prs"][2])
+        self.assertIn("stack of 3 (#1 <- #2 <- #3", note)
+        self.assertIn('sits on #2 "t2" (branch b)', note)
+
+    def test_background_runs_keep_to_headroom_whatever_started_the_dashboard(self):
+        from lfgcore import headroom as H
+        PR = self.PR
+        with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "https://gateway.example.test"}), \
+                mock.patch.object(H, "local_url", lambda: "http://127.0.0.1:8787"):
+            with mock.patch.object(H, "base_url", lambda root=None, use_env=True: "http://127.0.0.1:8787/"):
+                env, via = PR._child_env(self.root)
+                self.assertEqual((env["ANTHROPIC_BASE_URL"], via), ("http://127.0.0.1:8787/", "headroom"))
+            with mock.patch.object(H, "base_url", lambda root=None, use_env=True: ""):  # Headroom not routed
+                env, via = PR._child_env(self.root)
+                self.assertEqual((env["ANTHROPIC_BASE_URL"], via), ("https://gateway.example.test", "direct"))
 
     def test_chat_keeps_the_reviewers_scores_and_switches(self):
         PR, rid = self.PR, self.rid
@@ -1499,11 +1601,427 @@ class PrReviewTest(unittest.TestCase):
             PR.triage(rid, root, 1)
         self.assertEqual(PR._read(rid, 1, "triage.json", {})["threads"]["t-1"]["fix_status"], "fixed")
 
+    def test_diff_tab_threads_are_local_ai_conversations_on_selected_lines(self):
+        from lfgcore import prdiff as PD
+        PR, rid, root = self.PR, self.rid, self.root
+        d = PD.diff(rid, root, 1)
+        f = d["files"][0]
+        self.assertEqual((f["path"], f["status"], f["additions"], f["deletions"]), ("a.py", "modified", 1, 0))
+        added = [ln for h in f["hunks"] for ln in h["lines"] if ln["t"] == "+"]
+        self.assertEqual((added[0]["new"], added[0]["old"], added[0]["text"]), (4, None, "four"))
+        self.assertEqual(d["threads"], [])
+        seen, answers, gh = [], ["It appends a fourth line; nothing else reads it.", "Yes, only a.py."], []
+
+        def popen(argv, **kw):
+            if "--disallowedTools" not in argv:
+                return real(argv, **kw)
+            buf = types.SimpleNamespace(data=b"")
+            buf.write = lambda x: setattr(buf, "data", buf.data + x)
+            buf.close = lambda: seen.append((argv, kw["cwd"], buf.data.decode()))
+            kw["stdout"].write(json.dumps({"result": answers.pop(0), "total_cost_usd": 0.02}).encode())
+            return types.SimpleNamespace(pid=999999999, stdin=buf)
+        real = subprocess.Popen
+        with mock.patch.object(PD.subprocess, "Popen", popen), \
+                mock.patch.object(PR, "_gh", lambda *a, **k: gh.append(a) or subprocess.CompletedProcess(a, 1)):
+            with self.assertRaises(PD.Invalid):  # only lines that are in the diff
+                PD.ask(rid, root, 1, "why?", path="a.py", side="new", start=40, end=41)
+            tid = PD.ask(rid, root, 1, "What does this add?", path="a.py", side="new", start=4, end=4)["thread"]
+            argv, cwd, prompt = seen[0]
+            self.assertEqual(os.path.realpath(cwd), os.path.realpath(PR.worktree_path(root, 1)))  # reads the PR's code
+            self.assertIn("--session-id", argv)
+            self.assertIn("+ four", prompt)
+            self.assertIn("nothing goes to GitHub", prompt)
+            self.assertIn("Edit", argv[argv.index("--disallowedTools") + 1])
+            self.assertEqual(json.loads(argv[argv.index("--mcp-config") + 1]), {"mcpServers": {}})  # lean: cents
+            self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob,Bash")
+            t = PD.diff(rid, root, 1)["threads"][0]  # the answer is read in
+            from lfgcore import notify as N
+            last = N.recent()["events"][0]
+            self.assertEqual((last["title"], last["href"]), ("The AI answered on #1", "#review/1/diff"))
+            self.assertIn("a.py, line R4: It appends", last["body"])
+            self.assertEqual([m["role"] for m in t["messages"]], ["me", "ai"])
+            self.assertEqual((t["start"], t["end"], t["outdated"]), ("R4", "R4", False))
+            PD.ask(rid, root, 1, "Only a.py?", thread=tid)
+            self.assertIn("--resume", seen[1][0])  # a follow-up continues the same conversation
+            self.assertEqual(seen[1][0][seen[1][0].index("--resume") + 1], t["session"])
+            t = PD.diff(rid, root, 1)["threads"][0]
+            self.assertEqual(t["messages"][-1]["text"], "Yes, only a.py.")
+            PD.thread_action(rid, 1, tid, "resolve")
+            self.assertTrue(PD.diff(rid, root, 1)["threads"][0]["resolved"])
+            PD.thread_action(rid, 1, tid, "delete")
+            self.assertEqual(PD.diff(rid, root, 1)["threads"], [])
+        self.assertFalse([a for a in gh if "api" in a or "comment" in a or "review" in a])  # never GitHub
+
+    def test_diff_selection_spans_removed_and_added_rows_like_a_drag(self):
+        from lfgcore import prdiff as PD
+        files = PD._parse("\n".join(["diff --git a/x.tsx b/x.tsx", "@@ -86,4 +129,6 @@", " <div>", "-  {label}",
+                                      "+  <span>", "+    {sourceLabel}", "+  </span>", " </div>"]))
+        a, b, snippet = PD._selected(files, "x.tsx", "R132", "L87")  # dragged upwards, from + into -
+        self.assertEqual((a, b), ("L87", "R132"))
+        self.assertEqual(snippet, "-   {label}\n+   <span>\n+     {sourceLabel}\n+   </span>")  # L87, R130-R132
+        self.assertEqual(PD.where({"path": "x.tsx", "start": a, "end": b}), "x.tsx, lines L87 to R132")
+        self.assertEqual(PD.where({"path": "x.tsx", "start": 4, "end": 4, "side": "new"}), "x.tsx, line R4")  # old
+        with self.assertRaises(PD.Invalid):
+            PD._selected(files, "x.tsx", "R999", "R130")
+
+    def test_reviewer_instructions_go_to_the_ai(self):
+        PR, rid, root = self.PR, self.rid, self.root
+        prompts = []
+        with mock.patch.object(PR, "_run", lambda rid, root, n, kind, prompt, resume: prompts.append(prompt)):
+            PR.start(rid, root, 1, focus="Look hard at the null handling; ignore formatting.")
+            self.assertIn("Look hard at the null handling", prompts[-1])
+            self.assertIn("Focus: Look hard", PR.chat(rid, 1)[-1]["text"])
+            PR.start(rid, root, 1)  # a re-run without instructions doesn't repeat the old ones
+            self.assertNotIn("null handling", prompts[-1])
+            with self.assertRaises(PR.Invalid):
+                PR.start(rid, root, 1, focus="key AKIA" + "ABCDEFGHIJKLMNOP")
+            ths = [{"id": "t-1", "kind": "inline", "author": "bot", "path": "a.py", "line": 4, "body": "x",
+                    "resolved": False, "replies": []}]
+            with mock.patch.object(PR, "threads", lambda *a: ths):
+                PR.triage(rid, root, 1)
+                PR.apply(rid, 1, {"threads": [{"id": "t-1", "worth": 50}]})
+                n = len(prompts)
+                self.assertFalse(PR.triage(rid, root, 1)["started"])  # all scored: nothing to do
+                self.assertEqual(len(prompts), n)
+                self.assertTrue(PR.triage(rid, root, 1, focus="Be strict about tests")["started"])  # read again
+                self.assertIn("Be strict about tests", prompts[-1])
+
+    def test_diff_parser_reads_renames_deletions_and_binaries(self):
+        from lfgcore import prdiff as PD
+        files = PD._parse("\n".join([
+            "diff --git a/old.py b/new.py", "similarity index 90%", "rename from old.py", "rename to new.py",
+            "@@ -1,2 +1,2 @@", " keep", "-gone", "+came",
+            "diff --git a/x.bin b/x.bin", "Binary files a/x.bin and b/x.bin differ",
+            "diff --git a/d.py b/d.py", "deleted file mode 100644", "--- a/d.py", "+++ /dev/null",
+            "@@ -1 +0,0 @@", "-bye",
+            "\\ No newline at end of file"]))
+        self.assertEqual([(f["path"], f["status"], f["additions"], f["deletions"], f["binary"]) for f in files],
+                         [("new.py", "renamed", 1, 1, False), ("x.bin", "modified", 0, 0, True),
+                          ("d.py", "deleted", 0, 1, False)])
+        self.assertEqual(files[0]["old_path"], "old.py")
+        self.assertEqual([(ln["t"], ln["old"], ln["new"]) for ln in files[0]["hunks"][0]["lines"]],
+                         [(" ", 1, 1), ("-", 2, None), ("+", None, 2)])
+
     def test_review_worktrees_survive_the_idle_clean_up(self):
         from lfgcore import worktree as W2
         self.PR.start(self.rid, self.root, 1)
         with mock.patch.object(W2, "_last_used", lambda p: 0):
             self.assertEqual(W2.prune(self.root, idle_s=0), [])
+
+
+class TodosTest(unittest.TestCase):
+    def setUp(self):
+        from lfgcore import todos as T
+        self.T = T
+        if os.path.exists(T._path()):
+            os.remove(T._path())
+
+    def test_todo_statuses_and_an_old_done_flag(self):
+        T = self.T
+        C.write_json(T._path(), {"todos": [{"id": "old1", "text": "From before", "done": True, "created": "2026"}]})
+        a = T.add("  Fix the   flaky login test ", repo="app-1")["id"]
+        b = T.add("Write the release notes")["id"]
+        d = T.listing()
+        self.assertEqual([(t["text"], t["status"]) for t in d["todos"]],
+                         [("Write the release notes", "todo"), ("Fix the flaky login test", "todo"),
+                          ("From before", "done")])
+        T.update(a, status="in_progress")
+        T.update(b, status="cancelled")
+        self.assertEqual(T.listing()["counts"], {"todo": 0, "in_progress": 1, "cancelled": 1, "done": 1})
+        for bad in ("blocked", ""):
+            with self.assertRaises(T.Invalid):
+                T.update(a, status=bad)
+        with self.assertRaises(T.Invalid):
+            T.add("   ")
+        with self.assertRaises(T.Invalid):  # a secret never lands in the list
+            T.add("token AKIA" + "ABCDEFGHIJKLMNOP")
+        T.delete(b)
+        with self.assertRaises(T.Invalid):
+            T.update(b, status="done")
+
+    def test_linear_ticket_only_on_create_then_the_todo_is_tagged(self):
+        T = self.T
+        a = T.add("Fix the flaky login test", notes="fails on CI")["id"]
+        self.assertNotIn("linear", T.listing()["todos"][0])  # adding or editing never touches Linear
+        seen, answer = {}, {}
+
+        def popen(argv, **kw):
+            seen.update(argv=argv, env=kw["env"])
+            kw["stdout"].write(json.dumps({"result": answer["text"]}).encode())
+            buf = types.SimpleNamespace(data=b"")
+            buf.write = lambda x: setattr(buf, "data", buf.data + x)
+            buf.close = lambda: seen.update(prompt=buf.data.decode())
+            return types.SimpleNamespace(pid=999999999, stdin=buf)
+        with mock.patch.object(T.subprocess, "Popen", popen), mock.patch.object(C, "which", lambda x: "/bin/claude"):
+            no_team = dict(C.DEFAULT_CONFIG, linear={"team": "", "workspace": ""})
+            with mock.patch.object(C, "config", lambda: no_team), self.assertRaises(T.Invalid):  # no team anywhere
+                T.create_linear(a, "Fix the flaky login test")
+            answer["text"] = "Done.\n```json\n{\"identifier\": \"ATO-42\", \"url\": " \
+                             "\"https://linear.app/atomus/issue/ATO-42/fix-the-flaky-login-test\"}\n```"
+            self.assertTrue(T.create_linear(a, "Fix the flaky login test", "fails on CI", team="ATO")["started"])
+            self.assertIn("Team: ATO", seen["prompt"])
+            self.assertIn("Title: Fix the flaky login test", seen["prompt"])
+            allowed = seen["argv"][seen["argv"].index("--allowedTools") + 1].split(",")
+            self.assertIn("mcp__linear__create_issue", allowed)
+            self.assertFalse([x for x in allowed if "delete" in x or "comment" in x or x == "Bash"])
+            argv = seen["argv"]  # only Linear is loaded: no other MCP servers, tools, skills or user plugins
+            self.assertIn("--strict-mcp-config", argv)
+            self.assertEqual(list(json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]), ["linear"])
+            self.assertEqual((argv[argv.index("--tools") + 1], argv[argv.index("--setting-sources") + 1]),
+                             ("", "project"))
+            self.assertIn("--disable-slash-commands", argv)
+            t = T.listing()["todos"][0]
+            self.assertEqual(t["linear"]["key"], "ATO-42")
+            self.assertEqual(t["linear"]["url"], "https://linear.app/atomus/issue/ATO-42/fix-the-flaky-login-test")
+            self.assertNotIn("linear_job", t)
+            with self.assertRaises(T.Invalid):  # one ticket per todo
+                T.create_linear(a, "again", team="ATO")
+            b = T.add("Second one")["id"]
+            answer["text"] = "Linear isn't connected.\n```json\n{\"error\": \"Linear MCP needs authentication\"}\n```"
+            T.create_linear(b, "Second one", team="ATO")
+            t = next(x for x in T.listing()["todos"] if x["id"] == b)
+            self.assertEqual(t["linear_error"], T.SIGN_IN)
+            from lfgcore import notify as N
+            titles = [e["title"] for e in N.recent()["events"]][:2]
+            self.assertEqual(titles, ["Linear ticket not created", "ATO-42 created in Linear"])
+            self.assertNotIn("linear", t)
+            answer["text"] = "```json\n{\"identifier\": \"ATO-9\", \"url\": \"https://evil.example/issue/ATO-9\"}\n```"
+            T.create_linear(b, "Second one", team="ATO")  # a link that isn't Linear's is never kept
+            self.assertNotIn("linear", next(x for x in T.listing()["todos"] if x["id"] == b))
+
+
+class TodoLinearOptionsTest(unittest.TestCase):
+    def setUp(self):
+        from lfgcore import todos as T
+        self.T = T
+        for f in ("linear-options.json", "linear-options.job.json"):
+            p = T._opt_path(f)
+            if os.path.exists(p):
+                os.remove(p)
+        if os.path.exists(T._path()):
+            os.remove(T._path())
+
+    def test_options_come_from_linear_and_only_picked_fields_are_sent(self):
+        T = self.T
+        def call(i, tool, result):  # one tool call and Linear's answer, as stream-json prints them
+            return [{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": i,
+                                                                   "name": "mcp__linear__" + tool}]}},
+                    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": i,
+                                                              "content": [{"type": "text",
+                                                                           "text": json.dumps(result)}]}]}}]
+        ato = {"key": "ATO", "name": "Atomus"}
+        stream = (call("1", "list_teams", {"teams": [ato, {"key": "EEL", "name": "eel"},
+                                                     {"key": "CS", "name": "CS", "retiredAt": "2026-05-01"},
+                                                     {"key": "bad key!", "name": "x"}]})
+                  + call("2", "list_projects", {"projects": [
+                      {"name": "Aegis Agent v2", "teams": [ato], "status": {"type": "started"}},
+                      {"name": "Old one", "teams": [ato], "status": {"type": "canceled"}}], "hasNextPage": True})
+                  + call("3", "list_projects", {"projects": [
+                      {"name": "Page two", "teams": [ato], "status": {"type": "backlog"}}], "hasNextPage": False})
+                  + call("4", "list_users", {"users": [
+                      {"name": "Varun Singh", "displayName": "varun", "isActive": True},
+                      {"name": "Lee Park", "displayName": "lee", "isActive": True},
+                      {"name": "Gone", "isActive": False}]})
+                  + [{"type": "result", "result": "done"}])
+        started, seen = [], {}
+
+        def popen(argv, **kw):
+            started.append(argv)
+            if "stream-json" in argv:
+                kw["stdout"].write("\n".join(json.dumps(x) for x in stream).encode())
+            else:
+                text = "```json\n{\"identifier\": \"ATO-7\", \"url\": \"https://linear.app/atomus/issue/ATO-7/x\"}\n```"
+                kw["stdout"].write(json.dumps({"result": text}).encode())
+            buf = types.SimpleNamespace(data=b"")
+            buf.write = lambda x: setattr(buf, "data", buf.data + x)
+            buf.close = lambda: seen.update(prompt=buf.data.decode())
+            return types.SimpleNamespace(pid=999999999, stdin=buf)
+        with mock.patch.object(T.subprocess, "Popen", popen), mock.patch.object(C, "which", lambda x: "/bin/claude"):
+            self.assertTrue(T.linear_options()["loading"])  # nothing cached: one read-only fetch starts
+            allowed = started[0][started[0].index("--allowedTools") + 1].split(",")
+            self.assertEqual(sorted(allowed), sorted(T.OPTION_TOOLS))  # reads only
+            denied = started[0][started[0].index("--disallowedTools") + 1].split(",")
+            self.assertFalse(set(T.OPTION_TOOLS) & set(denied))  # the reads it needs aren't hidden
+            self.assertIn("mcp__linear__save_issue", denied)
+            o = T.linear_options()  # the fetch finished: read in and cleaned
+            self.assertEqual([(t["key"], t["retired"]) for t in o["teams"]],
+                             [("ATO", False), ("EEL", False), ("CS", True)])  # every team; retired last
+            self.assertEqual(o["projects"], [{"name": "Aegis Agent v2", "teams": ["ATO"]},
+                                             {"name": "Page two", "teams": ["ATO"]}])  # all pages, none canceled
+            self.assertEqual([u["name"] for u in o["users"]], ["Lee Park", "Varun Singh"])
+            self.assertFalse(o["loading"])
+            self.assertEqual(len(started), 1)  # cached: no second fetch
+            a = T.add("Short-lived enrollment token", repo="aegis-agent-1")["id"]
+            for bad in ({"project": "aegis-agent"}, {"assignee": "Someone Else"}):
+                with self.assertRaises(T.Invalid):  # only what Linear listed
+                    T.create_linear(a, "Short-lived enrollment token", team="ATO", **bad)
+            T.create_linear(a, "Short-lived enrollment token", "Repo: aegis-agent", team="ATO",
+                            project="Aegis Agent v2", assignee="Lee Park")
+            self.assertIn("Project: Aegis Agent v2\nAssignee: Lee Park", seen["prompt"])
+            self.assertIn("never pick a project", seen["prompt"])
+            T.add("Another")
+            b = T.listing()["todos"][0]["id"]
+            T.create_linear(b, "Another", team="ATO")
+            self.assertIn("Project: (none)\nAssignee: (none)", seen["prompt"])
+            t = next(x for x in T.listing()["todos"] if x["id"] == a)
+            self.assertEqual((t["linear"]["key"], t["linear"]["project"], t["linear"]["assignee"]),
+                             ("ATO-7", "Aegis Agent v2", "Lee Park"))
+
+
+class NotifyTest(unittest.TestCase):
+    def setUp(self):
+        from lfgcore import notify as N
+        self.N = N
+        if os.path.exists(N._path()):
+            os.remove(N._path())
+
+    def test_feed_newest_first_and_since(self):
+        N = self.N
+        a = N.add("review", "Review of #3 is ready", "Add four", "#review/3", "app-1")
+        b = N.add("fix", "Fix run failed", "", "#runs/x", "app-1", ok=False)
+        d = N.recent()
+        self.assertEqual([e["title"] for e in d["events"]], ["Fix run failed", "Review of #3 is ready"])
+        self.assertEqual(d["latest"], b["id"])
+        self.assertEqual([e["id"] for e in N.recent(since=a["id"])["events"]], [b["id"]])
+        self.assertEqual(N.recent(since=b["id"]), {"events": [], "latest": b["id"], "desktop": ""})  # no lfg ui
+        self.assertFalse(N.alive(999999999))
+
+    def test_macos_notification_only_when_no_dashboard_tab_is_in_front(self):
+        N = self.N
+        posted = []
+        tools = {"terminal-notifier": "/opt/homebrew/bin/terminal-notifier", "osascript": "/usr/bin/osascript"}
+        with mock.patch.dict(N.DESK, {"port": 7777, "seen": 0.0, "visible": False}), \
+                mock.patch.object(N.subprocess, "Popen", lambda argv, **kw: posted.append(argv)), \
+                mock.patch.object(C, "which", lambda x: tools.get(x)):
+            N.page_seen(True)  # the dashboard is the tab in front: its toast is enough
+            N.add("review", "Review of #34 is ready", "Harden install", "#review/34", "aegis-1")
+            self.assertEqual(posted, [])
+            N.page_seen(False)  # another tab or app is in front
+            N.add("review", "Review of #34 is ready", "Harden install", "#review/34", "aegis-1")
+            argv = posted[-1]
+            self.assertEqual(argv[0], "/opt/homebrew/bin/terminal-notifier")
+            self.assertEqual(argv[argv.index("-open") + 1], "http://127.0.0.1:7777/?repo=aegis-1#review/34")
+            self.assertEqual(argv[argv.index("-subtitle") + 1], "Review of #34 is ready")
+            N.page_seen(True)
+            N.DESK["seen"] -= 60  # the page stopped asking (closed, or a throttled background tab)
+            N.add("fix", "Fix run failed", "", "#runs/x", "", ok=False)
+            self.assertIn("http://127.0.0.1:7777/#runs/x", posted[-1])
+            self.assertIn("LFG · needs a look", posted[-1])
+            tools.pop("terminal-notifier")  # without it: osascript's banner, text passed as arguments
+            N.add("linear", 'ATO-1 "quoted" created', "x", "#todos", "")
+            self.assertEqual(posted[-1][:2], ["/usr/bin/osascript", "-e"])
+            self.assertIn('ATO-1 "quoted" created', posted[-1])
+            self.assertFalse([a for a in posted[-1] if "display notification" in a and "quoted" in a])
+            self.assertEqual(N.recent()["desktop"], "osascript")
+        N.add("x", "outside lfg ui")  # no dashboard running: nothing is posted
+        self.assertEqual(len(posted), 3)
+
+    def test_watcher_announces_checks_and_scans_once_and_not_old_ones(self):
+        from lfgcore import ui
+        N = self.N
+        rid = "watch-%08x" % (abs(hash(self._testMethodName)) % 16 ** 8)
+        run = C.ensure_dir(C.lfg_path("runs", rid, "20261023-1200-x"))
+        C.write_json(os.path.join(run, "gate-running.json"), {"pid": 999999999, "started": "2026-10-23T12:00:00"})
+        C.write_json(os.path.join(run, "ready.json"), {"green": False})
+        with mock.patch.object(dash, "repo_ids", lambda: [rid]):
+            ui.watch_jobs(quiet=True)  # the dashboard just started: old news is marked seen, not announced
+            self.assertEqual(N.recent()["events"], [])
+            C.write_json(os.path.join(run, "gate-running.json"), {"pid": 999999999, "started": "2026-10-23T13:00"})
+            C.write_json(os.path.join(run, "ready.json"), {"green": True})
+            ui.watch_jobs()
+            ui.watch_jobs()  # once only
+        ev = N.recent()["events"]
+        self.assertEqual([(e["title"], e["href"], e["repo"], e["ok"]) for e in ev],
+                         [("Checks passed", "#runs/20261023-1200-x", rid, True)])
+
+
+class RunTagsAndSearchTest(unittest.TestCase):
+    def setUp(self):
+        self.rid = "runs-%08x" % (abs(hash(self._testMethodName)) % 16 ** 8)
+
+    def _run(self, name, brief, **meta):
+        d = C.ensure_dir(C.lfg_path("runs", self.rid, name))
+        C.write_json(os.path.join(d, "run.json"), dict({"run_id": name, "slug": name[14:]}, **meta))
+        C.write_text(os.path.join(d, "01-brief.md"), brief)
+        return d
+
+    def test_tags_and_whether_a_run_is_still_needed(self):
+        prs = {7: {"number": 7, "state": "MERGED", "url": "https://github.com/o/r/pull/7", "headRefName": "feat/a"},
+               8: {"number": 8, "state": "OPEN", "url": "u8", "headRefName": "feat/b"}}
+        by_branch = {p["headRefName"]: p for p in prs.values()}
+        gb = {"default": "main", "merged": {"old/c"}, "local": [], "current": "main"}
+
+        def life(r):
+            return dash.run_life(dict({"stages": {"brief": True, "build": False}}, **r), prs, by_branch, gb)
+        fix = dash.run_life({"kind": "pr-fix", "pr": 7, "fix": {"ok": True, "done": {"failed": 0}}}, prs, by_branch, gb)
+        self.assertEqual([t["text"] for t in fix["tags"]], ["Fix run", "PR #7"])
+        self.assertEqual((fix["tags"][1]["tone"], fix["life"], fix["life_why"]),
+                         ("merged", "not-needed", "PR #7 merged"))
+        self.assertEqual(life({"branch": "feat/b"})["life"], "active")  # its PR is still open
+        self.assertEqual(life({"branch": "old/c"})["life_why"], "Branch merged")
+        self.assertEqual(life({"branch": "main"})["tags"], [])  # the default branch isn't any PR's
+        self.assertEqual(life({"branch": "x", "issue": "ato-12"})["tags"], [{"text": "ATO-12", "tone": ""}])
+        long = life({"branch": "x", "issue": "iss-rollout-devices-onboarding-backend-gap-analysis"})["tags"][0]
+        self.assertEqual((long["text"], long["title"]),
+                         ("Issue: rollout devices onboarding…", "iss-rollout-devices-onboarding-backend-gap-analysis"))
+        self.assertEqual(life({"branch": "x", "stages": {"brief": True, "build": True}})["life"], "done")
+        self.assertEqual(life({"branch": "feat/b", "archived": "2026"})["life_why"], "Marked not needed")
+
+    def test_pr_states_are_fetched_by_the_watcher_and_only_read_by_pages(self):
+        calls = []
+        out = json.dumps([{"number": 5, "headRefName": "feat/x", "state": "MERGED"},
+                          {"number": 9, "headRefName": "feat/x", "state": "OPEN"}])
+
+        def gh(argv, **k):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, out)
+        with mock.patch.object(dash, "repo_root", lambda rid: C.LFG_HOME), \
+                mock.patch.object(C, "which", lambda x: "/bin/gh"), mock.patch.object(C, "run", gh):
+            self.assertEqual(dash.pr_states(self.rid), ({}, {}))  # nothing fetched yet: a page doesn't ask GitHub
+            self.assertEqual(calls, [])
+            self.assertTrue(dash.refresh_pr_states(self.rid))
+            self.assertFalse(dash.refresh_pr_states(self.rid))  # fresh for 10 minutes
+            self.assertEqual(len(calls), 1)
+        by_n, by_branch = dash.pr_states(self.rid)
+        self.assertEqual((sorted(by_n), by_branch["feat/x"]["number"]), ([5, 9], 9))  # the newest PR of a branch
+
+    def test_mark_not_needed_and_back(self):
+        d = self._run("20261024-0900-thing", "a thing")
+        dash.set_needed(self.rid, "20261024-0900-thing", False)
+        self.assertTrue(C.read_json(os.path.join(d, "run.json"), {})["archived"])
+        dash.set_needed(self.rid, "20261024-0900-thing", True)
+        self.assertNotIn("archived", C.read_json(os.path.join(d, "run.json"), {}))
+        with self.assertRaises(ValueError):
+            dash.set_needed(self.rid, "../../etc", False)
+
+    def test_search_ranks_runs_by_what_they_are_about(self):
+        from lfgcore import runsearch as RS
+        a = self._run("20261020-1000-partition", "# Partition id for Windows devices\nEnroll each OS partition "
+                      "of a dual-boot machine separately using partition_id.", branch="varun/partitions")
+        b = self._run("20261021-1000-billing", "# Stripe billing webhooks\nRetry failed invoice events.")
+        c = self._run("20261022-1000-osquery", "# Harden osquery install on Windows\nVerify the MSI hash.")
+        dirs = [a, b, c]
+        with mock.patch.object(RS, "available", lambda: ("nomic-embed-text", False)):  # no model: TF-IDF
+            r = RS.search(self.rid, "dual boot partition enrollment", dirs)
+        self.assertEqual((r["engine"], r["results"][0]["run"]), ("tfidf", "20261020-1000-partition"))
+        self.assertNotIn("20261021-1000-billing", [x["run"] for x in r["results"]])
+        calls = []
+
+        def ollama(path, body=None, timeout=5):  # a fake local Ollama: vectors from a few keywords
+            calls.append(len(body["input"]))
+            keys = ["partition", "billing", "osquery"]
+            return {"embeddings": [[float(k in t.lower()) + 0.01 for k in keys] for t in body["input"]]}
+        from lfgcore import settings as ST
+        with mock.patch.object(RS, "available", lambda: ("nomic-embed-text", True)), \
+                mock.patch.object(ST, "_ollama_json", ollama):
+            r = RS.search(self.rid, "which run touched osquery?", dirs)
+            self.assertEqual((r["engine"], r["results"][0]["run"]), ("embeddings", "20261022-1000-osquery"))
+            RS.search(self.rid, "billing", dirs)  # the runs are embedded once, then only the query
+            self.assertEqual(calls, [3, 1, 1])
+            C.write_text(os.path.join(b, "02-design.md"), "now also about partitions")
+            os.utime(os.path.join(b, "02-design.md"), (time.time() + 5, time.time() + 5))
+            RS.search(self.rid, "billing", dirs)
+            self.assertEqual(calls[-2:], [1, 1])  # the changed run is embedded again
 
 
 class SonarTest(unittest.TestCase):
@@ -1530,7 +2048,8 @@ class SonarTest(unittest.TestCase):
             pass
         ok = subprocess.CompletedProcess([], 0, "", "")
         with mock.patch.object(SQ, "_docker", lambda *a, **k: ok), mock.patch.object(SQ, "_api", api), \
-                mock.patch.object(SQ, "server_state", lambda: "up"), mock.patch.object(C, "which", lambda n: "/x"):
+                mock.patch.object(SQ, "server_state", lambda: "up"), mock.patch.object(C, "which", lambda n: "/x"), \
+                mock.patch.object(SQ, "install_scanner", lambda *a, **k: None):  # no real npm install in a test
             SQ.setup(log=lambda m: None)
         c = SQ.creds()
         self.assertEqual(calls[0], ("/api/users/change_password", ("admin", "admin")))

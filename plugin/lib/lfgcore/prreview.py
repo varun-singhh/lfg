@@ -16,6 +16,7 @@ import time
 import uuid
 
 from . import common as C
+from . import notify as N
 from . import worktree as W
 
 PR_FIELDS = "number,title,author,url,headRefName,baseRefName,headRefOid,updatedAt,isDraft,additions,deletions," \
@@ -119,6 +120,8 @@ def pending(rid, root, fresh=False):
         hit = {"at": time.time(), "prs": prs}
         C.write_json(cache, hit)
     prs = {p["number"]: dict(p, requested=True) for p in hit.get("prs") or []}
+    every = open_prs(rid, root, fresh)
+    sync_states(rid, root, every)
     for d in sorted(os.listdir(folder(rid))) if os.path.isdir(folder(rid)) else []:
         m = re.match(r"^pr-(\d+)$", d)
         meta = _read(rid, int(m.group(1)), "meta.json", None) if m else None
@@ -129,9 +132,58 @@ def pending(rid, root, fresh=False):
     for n, p in sorted(prs.items(), key=lambda kv: kv[1].get("updatedAt") or "", reverse=True):
         st = state(rid, n, root, p)
         out.append(dict(p, author=(p.get("author") or {}).get("login") if isinstance(p.get("author"), dict)
-                        else p.get("author"), review=st))
-    return {"available": True, "prs": out, "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z",
-                                                                       time.localtime(hit.get("at", 0)))}
+                        else p.get("author"), review=st, stack=_stack_pos(every, n)))
+    return {"available": True, "prs": out, "closed": closed_reviews(rid),
+            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(hit.get("at", 0)))}
+
+
+def _metas(rid):
+    for d in sorted(os.listdir(folder(rid))) if os.path.isdir(folder(rid)) else []:
+        m = re.match(r"^pr-(\d+)$", d)
+        meta = _read(rid, int(m.group(1)), "meta.json", None) if m else None
+        if isinstance(meta, dict) and meta.get("number"):
+            yield int(m.group(1)), meta
+
+
+def sync_states(rid, root, hit):
+    """A review (or a comments read-through) whose PR is no longer open on GitHub: once GitHub confirms it was
+    merged or closed, the review here is marked closed too, with which and when, and announced. The worktree stays
+    until the user removes it (it may hold something of theirs). Nothing is decided without a fresh open-PR list,
+    and nothing is decided from that list alone: `gh pr view` is asked about each PR that left it."""
+    if not isinstance(hit, dict) or not hit.get("at"):
+        return []
+    still = {p.get("number") for p in hit.get("prs") or []}
+    done = []
+    for n, meta in _metas(rid):
+        if n in still or meta.get("pr_state") or os.path.exists(os.path.join(folder(rid, n), "job.json")):
+            continue
+        cp = _gh(root, "pr", "view", str(n), "--json", "state,mergedAt,closedAt", timeout=30)
+        try:
+            got = json.loads(cp.stdout or "{}") if cp.returncode == 0 else {}
+        except ValueError:
+            got = {}
+        st = got.get("state")
+        if st not in ("MERGED", "CLOSED"):
+            continue
+        meta.update(status="closed", pr_state=st, ended_at=got.get("mergedAt") or got.get("closedAt") or C.now_iso())
+        _write(rid, n, "meta.json", meta)
+        N.add("review", "#%d was %s, so its review is closed" % (n, "merged" if st == "MERGED" else "closed"),
+              (meta.get("pr") or {}).get("title") or "", _href(meta, n), rid)
+        done.append(n)
+    return done
+
+
+def closed_reviews(rid, limit=30):
+    """Reviews whose PR was merged or closed, newest first: the Reviews page's Closed list."""
+    out = []
+    for n, meta in _metas(rid):
+        if meta.get("pr_state"):
+            wt = meta.get("worktree")
+            out.append({"number": n, "title": (meta.get("pr") or {}).get("title"), "author": meta.get("author"),
+                        "state": meta["pr_state"], "ended_at": meta.get("ended_at"),
+                        "mine": meta.get("mode") == "triage",
+                        "worktree": os.path.basename(wt) if wt and os.path.isdir(wt) else None})
+    return sorted(out, key=lambda x: x.get("ended_at") or "", reverse=True)[:limit]
 
 
 def state(rid, n, root, pr=None):
@@ -144,9 +196,10 @@ def state(rid, n, root, pr=None):
     job = _read(rid, n, "job.json", None)
     head = (pr or {}).get("headRefOid") or ""
     return {"status": "working" if job else meta.get("status", "ready"), "job": (job or {}).get("kind"),
-            "worktree": meta.get("worktree"), "worktree_name": os.path.basename(meta.get("worktree") or ""),
+            "worktree": meta.get("worktree"),
+            "worktree_name": os.path.basename(meta["worktree"]) if os.path.isdir(meta.get("worktree") or "") else "",
             "reviewed_sha": meta.get("head"), "new_commits": bool(head and meta.get("head") and head != meta["head"]),
-            "posted": meta.get("posted")}
+            "posted": meta.get("posted"), "pr_state": meta.get("pr_state"), "ended_at": meta.get("ended_at")}
 
 
 # ---------------------------------------------------------------- starting a review
@@ -206,16 +259,41 @@ def _prepare(rid, root, n, mode):
     return pr, meta
 
 
-def start(rid, root, n):
-    """Make (or reuse) the review worktree at the PR head and start the AI's first pass in the background."""
+def _focus(text):
+    """The reviewer's own instructions for this pass ("look hard at the migration", "ignore the generated client"),
+    added to the AI's prompt. Optional; checked like anything else that's saved."""
+    text = str(text or "").strip()
+    if len(text) > 4000:
+        raise Invalid("keep the instructions under 4000 characters")
+    from . import settings as S
+    if text and S._secret_kinds(text):
+        raise Invalid("the instructions look like they contain a secret; leave it out")
+    return text
+
+
+def _focus_note(text):
+    return ("\n\nThe reviewer's own instructions for this pass (they come first; follow them within the rules "
+            "above):\n%s\n" % text) if text else ""
+
+
+def start(rid, root, n, focus=""):
+    """Make (or reuse) the review worktree at the PR head and start the AI's first pass in the background, with the
+    reviewer's own instructions for this pass when they gave some."""
     n = _num(n)
+    focus = _focus(focus)
     pr, meta = _prepare(rid, root, n, "review")
     sha, mb = meta["head"], meta["merge_base"]
     if not _read(rid, n, "draft.json", None):
         _write(rid, n, "draft.json", {"summary": "", "event": "COMMENT", "include_ratings": True, "comments": [],
                                       "ratings": [{"area": a, "ai": None, "mine": None, "why": ""} for a in AREAS],
                                       "questions": []})
-    _run(rid, root, n, "review", _first_prompt(pr, sha, mb), resume=bool(meta.get("ai_started")))
+    again = bool(meta.get("ai_started"))
+    if again or focus:  # Re-run review: a fresh pass in the same conversation, so what was discussed still counts
+        _say(rid, n, "me", ("Review it again from the top." if again else "Review it.") +
+             ("\n\nFocus: %s" % focus if focus else ""), auto=not focus)
+    _run(rid, root, n, "review", _first_prompt(pr, sha, mb) + _stack_note(rid, root, pr) + _focus_note(focus),
+         resume=again)
+    meta["focus"] = focus or None
     meta["ai_started"] = True
     _write(rid, n, "meta.json", meta)
     return {"started": True, "worktree": meta["worktree"]}
@@ -275,6 +353,20 @@ def _claude_argv(root, session, resume, role="expert-review", allowed=None, deni
     return argv
 
 
+def _child_env(root):
+    """The environment for LFG's background Claude Code runs, and whether they go through Headroom. They go where a
+    terminal session in this repo would (repo settings, then user settings); when that is Headroom, it is pinned
+    here too, so a dashboard started from something that sets its own ANTHROPIC_BASE_URL (the Claude desktop app
+    does) can't send them around the proxy."""
+    from . import headroom as H
+    env = dict(os.environ)
+    target = H.base_url(C.main_root(root), use_env=False)
+    if target and target.rstrip("/") == H.local_url():
+        env["ANTHROPIC_BASE_URL"] = target
+        return env, "headroom"
+    return env, "direct"
+
+
 def _run(rid, root, n, kind, prompt, resume):
     if not C.which("claude"):
         raise Invalid("Claude Code (claude) isn't on PATH")
@@ -284,11 +376,12 @@ def _run(rid, root, n, kind, prompt, resume):
     ask_file = os.path.join(folder(rid, n), "job-%d.in" % k)
     C.write_text(ask_file, prompt)
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    env, via = _child_env(root)
     with os.fdopen(fd, "wb") as fh, open(ask_file, "rb") as fin:  # the prompt goes in on stdin, never on argv
         p = subprocess.Popen(_claude_argv(root, meta["session"], resume), cwd=meta["worktree"],
-                             stdout=fh, stderr=subprocess.STDOUT, stdin=fin,
+                             stdout=fh, stderr=subprocess.STDOUT, stdin=fin, env=env,
                              start_new_session=True, close_fds=True)
-    _write(rid, n, "job.json", {"pid": p.pid, "kind": kind, "out": out, "started": C.now_iso()})
+    _write(rid, n, "job.json", {"pid": p.pid, "kind": kind, "out": out, "started": C.now_iso(), "via": via})
 
 
 # ---------------------------------------------------------------- talking it through
@@ -325,15 +418,20 @@ def _busy(rid, n):
 
 
 def _alive(pid):
-    try:
-        os.kill(int(pid), 0)
-    except (OSError, TypeError, ValueError):
-        return False
-    return True
+    return N.alive(pid)
 
 
 def settle(rid, n):
-    """If the AI's background turn has finished, read its answer into the chat and the draft."""
+    """If the AI's background turn has finished, read its answer into the chat and the draft, and announce it."""
+    with N.SETTLE:
+        _settle(rid, n)
+
+
+def _href(meta, n, tab=""):
+    return "#review/%s%d%s" % ("yours/" if (meta or {}).get("mode") == "triage" else "", n, tab)
+
+
+def _settle(rid, n):
     job = _read(rid, n, "job.json", None)
     if not isinstance(job, dict) or _alive(job.get("pid")):
         return
@@ -351,6 +449,8 @@ def settle(rid, n):
                     "would in this repo (through Headroom if it routes the repo), so check that `claude` works in a "
                     "terminal there, and Integrations → Headroom's destination.")
         _say(rid, n, "ai", "The AI run didn't finish: %s" % why, error=True)
+        N.add("review", "The AI run on #%d didn't finish" % n, why.splitlines()[0][:200], _href(meta, n), rid,
+              ok=False)
         if job.get("kind") in ("review", "triage"):  # the first pass failed: Try again starts a fresh session
             meta.update(session=str(uuid.uuid4()), ai_started=False)
     else:
@@ -362,7 +462,13 @@ def settle(rid, n):
                 changed = apply(rid, n, json.loads(blocks[-1]))
             except ValueError:
                 shown += "\n\n(The draft update it sent wasn't valid JSON, so the draft is unchanged.)"
-        _say(rid, n, "ai", shown or "Updated the draft.", changed=changed, cost=res.get("total_cost_usd"))
+        _say(rid, n, "ai", shown or "Updated the draft.", changed=changed, cost=res.get("total_cost_usd"),
+             via=job.get("via"))
+        title = (meta.get("pr") or {}).get("title") or ""
+        kind = job.get("kind")
+        N.add("review", "Review of #%d is ready" % n if kind == "review" else
+              "Comments on #%d are read" % n if kind == "triage" else "The AI answered on #%d" % n,
+              title if kind in ("review", "triage") else _title(shown)[:200], _href(meta, n), rid)
     meta["status"] = "ready"
     _write(rid, n, "meta.json", meta)
     try:
@@ -507,6 +613,20 @@ def _diff_lines(meta):
     return out
 
 
+SEVERITY = {"blocker": "Blocker", "critical": "Critical", "major": "Major", "minor": "Minor", "nit": "Nitpick",
+            "nitpick": "Nitpick", "suggestion": "Suggestion", "question": "Question"}
+
+
+def _flag(c):
+    """A comment's severity as its first line, the way review bots and people write it: "**Major**", a blank line,
+    then the comment. Left alone when the body already starts with it."""
+    label = SEVERITY.get(str(c.get("severity") or "").strip().lower())
+    body = str(c.get("body") or "").strip()
+    if not label or re.match(r"^\**%s\b" % label, body, re.I):
+        return body
+    return "**%s**\n\n%s" % (label, body)
+
+
 def outgoing(rid, n):
     """Exactly what Post sends: the review body, its event, and which comments go inline or into the body."""
     n = _num(n)
@@ -519,7 +639,7 @@ def outgoing(rid, n):
         if not c.get("include", True):
             continue
         if c.get("path") and c.get("line") and c["line"] in lines.get(c["path"], ()):
-            inline.append({"path": c["path"], "line": c["line"], "side": "RIGHT", "body": c["body"]})
+            inline.append({"path": c["path"], "line": c["line"], "side": "RIGHT", "body": _flag(c)})
         else:
             loose.append(c)
     body = (d.get("summary") or "").strip()
@@ -528,8 +648,8 @@ def outgoing(rid, n):
         body += "\n\n| Area | Rating |\n|---|---|\n" + "\n".join("| %s | %d/5 |" % (r["area"], r["mine"])
                                                               for r in rated)
     if loose:
-        body += "\n\n" + "\n\n".join(("**%s%s**: " % (c["path"], ":%d" % c["line"] if c.get("line") else "")
-                                      if c.get("path") else "") + c["body"] for c in loose)
+        body += "\n\n" + "\n\n".join(("`%s%s`\n" % (c["path"], ":%d" % c["line"] if c.get("line") else "")
+                                      if c.get("path") else "") + _flag(c) for c in loose)
     return {"event": d.get("event") if d.get("event") in EVENTS else "COMMENT", "body": body.strip(),
             "commit_id": meta["head"], "comments": inline, "in_body": len(loose)}
 
@@ -599,8 +719,12 @@ def detail(rid, root, n):
         if p.get("number") == n:
             pr = dict(p, author=(p.get("author") or {}).get("login") if isinstance(p.get("author"), dict)
                       else p.get("author"))
+    if pr is None:  # not asking for your review: what the open-PR list knows about it
+        pr = next((dict(p, author=(p.get("author") or {}).get("login")) for p in open_prs(rid, root).get("prs") or []
+                   if p.get("number") == n), None)
     if not isinstance(meta, dict):
-        return {"number": n, "pr": pr, "review": {"status": "new"}, "worktree_to_be": worktree_path(root, n)}
+        return {"number": n, "pr": pr, "review": {"status": "new"}, "worktree_to_be": worktree_path(root, n),
+                "stack": stack_view(rid, root, n)}
     job = _read(rid, n, "job.json", None)
     draft = _read(rid, n, "draft.json", {}) or {}
     if meta.get("worktree") and os.path.isdir(meta["worktree"]):
@@ -612,7 +736,7 @@ def detail(rid, root, n):
             "review": state(rid, n, root, pr), "meta": {k: meta.get(k) for k in ("head", "merge_base", "base",
                                                                               "worktree", "started", "posted")},
             "draft": draft, "chat": chat(rid, n),
-            "working_since": (job or {}).get("started")}
+            "working_since": (job or {}).get("started"), "stack": stack_view(rid, root, n)}
 
 
 # ---------------------------------------------------------------- your own PRs: triage the comments you got
@@ -624,6 +748,108 @@ THREADS_Q = """query($o: String!, $r: String!, $n: Int!, $after: String) { repos
       comments(first: 50) { nodes { databaseId author { login __typename } body url createdAt } } } }
   reviews(first: 100) { nodes { databaseId author { login __typename } body state url } }
   comments(first: 100) { nodes { databaseId author { login __typename } body url } } } } }"""
+
+# ---------------------------------------------------------------- stacked pull requests
+
+OPEN_FIELDS = "number,title,author,url,headRefName,baseRefName,isDraft"
+
+
+def _trunk(root):
+    """The repo's default branch (origin/HEAD), "main" when git doesn't know."""
+    ref = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").stdout.strip()
+    return ref.split("/", 1)[1] if ref.startswith("origin/") else "main"
+
+
+def open_prs(rid, root, fresh=False):
+    """Every open PR in the repo (cached 5 minutes), to see which ones are stacked on each other."""
+    cache = os.path.join(C.ensure_dir(folder(rid)), "open.json")
+    hit = C.read_json(cache, None)
+    if fresh or not isinstance(hit, dict) or time.time() - hit.get("at", 0) > 300:
+        cp = _gh(root, "pr", "list", "--state", "open", "--json", OPEN_FIELDS, "--limit", "300")
+        try:
+            prs = json.loads(cp.stdout or "[]") if cp.returncode == 0 else None
+        except ValueError:
+            prs = None
+        if prs is None:  # gh failed: keep what we had, never a broken stack
+            return hit if isinstance(hit, dict) else {"prs": []}
+        hit = {"at": time.time(), "prs": prs, "trunk": _trunk(root)}
+        C.write_json(cache, hit)
+    return hit
+
+
+def stack(hit, n):
+    """PR n's stack, trunk side first: the open PRs its base branch sits on, then n, then the PRs stacked on top of
+    it (several can sit on one). [] when n isn't stacked. A PR is a parent when its head branch is another's base;
+    the trunk itself never counts, even when some PR uses it as a head."""
+    prs = {p["number"]: p for p in (hit or {}).get("prs") or [] if isinstance(p, dict) and p.get("number")}
+    if n not in prs:
+        return []
+    trunk = (hit or {}).get("trunk") or "main"
+    by_head = {}
+    for p in sorted(prs.values(), key=lambda p: p["number"]):
+        if p.get("headRefName") and p["headRefName"] != trunk:
+            by_head.setdefault(p["headRefName"], p)
+    kids = {}
+    for p in prs.values():
+        up = by_head.get(p.get("baseRefName"))
+        if up and up["number"] != p["number"]:
+            kids.setdefault(up["number"], []).append(p)
+    seen, down, cur = {n}, [], prs[n]
+    while by_head.get(cur.get("baseRefName")) and by_head[cur["baseRefName"]]["number"] not in seen:
+        cur = by_head[cur["baseRefName"]]
+        seen.add(cur["number"])
+        down.append(cur)
+    above = []
+
+    def walk(p):
+        for c in sorted(kids.get(p["number"], []), key=lambda c: c["number"]):
+            if c["number"] not in seen:
+                seen.add(c["number"])
+                above.append(c)
+                walk(c)
+    walk(prs[n])
+    chain = list(reversed(down)) + [prs[n]] + above
+    return chain if len(chain) > 1 else []
+
+
+def stack_view(rid, root, n):
+    """The stack shown on a review page: each PR with whose it is and where its review stands here."""
+    chain = stack(open_prs(rid, root), n)
+    if not chain:
+        return None
+    login = me(root)
+    out = []
+    for i, p in enumerate(chain, 1):
+        author = (p.get("author") or {}).get("login") if isinstance(p.get("author"), dict) else p.get("author")
+        mine_ = bool(login) and author == login
+        meta = _read(rid, p["number"], "meta.json", None)
+        out.append({"number": p["number"], "title": p.get("title"), "author": author, "mine": mine_,
+                    "head": p.get("headRefName"), "base": p.get("baseRefName"), "draft": p.get("isDraft"),
+                    "url": p.get("url"), "pos": i, "current": p["number"] == n,
+                    "status": (meta or {}).get("status") if isinstance(meta, dict) else None,
+                    "mode": (meta or {}).get("mode") if isinstance(meta, dict) else None})
+    return {"trunk": chain[0].get("baseRefName"), "size": len(chain), "prs": out}
+
+
+def _stack_pos(hit, n):
+    chain = stack(hit, n)
+    return {"pos": [p["number"] for p in chain].index(n) + 1, "size": len(chain)} if chain else None
+
+
+def _stack_note(rid, root, pr):
+    """For the AI: a stacked PR is reviewed on its own change, against the PR it sits on."""
+    chain = stack(open_prs(rid, root), pr["number"])
+    if not chain:
+        return ""
+    nums = [p["number"] for p in chain]
+    i = nums.index(pr["number"])
+    below = chain[i - 1] if i else None
+    return ("\n\nThis pull request is part of a stack of %d (%s, bottom first)%s. Judge only this PR's own change "
+            "(the diff above); what the PRs below it change belongs to their reviews, and the ones above build on "
+            "this one.\n" % (len(chain), " <- ".join("#%d" % k for k in nums),
+                             "; it sits on #%d \"%s\" (branch %s)" % (below["number"], below.get("title", ""),
+                                                                     below.get("headRefName")) if below else ""))
+
 
 def me(root):
     """The signed-in GitHub login (cached a day)."""
@@ -648,7 +874,7 @@ def mine(rid, root, fresh=False):
             return {"available": False, "why": (cp.stderr or cp.stdout).strip()[-300:] or "gh pr list failed"}
         hit = {"at": time.time(), "prs": json.loads(cp.stdout or "[]")}
         C.write_json(cache, hit)
-    out = []
+    out, every = [], open_prs(rid, root, fresh)
     for p in hit.get("prs") or []:
         tri = _read(rid, p["number"], "triage.json", None) or {}
         th = tri.get("threads") or {}
@@ -657,7 +883,8 @@ def mine(rid, root, fresh=False):
                         open_threads=len(live),
                         worth_open=sum(1 for t in live if (t.get("worth") or 0) >= 30),
                         low_open=sum(1 for t in live if t.get("worth") is not None and t["worth"] < 30),
-                        decided=sum(1 for t in th.values() if t.get("decision") and not t.get("posted"))))
+                        decided=sum(1 for t in th.values() if t.get("decision") and not t.get("posted")),
+                        stack=_stack_pos(every, p["number"])))
     return {"available": True, "prs": out, "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z",
                                                                        time.localtime(hit.get("at", 0)))}
 
@@ -806,9 +1033,11 @@ def _triage_chat_prompt(text, tri):
             "reply_fix, reply_wont, wont_reasons)." % (text, json.dumps(keep, indent=1)[:20000]))
 
 
-def triage(rid, root, n):
-    """Read the comments on your PR and start the AI's triage of them in the background."""
+def triage(rid, root, n, focus=""):
+    """Read the comments on your PR and start the AI's triage of them in the background, with your own
+    instructions for it when you gave some."""
     n = _num(n)
+    focus = _focus(focus)
     pr, meta = _prepare(rid, root, n, "triage")
     ths = threads(root, meta.get("url"), n)
     old = (_read(rid, n, "triage.json", None) or {}).get("threads") or {}
@@ -820,8 +1049,13 @@ def triage(rid, root, n):
         tri["threads"][t["id"]] = dict(t, **keep)
     _write(rid, n, "triage.json", tri)
     todo = [t for t in ths if not t["resolved"] and not (old.get(t["id"]) or {}).get("worth")]
+    if focus and not todo:  # new instructions: read every open comment again with them
+        todo = [t for t in ths if not t["resolved"]]
     if todo:
-        _run(rid, root, n, "triage", _triage_prompt(pr, meta, todo), resume=bool(meta.get("ai_started")))
+        if focus:
+            _say(rid, n, "me", "Read the comments.\n\nFocus: %s" % focus)
+        _run(rid, root, n, "triage", _triage_prompt(pr, meta, todo) + _stack_note(rid, root, pr) + _focus_note(focus),
+             resume=bool(meta.get("ai_started")))
         meta["ai_started"] = True
     else:
         meta["status"] = "ready"
@@ -1076,10 +1310,11 @@ def fix_all(rid, root, n):
     argv = _claude_argv(root, str(uuid.uuid4()), False, role="software-engineer", allowed=FIX_TOOLS,
                         denied=FIX_DENIED, mode="acceptEdits", turns=200) + ["--add-dir", run]
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    env, via = _child_env(root)
     with os.fdopen(fd, "wb") as fh, open(prompt, "rb") as fin:
-        p = subprocess.Popen(argv, cwd=wt, stdout=fh, stderr=subprocess.STDOUT, stdin=fin, start_new_session=True,
-                             close_fds=True)
-    C.write_json(os.path.join(run, "fix-job.json"), {"pid": p.pid, "started": C.now_iso()})
+        p = subprocess.Popen(argv, cwd=wt, stdout=fh, stderr=subprocess.STDOUT, stdin=fin, env=env,
+                             start_new_session=True, close_fds=True)
+    C.write_json(os.path.join(run, "fix-job.json"), {"pid": p.pid, "started": C.now_iso(), "via": via})
     name = os.path.basename(run)
     for t in items:
         th = tri["threads"][t["id"]]
@@ -1100,7 +1335,13 @@ def fix_running(d):
 
 
 def settle_fix(d):
-    """If a fix run's AI has finished, keep its report and result, and mark each comment fixed, skipped or failed."""
+    """If a fix run's AI has finished, keep its report and result, mark each comment fixed, skipped or failed, and
+    announce it."""
+    with N.SETTLE:
+        _settle_fix(d)
+
+
+def _settle_fix(d):
     job_p = os.path.join(d, "fix-job.json")
     job = C.read_json(job_p, None)
     if not isinstance(job, dict) or _alive(job.get("pid")):
@@ -1136,8 +1377,16 @@ def settle_fix(d):
                            "files": []})
     C.write_text(os.path.join(d, "fix-report.md"), "# What the AI fix run did\n\n%s\n" % report)
     C.write_json(os.path.join(d, "fix-result.json"), {"at": C.now_iso(), "ok": bool(text) and not res.get("is_error"),
-                                                      "cost": res.get("total_cost_usd"), "items": got})
+                                                      "cost": res.get("total_cost_usd"), "items": got,
+                                                      "via": job.get("via")})
     rid, n = run.get("repo_id"), run.get("pr")
+    counts = {s: sum(1 for x in got.values() if x["status"] == s) for s in FIX_STATUS}
+    ok = bool(text) and not res.get("is_error")
+    N.add("fix", ("Fix run for #%s finished: %d fixed" % (n, counts["fixed"]) +
+                  "".join(", %d %s" % (counts[s], s) for s in ("skipped", "failed") if counts[s]))
+          if ok else "The fix run for #%s didn't finish" % n,
+          "Changes are unstaged on %s" % run.get("branch") if ok else report.splitlines()[-1][:200],
+          "#runs/%s" % os.path.basename(d), rid, ok=ok)
     tri = _read(rid, n, "triage.json", None) if rid and n else None
     if isinstance(tri, dict):
         for i, r in got.items():
@@ -1157,7 +1406,7 @@ def fixes(rid, n, meta):
         settle_fix(d)
         res = C.read_json(os.path.join(d, "fix-result.json"), None) or {}
         out.append({"run": name, "working": fix_running(d), "ok": res.get("ok"), "cost": res.get("cost"),
-                    "at": res.get("at"), "items": res.get("items") or {}})
+                    "at": res.get("at"), "items": res.get("items") or {}, "via": res.get("via")})
     return out
 
 
@@ -1175,7 +1424,8 @@ def triage_detail(rid, root, n):
             "meta": {k: meta.get(k) for k in ("head", "worktree", "started")} if meta else {},
             "worktree_to_be": worktree_path(root, n), "triage": _with_queue(_read(rid, n, "triage.json", {}) or {}),
             "chat": chat(rid, n), "working_since": (job or {}).get("started"),
-            "fixes": fixes(rid, n, meta) if meta else [], "fix_where": _fix_target(root, meta)}
+            "fixes": fixes(rid, n, meta) if meta else [], "fix_where": _fix_target(root, meta),
+            "stack": stack_view(rid, root, n)}
 
 
 def _with_queue(tri):

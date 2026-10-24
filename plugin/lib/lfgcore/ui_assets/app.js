@@ -485,6 +485,12 @@ function wire(root) {
     if (!r.ok) { b.disabled = false; b.textContent = "Run checks again"; alert(String(r.why || "Couldn't start the checks.").replace(/`/g, "")); return; }
     state.cache = {}; route();
   });
+  $$("[data-run-needed]", root).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const r = await save("run_needed", { repo: state.repo, run: b.dataset.run, needed: b.dataset.runNeeded === "1" });
+    if (!r.ok) { b.disabled = false; return alert(String(r.why || "Not saved.")); }
+    state.cache = {}; route();
+  });
   if ($("[data-checks-running]", root)) setTimeout(() => { if (document.body.contains(root) && $("[data-checks-running]", root)) { state.cache = {}; route(); } }, 10000);
   if ($("[data-run-working]", root)) setTimeout(() => { if (document.body.contains(root) && $("[data-run-working]", root)) { state.cache = {}; route(); } }, 8000);
   if ($("[data-spend-pending]", root)) setTimeout(() => { if (document.body.contains(root) && $("[data-spend-pending]", root)) route(); }, 4000);
@@ -547,13 +553,7 @@ function mountRuleTips() {
 
 // ------------------------------------------------------------------ settings (the only writes)
 const editKey = () => localStorage.getItem("lfg.editKey") || "";
-async function isUnlocked() {
-  if (!editKey()) return false;
-  try {
-    const r = await fetch("/api/unlocked", { headers: { "X-LFG": "1", "X-LFG-Key": editKey() } });
-    return r.ok && (await r.json()).ok;
-  } catch (e) { return false; }
-}
+async function isUnlocked() { return true; }  // editing is always on; the server only takes changes from this page
 async function save(what, body) {
   try {
     const r = await fetch(`/api/save/${what}`, { method: "POST", body: JSON.stringify(body),
@@ -1106,7 +1106,7 @@ async function offerTours() {
 }
 
 // ------------------------------------------------------------------ pages
-const NAV = [["home", "Home"], ["runs", "Runs"], ["issues", "Issues"], ["review", "Reviews"], ["checks", "Checks"], ["code", "Code"], ["docs", "Docs"],
+const NAV = [["home", "Home"], ["todos", "Todos"], ["runs", "Runs"], ["issues", "Issues"], ["review", "Reviews"], ["checks", "Checks"], ["code", "Code"], ["docs", "Docs"],
   ["knowledge", "Knowledge"], ["usage", "Usage"], ["skills", "Skills"], ["integrations", "Integrations"], ["settings", "Settings"], ["help", "Help"]];
 const TITLES = Object.fromEntries(NAV);
 const PAGES = {};
@@ -1178,18 +1178,64 @@ PAGES.home = async () => {
     ${section("This week", `<div class="cols">${(d.spend || {}).available ? stat("AI cost", usd(d.spend["7d"]), `${compact(used)} tokens, all projects${saved ? ` · ${compact(saved)} saved by compression` : ""}`) : stat("AI tokens", compact(used), `all projects, last 7 days · ${cached}% from cache${saved ? ` · ${compact(saved)} saved by compression` : ""}`)}${stat("Code map", say(g.status)[0] || "Unknown", `${g.status === "missing" ? "not built yet" : g.synced_at ? `updated ${ago(g.synced_at)}` : ""} ${mapBtn(g.status)}`)}${d.work && !d.work.why ? stat("Issues ready to start", n(d.work.ready), d.work.blocked ? `${n(d.work.blocked)} blocked` : "none blocked") : d.work ? stat("Issues", "Not available", fmtWhy(d.work.why)) : ""}</div>`)}`;
 };
 
+/* Runs: each with tags (its PR and that PR's state, its issue, a fix run) and whether it still needs anything (done,
+   or not needed: its PR merged or closed, its branch merged, or you said so). Search finds runs by meaning: a vector
+   search over each run's brief, tasks and notes, on this computer. */
+const LIFE = { active: ["Active", "on"], done: ["Done", "ok"], "not-needed": ["Not needed", ""] };
+const runTags = r => `${(r.tags || []).map(t => t.href ? `<a class="tg ${t.tone || ""}" href="${esc(t.href)}" target="_blank" rel="noopener noreferrer" title="${esc(t.state ? `${t.text} is ${t.state.toLowerCase()} on GitHub` : t.text)}" onclick="event.stopPropagation()">${esc(t.text)}${t.state === "MERGED" ? " · merged" : t.state === "CLOSED" ? " · closed" : ""}</a>` : `<span class="tg ${t.tone || ""}"${t.title ? ` title="${esc(t.title)}"` : ""}>${esc(t.text)}</span>`).join("")}${r.life && r.life !== "active" ? `<span class="tg${r.life === "done" ? " ok" : " faded"}" title="${esc(r.life_why || "")}">${esc(LIFE[r.life][0])}${r.life_why && r.life === "not-needed" ? ` · ${esc(r.life_why)}` : ""}</span>` : ""}`;
 PAGES.runs = async arg => {
   if (arg) return runDetail(arg);
   const d = await cachedRuns();
   if (d.available === false) return unavailable(d);
+  const v = state.runsView = Object.assign({ filter: "active", q: "", hits: null, engine: null }, state.runsView || {});
+  const count = k => d.runs.filter(r => k === "all" || (r.life || "active") === k).length;
+  const chip = (k, label) => `<button class="pill${v.filter === k ? " on" : ""}" data-runs-filter="${k}">${label} <span class="muted">${count(k)}</span></button>`;
   return `${head("Runs", "Each run is one piece of work LFG took from idea to a commit you can review. Click one to see where it is.")}
-    <div class="box">${table(d.runs, [
-      { k: "slug", label: "Work", html: r => `${esc(runName(r))}${r.current ? ' <span class="tag">current</span>' : ""}${r.about ? `<div class="about clamp">${txt(r.about)}</div>` : ""}<div class="sub">${r.owner ? `filed under ${esc(r.owner_name)} · ${plural(r.tasks_here, "task")} for this repo, ${n(r.tasks_here_done)} done` : r.branch ? `branch ${esc(r.branch)}${r.pr ? ` · PR #${esc(r.pr)}` : ""}` : ""}</div>`, sort: r => runName(r) },
-      { k: "progress", label: "Where it is", html: r => esc(runLine(r, d.stages)), sort: r => r.progress },
-      { k: "attn", label: "Status", html: r => { if (r.fix && r.fix.working) return `<span class="st">${dot("on")}AI working</span>`; const a = runAttention(r); return a.length ? `<span class="st">${dot(a[0][0])}${esc(a[0][1])}</span>` : `<span class="st">${dot("ok")}On track</span>`; }, sort: r => runAttention(r).length },
-      { k: "created", label: "Started", html: r => `<span class="nowrap">${ago(r.created)}</span>` },
-    ], { onRow: r => (location.hash = "#runs/" + encodeURIComponent(r.run)), emptyTitle: "No runs yet", emptyBody: "Start one in Claude Code with <code>/lfg:lfg</code> and what you want built." })}</div>`;
+    <div class="runs-bar"><input type="search" id="runs-q" placeholder="Search runs by what they're about, e.g. &quot;partition id on windows&quot;" value="${esc(v.q)}" autocomplete="off">
+      <span class="seg">${chip("active", "Active")}${chip("done", "Done")}${chip("not-needed", "Not needed")}${chip("all", "All")}</span></div>
+    <div id="runs-note" class="muted small"></div>
+    <div class="box" id="runs-box"></div>`;
 };
+function runsTable() {
+  const d = state.cache["runs:" + state.repo], v = state.runsView, box = $("#runs-box");
+  if (!d || !box) return;
+  let rows = d.runs.filter(r => v.filter === "all" || (r.life || "active") === v.filter);
+  if (v.hits) {  // search: only matches, best first
+    const rank = Object.fromEntries(v.hits.map((h, i) => [h.run, [i, h.score]]));
+    rows = d.runs.filter(r => rank[r.run] && (v.filter === "all" || (r.life || "active") === v.filter)).sort((x, y) => rank[x.run][0] - rank[y.run][0]);
+    rows.forEach(r => { r.match = rank[r.run][1]; });
+  }
+  box.innerHTML = table(rows, [
+    { k: "slug", label: "Work", html: r => `${esc(runName(r))}${r.current ? ' <span class="tag">current</span>' : ""}${v.hits && r.match != null ? ` <span class="tg on" title="How close it is to your search">${Math.round(r.match * 100)}% match</span>` : ""}${r.about ? `<div class="about clamp">${txt(r.about)}</div>` : ""}<div class="sub">${r.owner ? `filed under ${esc(r.owner_name)} · ${plural(r.tasks_here, "task")} for this repo, ${n(r.tasks_here_done)} done` : r.branch ? `<span class="brtag">${esc(r.branch)}</span>` : ""}</div><div class="run-tags">${runTags(r)}</div>`, sort: r => runName(r) },
+    { k: "progress", label: "Where it is", html: r => esc(runLine(r, d.stages)), sort: r => r.progress },
+    { k: "attn", label: "Status", html: r => { if (r.fix && r.fix.working) return `<span class="st">${dot("on")}AI working</span>`; if (r.life === "not-needed") return `<span class="st">${dot("")}${esc(r.life_why || "Not needed")}</span>`; const a = runAttention(r); return a.length ? `<span class="st">${dot(a[0][0])}${esc(a[0][1])}</span>` : `<span class="st">${dot("ok")}${r.life === "done" ? "Done" : "On track"}</span>`; }, sort: r => runAttention(r).length },
+    { k: "created", label: "Started", html: r => `<span class="nowrap">${ago(r.created)}</span>` },
+  ], { filter: false, onRow: r => (location.hash = "#runs/" + encodeURIComponent(r.run)), emptyTitle: v.hits ? "No run matches that" : v.filter === "active" ? "Nothing active" : "No runs here", emptyBody: v.hits ? "Try other words, or the All filter." : v.filter === "active" ? "Every run is done or not needed. See Done or All." : "Start one in Claude Code with <code>/lfg:lfg</code> and what you want built." });
+  mountTables(box);
+}
+let runsTimer = null;
+function wireRuns(root) {
+  if (!$("#runs-box", root)) return;
+  const v = state.runsView, note = $("#runs-note", root);
+  const engineNote = r => {
+    if (!r || !r.engine) { note.innerHTML = ""; return; }
+    note.innerHTML = r.engine === "embeddings" ? `Searching by meaning with <code>${esc(r.model)}</code> on your Ollama.`
+      : `Word-based vector search (TF-IDF). For search by meaning, install the local embedding model <code>${esc(r.model)}</code> (about 270 MB, from the Ollama library, runs only on your Ollama): <button class="btn small" id="runs-model">Install</button>`;
+    const b = $("#runs-model", note);
+    if (b) b.onclick = async () => { b.disabled = true; b.textContent = "Installing…"; const s = await save("ollama_pull", { name: r.model }); note.innerHTML = s.ok ? "Downloading the model in the background; search uses it once it's ready." : fmtWhy(s.why || "Couldn't start the download."); };
+  };
+  const run = async () => {
+    const q = $("#runs-q", root).value.trim(); v.q = q;
+    if (!q) { v.hits = null; engineNote(null); return runsTable(); }
+    note.innerHTML = '<span class="spin"></span> Searching…';
+    const r = await api("runs_search", { q });
+    if (v.q !== q) return;  // a newer search is on its way
+    v.hits = r.results || []; engineNote(r); runsTable();
+  };
+  $("#runs-q", root).oninput = () => { clearTimeout(runsTimer); runsTimer = setTimeout(run, 350); };
+  $$("[data-runs-filter]", root).forEach(b => b.onclick = () => { v.filter = b.dataset.runsFilter; $$("[data-runs-filter]", root).forEach(x => x.classList.toggle("on", x === b)); runsTable(); });
+  if (v.q) run(); else runsTable();
+}
 
 const FILE_NAMES = { "01-brief.md": "The idea, written up", "02-design.md": "The plan", "tasks.json": "Task list", "04-qa.md": "Test report",
   "ready.json": "Check results", "05-secure.json": "Security check", "05-pentest.json": "Security test", "06-review.json": "Code review",
@@ -1200,6 +1246,9 @@ const FILE_ORDER = ["01-brief.md", "02-design.md", "tasks.json", "03-build-", "0
   "06-review.json", "07-shipcheck.json", "COMMIT_MSG.md", "PR_BODY.md", "progress.md"];
 const fileRank = f => { const i = FILE_ORDER.findIndex(x => f === x || (x.endsWith("-") && f.startsWith(x))); return i < 0 ? 99 : i; };
 
+const runLifeBar = (d, run) => d.owner_name ? "" : `<div class="run-life"><div class="run-tags">${runTags(d)}</div><span class="grow"></span>${d.archived
+  ? `<button class="btn small" data-run-needed="1" data-run="${esc(run)}">Needed again</button>`
+  : `<button class="btn small" data-run-needed="0" data-run="${esc(run)}" title="Hide it from Active; nothing is deleted">Mark not needed</button>`}</div>`;
 async function runDetail(run) {
   const [d, all] = await Promise.all([api("run", { run }), cachedRuns()]);
   if (d.available === false) return unavailable(d);
@@ -1215,12 +1264,12 @@ async function runDetail(run) {
   const checks = d.checks.length ? `${recheck}<div class="box items">${readyChecks(d.checks)}</div>` : recheck;
   crumbs("runs", runName(d));
   const docs = files.length ? section("Documents", `<div class="box"><ul class="list">${files.map(f => `<li><a href="#" class="grow" data-run-file='${esc(JSON.stringify([f.run, f.name]))}'>${esc(f.label)}</a><span class="muted small nowrap" title="${esc(f.mtime)}">${ago(f.mtime.replace(" ", "T"))}</span></li>`).join("")}</ul></div>`) : "";
-  if (d.fix) return `${head(runName(d), `On branch <span class="brtag">${esc(d.branch)}</span>${d.pr ? ` · <a href="#review/yours/${esc(d.pr)}">PR #${esc(d.pr)} in Reviews</a>${d.pr_url ? ` · <a href="${esc(d.pr_url)}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>` : ""}` : ""} · started ${ago(d.created)}`, '<a class="back" href="#runs">← All runs</a>')}
+  if (d.fix) return `${head(runName(d), `On branch <span class="brtag">${esc(d.branch)}</span>${d.pr ? ` · <a href="#review/yours/${esc(d.pr)}">PR #${esc(d.pr)} in Reviews</a>${d.pr_url ? ` · <a href="${esc(d.pr_url)}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>` : ""}` : ""} · started ${ago(d.created)}`, '<a class="back" href="#runs">← All runs</a>')}${runLifeBar(d, run)}
     <div class="panel"${d.fix.working ? " data-run-working" : ""}><div class="row"><b>${d.fix.working ? '<span class="spin"></span> ' : ""}${esc(runLine(d))}</b></div>
       ${d.worktree ? `<p class="muted small">Working in <code>${esc(d.worktree)}</code>. Nothing is committed or pushed; review the changes there with <code>git diff</code>.</p>` : ""}
       ${Object.keys(d.fix.titles || {}).length ? `<div class="box items">${Object.entries(d.fix.titles).map(([i, c]) => [i, c, d.fix.items[i] || (d.fix.working ? { status: "working" } : {})]).map(([i, c, x]) => `<div class="fx-i"><span class="grow fx-t"><span>${esc(c.title || i)}${c.path ? ` <span class="muted small">${esc(c.path.split("/").pop())}${c.line ? ":" + c.line : ""}</span>` : ""}</span>${x.note ? `<span class="fx-note">${esc(x.note)}</span>` : ""}${(x.files || []).length ? `<span class="muted small">${x.files.map(esc).join(", ")}</span>` : ""}</span>${FIX_SAY[x.status] ? tagHtml(...FIX_SAY[x.status]) : ""}</div>`).join("")}</div>` : ""}</div>
     ${docs}`;
-  return `${head(runName(d), `${d.owner_name ? `Filed under ${esc(d.owner_name)} · ` : ""}${d.branch ? `On branch ${esc(d.branch)} · ` : ""}started ${ago(d.created)}`, '<a class="back" href="#runs">← All runs</a>')}
+  return `${head(runName(d), `${d.owner_name ? `Filed under ${esc(d.owner_name)} · ` : ""}${d.branch ? `On branch ${esc(d.branch)} · ` : ""}started ${ago(d.created)}`, '<a class="back" href="#runs">← All runs</a>')}${runLifeBar(d, run)}
     ${d.about ? `<p class="about lead">${txt(d.about)}</p>` : ""}
     <div class="panel"><div class="row"><b>${p.finished ? "All steps done" : `${p.done} of ${p.total} steps done`}</b><span class="muted${p.blocked ? " stuck-text" : ""}">${p.finished ? "· the commit message is ready for you to review" : `· next: ${esc(NEXT[p.next])}`}</span></div>
       <div class="progress${p.blocked ? " stuck" : p.finished ? " done" : ""}"><span style="width:${pct(p.done, p.total)}%"></span></div>${steps}</div>
@@ -1457,13 +1506,25 @@ const rvTag = rv => { const [t, tone] = RV_TAG[(rv || {}).status] || [(rv || {})
 function prRow(p, href, who, side) {
   const size = p.changedFiles ? `${plural(p.changedFiles, "file")} <span class="add">+${n(p.additions || 0)}</span> <span class="del">−${n(p.deletions || 0)}</span>` : "";
   return `<a class="rv-row" href="${href}"><span class="av" title="${esc(p.author || "")}">${esc(initials(p.author))}</span><span class="grow"><span class="rv-row-t">${esc(p.title || "#" + p.number)} <span class="muted">#${p.number}</span></span>
-    <span class="rv-row-m">${who ? `${who} · ` : ""}<span class="brtag" title="${esc(p.headRefName || "")}">${esc(p.headRefName || "?")}</span><span class="arrow">→</span><span class="brtag">${esc(p.baseRefName || "?")}</span>${size ? ` · ${size}` : ""}${p.updatedAt ? ` · ${ago(p.updatedAt)}` : ""}</span></span>${side}</a>`;
+    <span class="rv-row-m">${who ? `${who} · ` : ""}${p.stack ? `<span class="tg stk" title="Stacked pull request: ${p.stack.pos} of ${p.stack.size} from the bottom">${icon("stack")}Stack ${p.stack.pos}/${p.stack.size}</span> ` : ""}<span class="brtag" title="${esc(p.headRefName || "")}">${esc(p.headRefName || "?")}</span><span class="arrow">→</span><span class="brtag">${esc(p.baseRefName || "?")}</span>${size ? ` · ${size}` : ""}${p.updatedAt ? ` · ${ago(p.updatedAt)}` : ""}</span></span>${side}</a>`;
 }
 const pill = (t, tone) => `<span class="st"><span class="dot ${tone}"></span>${esc(t)}</span>`;
 const rvChip = rv => { const [t, tone] = RV_SAY[(rv || {}).status] || [rv && rv.status || "", ""]; return `<span class="rv-chips">${pill(t, tone)}${rv && rv.new_commits ? pill("New commits", "warn") : ""}</span>`; };
+/* A stacked PR's stack, newest on top as the branches pile up; the trunk at the bottom. Each opens its own review. */
+function stackCard(s) {
+  if (!s || !s.prs || s.prs.length < 2) return "";
+  const cur = s.prs.find(p => p.current) || {};
+  const row = p => { const [t, tone] = p.status ? RV_SAY[p.status] || [p.status, ""] : ["Not started", ""];
+    const inner = `<span class="stk-dot"></span><span class="grow stk-t"><span>${esc(p.title || "#" + p.number)} <span class="muted">#${p.number}</span></span><span class="rv-row-m">${esc(p.mine ? "you" : p.author || "?")}${p.draft ? " · draft" : ""} · <span class="brtag" title="${esc(p.head || "")}">${esc(p.head || "?")}</span></span></span>${p.current ? tagHtml("this one", "on") : pill(t, tone)}`;
+    return p.current ? `<div class="stk-i on" aria-current="true">${inner}</div>` : `<a class="stk-i" href="#review/${p.mine ? "yours/" : ""}${p.number}">${inner}</a>`; };
+  return `<details class="rv-card stk" open><summary class="rv-card-h">${icon("stack")}Stack · ${plural(s.size, "pull request")}<span class="muted small">this is ${cur.pos} of ${s.size} from the bottom</span></summary>
+    <div class="stk-list">${s.prs.slice().reverse().map(row).join("")}<div class="stk-i trunk"><span class="stk-dot"></span><span class="brtag">${esc(s.trunk || "main")}</span><span class="muted small">trunk</span></div></div></details>`;
+}
 const EVENT_SAY = { COMMENT: "Comment", REQUEST_CHANGES: "Request changes", APPROVE: "Approve" };
 
 PAGES.review = async arg => {
+  const dm = /^(yours\/)?(\d+)\/diff$/.exec(arg);
+  if (dm) return diffPage(parseInt(dm[2], 10), !!dm[1]);
   const n = parseInt(arg, 10);
   const unlocked = await isUnlocked();
   if (/^yours\//.test(arg)) return triagePage(parseInt(arg.slice(6), 10), unlocked);
@@ -1479,9 +1540,10 @@ PAGES.review = async arg => {
     const yours = y.available === false ? unavailable(y, "Couldn't read your pull requests") : y.prs.length ? `<div class="box rv-list">${y.prs.map(p => prRow(p, `#review/yours/${p.number}`,
       p.reviewDecision ? tagHtml(...(DEC[p.reviewDecision] || [words(p.reviewDecision), ""])) : "",
       `<span class="rv-side">${p.review && p.review.status === "working" ? tagHtml("AI reading", "on") : p.review && p.review.status !== "new" ? `${p.worth_open ? tagHtml(`${p.worth_open} worth fixing`, "bad") : tagHtml("Nothing to fix", "ok")}${p.low_open ? tagHtml(`${p.low_open} low`, "") : ""}${p.decided ? tagHtml(`${p.decided} ready to send`, "on") : ""}` : tagHtml("Not read yet", "")}</span>`)).join("")}</div>` : empty("No open pull requests", "You have no open pull request in this repo.");
+    const closedList = (d.closed || []).length ? `<details class="rv-closed"><summary class="muted small">Closed · ${d.closed.length} <span class="muted">(merged or closed on GitHub)</span></summary><div class="box rv-list">${d.closed.map(c => `<a class="rv-row" href="#review/${c.mine ? "yours/" : ""}${c.number}"><span class="grow"><span class="rv-row-t">${esc(c.title || "#" + c.number)} <span class="muted">#${c.number}</span></span><span class="rv-row-m">${c.mine ? "your pull request" : esc(c.author || "?")}${c.ended_at ? ` · ${ago(c.ended_at)}` : ""}${c.worktree ? ` · <span class="brtag">${icon("folder")}${esc(c.worktree)}</span>` : ""}</span></span><span class="rv-side">${prEnd(c.state)}</span></a>`).join("")}</div></details>` : "";
     return `${head("Reviews", `Pull requests in ${esc(repoName())}. Each one is read in its own worktree, so your checkout stays as it is, and nothing goes to GitHub until you post.`)}${top}
       ${tabs("rvl", [["waiting", "Waiting on you", d.prs.length, () => d.prs.length ? `<div class="box rv-list">${rows}</div>` : empty("Nothing waiting on you", "No open pull request in this repo asks for your review.")],
-        ["yours", "Your pull requests", y.available === false ? null : y.prs.length, () => yours]])}`;
+        ["yours", "Your pull requests", y.available === false ? null : y.prs.length, () => yours]])}${closedList}`;
   }
   const d = await api("pr", { n });
   if (d.available === false) return unavailable(d);
@@ -1489,17 +1551,17 @@ PAGES.review = async arg => {
   const p = d.pr || {}, rv = d.review || {}, dr = d.draft || {}, working = rv.status === "working";
   crumbs("review", `#${n}`);
   const header = rvHeader(d, n, p, rv, `@${esc(p.author || "?")} · ${esc(p.baseRefName || "")} ← ${esc(p.headRefName || "")}`,
-    rv.new_commits ? `<button class="btn small" data-rv-update${working || !unlocked ? " disabled" : ""}>Pull new commits</button>` : "", "data-rv-refresh");
-  if (rv.status === "new") return `${header}${rvStart("Start review", "data-rv-start", unlocked, "An AI reviewer reads it in its own worktree with LFG's code review skill, the code graphs and the brains. You talk it through and post when you're happy.")}`;
-  const dis = working || rv.status === "posted" || !unlocked ? " disabled" : "";
+    `${rv.new_commits ? `<button class="btn small" data-rv-update${working || !unlocked ? " disabled" : ""}>Pull new commits</button>` : ""}${rv.status === "new" || rv.pr_state ? "" : `<button class="btn small" data-rv-rerun${working || !unlocked ? " disabled" : ""}${working ? ' title="The AI is still working"' : ""}>Re-run review</button>`}`, "data-rv-refresh");
+  if (rv.status === "new") return `${header}${stackCard(d.stack)}${rvStart("Start review", "data-rv-start", unlocked, "An AI reviewer reads it in its own worktree with LFG's code review skill, the code graphs and the brains. You talk it through and post when you're happy.")}`;
+  const dis = working || rv.status === "posted" || rv.pr_state || !unlocked ? " disabled" : "";
   const ratings = dr.ratings || [], comments = dr.comments || [], questions = dr.questions || [];
   const ai = ratings.map(r => r.ai).filter(Boolean);
   const score = r => `<div class="rv-score" title="${esc(r.why || "")}"><span class="grow">${esc(r.area)}</span>${r.ai ? `<span class="muted small">AI ${r.ai}</span>` : ""}<span class="pills" data-area="${esc(r.area)}">${[1, 2, 3, 4, 5].map(v => `<button class="pill${r.mine === v ? " on" : ""}" data-v="${v}"${dis}>${v}</button>`).join("")}</span></div>`;
-  const comment = c => `<div class="rv-c" data-c="${esc(c.id)}" data-path="${esc(c.path || "")}" data-line="${c.line || ""}" data-sev="${esc(c.severity || "")}" data-src="${esc(c.source || "")}"><input type="checkbox" aria-label="Include this comment"${c.include !== false ? " checked" : ""}${dis}><div class="grow"><div class="rv-c-m"><span title="${esc(c.path || "")}">${esc((c.path || "general").split("/").pop())}${c.line ? ":" + c.line : ""}</span>${c.severity ? ` · ${esc(c.severity)}` : ""} · ${c.inline ? "on the line" : "in the summary"}</div><textarea class="inline-edit" rows="1"${dis}>${esc(c.body || "")}</textarea></div><button class="icon-btn" data-rv-drop title="Remove" aria-label="Remove"${dis}>&times;</button></div>`;
+  const comment = c => `<div class="rv-c" data-c="${esc(c.id)}" data-path="${esc(c.path || "")}" data-line="${c.line || ""}" data-sev="${esc(c.severity || "")}" data-src="${esc(c.source || "")}"><input type="checkbox" aria-label="Include this comment"${c.include !== false ? " checked" : ""}${dis}><div class="grow"><div class="rv-c-m"><span title="${esc(c.path || "")}">${esc((c.path || "general").split("/").pop())}${c.line ? ":" + c.line : ""}</span> · <select class="rv-sev" aria-label="Severity, posted as the comment's first line"${dis}>${[["", "No label"], ["blocker", "Blocker"], ["major", "Major"], ["minor", "Minor"], ["nit", "Nitpick"]].map(([v, l]) => `<option value="${v}"${sevKey(c.severity) === v ? " selected" : ""}>${l}</option>`).join("")}</select> · ${c.inline ? "on the line" : "in the summary"}</div><textarea class="inline-edit" rows="1"${dis}>${esc(c.body || "")}</textarea></div><button class="icon-btn" data-rv-drop title="Remove" aria-label="Remove"${dis}>&times;</button></div>`;
   const question = q => `<div class="rv-q" data-q="${esc(q.id)}"><div>${txt(q.ask)}${q.why ? `<div class="meta">${txt(q.why)}</div>` : ""}</div><textarea class="inline-edit" rows="1" placeholder="Your answer"${dis}>${esc(q.answer || "")}</textarea><a href="#" class="small" data-rv-discuss="${esc(q.id)}">Discuss</a></div>`;
   const more = (items, keep, fn, what) => items.slice(0, keep).map(fn).join("") + (items.length > keep ? `<div class="rv-more" hidden>${items.slice(keep).map(fn).join("")}</div><a href="#" class="rv-more-link small" data-more>+${items.length - keep} more ${what}</a>` : "");
   const kept = comments.filter(c => c.include !== false).length;
-  const main = `<div class="rv-main">
+  const main = `<div class="rv-main">${rvEnded(rv, unlocked)}${stackCard(d.stack)}
     ${working ? `<p class="rv-note" data-rv-working><span class="spin"></span>The AI is ${rv.job === "review" ? "reviewing the pull request" : "answering"} · started ${ago(d.working_since)}</p>` : ""}
     ${!working && ((d.chat || []).slice(-1)[0] || {}).error ? `<p class="rv-note bad">The last AI run failed (details on the right).<button class="btn small" data-rv-start${unlocked ? "" : " disabled"}>Try again</button></p>` : ""}
     ${rv.posted ? `<p class="rv-note ok">Posted ${ago(rv.posted.at)} as ${esc((EVENT_SAY[rv.posted.event] || rv.posted.event).toLowerCase())}${rv.posted.url ? ` · <a href="${esc(rv.posted.url)}" target="_blank" rel="noopener noreferrer">see it on GitHub</a>` : ""}</p>` : ""}
@@ -1514,17 +1576,43 @@ PAGES.review = async arg => {
   return `${header}<div class="rv">${main}${rvChat(d, working, dis)}</div>`;
 };
 
+const prEnd = st => st === "MERGED" ? `<span class="tg merged">Merged</span>` : tagHtml("Closed", "bad");
+/* A review whose PR was merged or closed on GitHub: say so at the top, and offer to free its worktree */
+function rvEnded(rv, unlocked) {
+  if (!rv || !rv.pr_state) return "";
+  return `<div class="rv-note rv-ended">${prEnd(rv.pr_state)}<span class="grow">This pull request was ${rv.pr_state === "MERGED" ? "merged" : "closed"} on GitHub${rv.ended_at ? ` ${ago(rv.ended_at)}` : ""}, so this review is closed. You can still read it${rv.worktree_name ? " and its diff" : ""}.</span>${rv.worktree_name ? `<button class="btn small" data-rv-close${unlocked ? "" : " disabled"}>Remove the worktree</button>` : ""}</div>`;
+}
+const sevKey = v => { const k = String(v || "").toLowerCase(); return k === "nitpick" ? "nit" : k === "critical" ? "blocker" : ["blocker", "major", "minor", "nit"].includes(k) ? k : ""; };
+function rvTabs(n) {
+  const mine = /^#review\/yours\//.test(location.hash), diff = /\/diff$/.test(location.hash), base = `#review/${mine ? "yours/" : ""}${n}`;
+  return `<nav class="rv-tabs"><a href="${base}"${diff ? "" : ' class="on" aria-current="page"'}>${mine ? "Comments" : "Review"}</a><a href="${base}/diff"${diff ? ' class="on" aria-current="page"' : ""}>Diff</a></nav>`;
+}
 function rvHeader(d, n, p, rv, meta, extra, refresh) {
   const wt = rv.worktree_name || (d.worktree_to_be || "").split("/").pop();
-  return `<div class="rvh"><div class="grow"><h1>${esc(p.title || "Pull request")} <span class="muted">#${n}</span></h1>
+  return `${rvTabsWrap(n, `<div class="rvh"><div class="grow"><h1>${esc(p.title || "Pull request")} <span class="muted">#${n}</span></h1>
     <div class="rvh-m">${meta} · <span class="wtchip" title="${esc((d.meta || {}).worktree || d.worktree_to_be || "")}">${icon("folder")}${esc(wt)}</span>${p.url ? ` · <a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>` : ""}</div></div>
-    <div class="rvh-a">${extra}${rv.status === "new" ? "" : `<button class="icon-btn" ${refresh} title="Refresh" aria-label="Refresh">${icon("refresh")}</button>`}</div></div>`;
+    <div class="rvh-a">${extra}${rv.status === "new" ? "" : `<button class="icon-btn" ${refresh} title="Refresh" aria-label="Refresh">${icon("refresh")}</button>`}</div></div>`)}`;
 }
+const rvTabsWrap = (n, header) => `${header}${rvTabs(n)}`;
+const FOCUS_HINT = "Anything specific for the AI? e.g. focus on the migration and auth, ignore the generated client, check it against ATO-123 (optional)";
 function rvStart(label, attr, unlocked, text) {
-  return `<div class="rv-empty"><p>${text}</p><button class="btn primary" ${attr}${unlocked ? "" : ' disabled title="Run lfg ui in your terminal to unlock"'}>${label}</button></div>`;
+  return `<div class="rv-empty"><p>${text}</p><textarea class="rv-focus" rows="3" placeholder="${esc(FOCUS_HINT)}"></textarea><button class="btn primary" ${attr}${unlocked ? "" : ' disabled title="Run lfg ui in your terminal to unlock"'}>${label}</button></div>`;
 }
+/* Start or redo an AI pass with optional instructions: the box on the start screen, else a small sheet */
+function withFocus(b, title, explain, label, go) {
+  const box = b.closest(".rv-empty") && $(".rv-focus", b.closest(".rv-empty"));
+  if (box) return go(box.value.trim());
+  openDrawer(title, `<div class="readable td-sheet"><p class="muted small">${explain}</p>
+    <label>Instructions for the AI<textarea id="fx-focus" rows="5" placeholder="${esc(FOCUS_HINT)}"></textarea></label>
+    <p class="row"><button class="btn primary" id="fx-go">${esc(label)}</button><button class="btn" id="fx-cancel">Cancel</button></p></div>`);
+  $("#fx-focus").focus();
+  $("#fx-cancel").onclick = closeDrawer;
+  $("#fx-focus").onkeydown = e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("#fx-go").click(); };
+  $("#fx-go").onclick = () => { const f = $("#fx-focus").value.trim(); closeDrawer(); go(f); };
+}
+const VIA_SAY = { headroom: "via Headroom", direct: "not through Headroom" };
 function rvChat(d, working, dis) {
-  const msgs = (d.chat || []).map(m => `<div class="msg ${m.role === "me" ? "me" : "ai"}${m.error ? " bad" : ""}">${m.role === "me" ? esc(m.text) : `<div class="md">${md(m.text)}</div>`}${m.changed && m.changed.length ? `<div class="meta">Updated ${esc(m.changed.join(", "))}</div>` : ""}</div>`).join("");
+  const msgs = (d.chat || []).map(m => `<div class="msg ${m.role === "me" ? "me" : "ai"}${m.error ? " bad" : ""}">${m.role === "me" ? esc(m.text) : `<div class="md">${md(m.text)}</div>`}${(m.changed && m.changed.length) || m.via ? `<div class="meta">${[m.changed && m.changed.length ? `Updated ${esc(m.changed.join(", "))}` : "", m.cost ? usd(m.cost) : "", VIA_SAY[m.via] || ""].filter(Boolean).join(" · ")}</div>` : ""}</div>`).join("");
   return `<aside class="rv-chat"><div class="rv-chat-head">Talk it through</div><div class="rv-msgs" id="rv-msgs">${msgs || '<p class="muted small">The AI\'s read lands here. Push back, answer its questions, or ask for changes.</p>'}${working ? '<div class="msg ai muted"><span class="spin"></span>Thinking…</div>' : ""}</div>
     <div class="rv-send"><textarea id="rv-text" rows="2" placeholder="${d.mode === "triage" ? "Why only 30% on the null check?" : "Ask or push back"}"${dis}></textarea><button class="btn small" data-rv-ask${dis}>Send</button></div></aside>`;
 }
@@ -1559,7 +1647,7 @@ function fixCard(all, d, title, score, unlocked) {
   const runHtml = r => {
     const ids = Object.keys(r.items).length ? Object.keys(r.items) : all.filter(t => t.fix_run === r.run).map(t => t.id);
     const head = r.working ? `<span class="spin"></span>AI fixing ${plural(ids.length, "comment")} · started ${ago(r.working === true ? "" : r.working)}`
-      : r.ok ? `Fix run finished ${ago(r.at)}${r.cost ? ` · ${usd(r.cost)}` : ""}` : `The fix run didn't finish ${ago(r.at)}`;
+      : r.ok ? `Fix run finished ${ago(r.at)}${r.cost ? ` · ${usd(r.cost)}` : ""}${VIA_SAY[r.via] ? ` · ${VIA_SAY[r.via]}` : ""}` : `The fix run didn't finish ${ago(r.at)}`;
     return `<div class="fx-run"${r.working ? " data-fx-working" : ""}><div class="fx-run-h"><span class="grow">${head}</span><a class="small" href="#runs/${encodeURIComponent(r.run)}">Open the run →</a></div>
       ${ids.map(i => { const t = byId[i], x = r.items[i]; if (!t) return ""; const st = x ? FIX_SAY[x.status] : r.working ? FIX_SAY.working : null;
         return `${item(t, x && x.note ? `<span class="fx-note">${esc(x.note)}</span>` : "")}${st ? tagHtml(...st) : ""}</div>`; }).join("")}</div>`;
@@ -1583,8 +1671,8 @@ async function triagePage(n, unlocked) {
   const closed = all.filter(t => t.resolved || t.posted);
   const header = rvHeader(d, n, p, rv, `your pull request · ${esc(p.baseRefName || "")} ← ${esc(p.headRefName || "")}`, "",
     `data-tr-start${working || !unlocked ? " disabled" : ""}`);
-  if (rv.status === "new") return `${header}${rvStart("Read the comments", "data-tr-start", unlocked, "An AI reads every comment on this pull request against your code, the code graphs and the brains, says how likely each is worth fixing, and drafts your reply either way. Nothing is sent until you send it.")}`;
-  const dis = working || !unlocked ? " disabled" : "";
+  if (rv.status === "new") return `${header}${stackCard(d.stack)}${rvStart("Read the comments", "data-tr-start", unlocked, "An AI reads every comment on this pull request against your code, the code graphs and the brains, says how likely each is worth fixing, and drafts your reply either way. Nothing is sent until you send it.")}`;
+  const dis = working || rv.pr_state || !unlocked ? " disabled" : "";
   const title = t => {  // a comment's first line, as a person would summarise it: no markup, no emoji
     const unlink = l => { let p; do { p = l; l = l.replace(/!?\[([^[\]]*)\]\([^)]*\)/g, "$1"); } while (l !== p); return l; };
     const lines = (t.body || "").replace(/<[^>]*>?/g, " ").split("\n").map(l => unlink(l).replace(/[#*`>|\[\]]/g, "").replace(/(^|\s)_+|_+(?=\s|$|[.,;:])/g, "$1").replace(/\p{Extended_Pictographic}\uFE0F?/gu, "").replace(/\s+/g, " ").trim()).filter(Boolean);
@@ -1606,7 +1694,7 @@ async function triagePage(n, unlocked) {
   state.trReasons = Object.fromEntries(all.map(t => [t.id, [t.reply_wont].concat(t.wont_reasons || []).filter(Boolean)]));
   const top = open.filter(t => t.worth == null || t.worth >= 30 || t.decision), low = open.filter(t => !top.includes(t));
   const ready = open.filter(t => t.decision === "fix" || t.decision === "wont").length;
-  const main = `<div class="rv-main">
+  const main = `<div class="rv-main">${rvEnded(rv, unlocked)}${stackCard(d.stack)}
     ${working ? `<p class="rv-note" data-rv-working><span class="spin"></span>The AI is ${rv.job === "triage" ? "reading the comments" : "answering"} · started ${ago(d.working_since)}</p>` : ""}
     ${!working && ((d.chat || []).slice(-1)[0] || {}).error ? `<p class="rv-note bad">The last AI run failed (details on the right).<button class="btn small" data-tr-start${unlocked ? "" : " disabled"}>Try again</button></p>` : ""}
     ${fixCard(all, d, title, score, unlocked)}
@@ -1624,11 +1712,12 @@ function rvDraft(root) {
     include_ratings: g("#rv-rates") ? g("#rv-rates").checked : undefined,
     ratings: $$(".pills", root).map(p => ({ area: p.dataset.area, mine: +(($(".pill.on", p) || {}).dataset || {}).v || null })),
     questions: $$(".rv-q", root).map(q => ({ id: q.dataset.q, answer: $("textarea", q).value })),
-    comments: $$(".rv-c", root).map(c => ({ id: c.dataset.c, path: c.dataset.path, line: c.dataset.line ? +c.dataset.line : null, severity: c.dataset.sev, source: c.dataset.src, body: $("textarea", c).value, include: $("input[type=checkbox]", c).checked })),
+    comments: $$(".rv-c", root).map(c => ({ id: c.dataset.c, path: c.dataset.path, line: c.dataset.line ? +c.dataset.line : null, severity: $(".rv-sev", c) ? $(".rv-sev", c).value : c.dataset.sev, source: c.dataset.src, body: $("textarea", c).value, include: $("input[type=checkbox]", c).checked })),
   };
 }
 let rvTimer = null, rvPoll = null;
 function wireReview(root) {
+  if (/^#review\/(yours\/)?\d+\/diff$/.test(location.hash)) return wireDiff(root);
   const d = state.pr, n = d && d.number;
   clearTimeout(rvPoll);
   $$("[data-rv-refresh]", root).forEach(b => b.onclick = () => { state.prFresh = true; if (n) api("prs", { fresh: "1" }).then(() => route({ soft: true })); else route(); });
@@ -1642,8 +1731,9 @@ function wireReview(root) {
   };
   const msgs = $("#rv-msgs", root);
   if (msgs) msgs.scrollTop = msgs.scrollHeight;
-  $$("[data-rv-start]", root).forEach(b => b.onclick = () => act("pr_start", {}, b, "Setting up the worktree…"));
+  $$("[data-rv-start]", root).forEach(b => b.onclick = () => withFocus(b, "Try the review again", "The AI starts the review over in a fresh session.", "Start review", focus => act("pr_start", { focus }, b, "Setting up the worktree…")));
   $$("[data-rv-update]", root).forEach(b => b.onclick = () => act("pr_update", {}, b, "Pulling…"));
+  $$("[data-rv-rerun]", root).forEach(b => b.onclick = () => withFocus(b, "Re-run the review", "The AI reviews this pull request again from the top and rewrites the summary, its scores and the comments. Your own scores and answers are kept.", "Re-run review", focus => act("pr_start", { focus }, b, "Starting…")));
   $$("[data-rv-close]", root).forEach(b => b.onclick = () => confirm("Remove this review's worktree? The chat and draft are kept.") && act("pr_close", {}, b));
   const send = $("[data-rv-ask]", root), box = $("#rv-text", root);
   if (send) send.onclick = () => box.value.trim() && act("pr_ask", { text: box.value }, send, "Sending…");
@@ -1676,7 +1766,7 @@ function wireReview(root) {
 }
 
 function wireTriage(root, n, act) {
-  $$("[data-tr-start]", root).forEach(b => b.onclick = () => act("pr_triage", {}, b, "Reading…"));
+  $$("[data-tr-start]", root).forEach(b => b.onclick = () => withFocus(b, "Read the comments", "The AI reads the comments it hasn't scored yet. With instructions, it reads every open comment again with them.", "Read the comments", focus => act("pr_triage", { focus }, b, "Reading…")));
   $$("[data-fx-rm]", root).forEach(b => b.onclick = () => act("pr_fixlist", { remove: b.dataset.fxRm }, b, "…"));
   const fixAll = b => async () => {
     const w = state.pr.fix_where || {}, k = $$("[data-fx-rm]", root).length;
@@ -1702,6 +1792,218 @@ function wireTriage(root, n, act) {
   });
 }
 
+/* The Diff tab: the pull request's diff, GitHub style. Drag down the line numbers (or click one, then shift-click
+   another) to select lines, even across removed and added ones, and ask the AI about them; it answers in a thread
+   under them and you go back and forth. All local: nothing goes to GitHub. */
+const DF_ICON = { added: ["+", "add"], deleted: ["−", "del"], renamed: ["→", "ren"], modified: ["•", "mod"] };
+const rowKey = l => l.new != null ? `R${l.new}` : `L${l.old}`;
+const keyLabel = (a, b) => a === b ? `line ${a}` : `lines ${a} to ${b}`;
+let dfPoll = null;
+
+async function diffPage(n, mine) {
+  const [d, info] = await Promise.all([api("pr_diff", { n }), api(mine ? "triage" : "pr", { n })]);
+  state.diff = d; state.pr = Object.assign({ number: n }, info && info.available !== false ? info : {});
+  crumbs("review", mine ? `Yours #${n}` : `#${n}`, `#review/${mine ? "yours/" : ""}${n}`);
+  const p = (info && info.pr) || {}, rv = (info && info.review) || {};
+  const header = rvHeader(info || {}, n, p, rv, `${mine ? "your pull request" : `@${esc(p.author || "?")}`} · ${esc(p.baseRefName || d.base || "")} ← ${esc(p.headRefName || "")}`, "", "data-df-refresh");
+  if (d.available === false) return `${header}${unavailable(d, "Couldn't load the diff")}`;
+  const total = d.files.reduce((a, f) => a + f.hunks.reduce((b, h) => b + h.lines.length, 0), 0);
+  const adds = d.files.reduce((a, f) => a + f.additions, 0), dels = d.files.reduce((a, f) => a + f.deletions, 0);
+  const byFile = {};
+  d.threads.forEach(t => (byFile[t.path] = byFile[t.path] || []).push(t));
+  const keep = state.dfOpen && state.dfOpen.n === n;
+  const open = new Set(keep ? state.dfOpen.paths : d.files.filter((f, i) => total <= 3000 || i < 3 || byFile[f.path]).map(f => f.path));
+  state.dfOpen = { n, paths: [...open], shut: keep ? state.dfOpen.shut : [], filter: keep ? state.dfOpen.filter : "" };
+  const files = d.files.map((f, i) => diffFile(f, i, byFile[f.path] || [], open.has(f.path))).join("");
+  return `${header}<div class="df">
+    <aside class="df-side"><div class="df-filter"><input type="search" id="df-filter" placeholder="Filter files…" value="${esc(state.dfOpen.filter)}" aria-label="Filter files"></div>
+      <div class="df-sum">${plural(d.files.length, "file")} · <span class="add">+${n_(adds)}</span> <span class="del">−${n_(dels)}</span></div>
+      <div class="df-tree" id="df-tree">${diffTree(d.files, byFile)}</div></aside>
+    <div class="df-main"><p class="muted small df-note">Drag down the line numbers, or click one and shift-click another, to ask the AI about those lines. Its answers stay on this computer: nothing is posted to GitHub.</p>${files || empty("No changes", "This pull request doesn't change any file.")}</div></div>`;
+}
+const n_ = v => Number(v || 0).toLocaleString();
+
+/* The file list as folders, single-child folders joined into one path the way GitHub shows them */
+function diffTree(files, byFile) {
+  const root = { dirs: {}, files: [] };
+  files.forEach((f, i) => { let node = root; const parts = f.path.split("/"); parts.slice(0, -1).forEach(p => { node = node.dirs[p] = node.dirs[p] || { dirs: {}, files: [] }; }); node.files.push([parts[parts.length - 1], f, i]); });
+  const shut = new Set(state.dfOpen.shut || []);
+  const walk = (node, depth, prefix) => Object.keys(node.dirs).sort().map(name => {
+    let label = name, cur = node.dirs[name], path = prefix + name;
+    while (!cur.files.length && Object.keys(cur.dirs).length === 1) { const k = Object.keys(cur.dirs)[0]; label += "/" + k; path += "/" + k; cur = cur.dirs[k]; }
+    return `<div class="df-dir${shut.has(path) ? " shut" : ""}" data-dir="${esc(path)}"><a href="#" class="df-row" style="--d:${depth}" data-df-dir><span class="df-chev">${icon("chev")}</span>${icon("folder")}<span class="df-name">${esc(label)}</span></a><div class="df-kids">${walk(cur, depth + 1, path + "/")}${leaves(cur, depth + 1)}</div></div>`;
+  }).join("");
+  const leaves = (node, depth) => node.files.sort((a, b) => a[0].localeCompare(b[0])).map(([name, f, i]) => {
+    const [g, cls] = DF_ICON[f.status] || DF_ICON.modified, th = byFile[f.path] || [];
+    return `<a href="#" class="df-row df-leaf" style="--d:${depth}" data-df-goto="${i}" data-name="${esc(f.path.toLowerCase())}" title="${esc(f.path)}"><span class="df-st ${cls}">${g}</span><span class="df-name">${esc(name)}</span>${th.length ? `<span class="df-cnt" title="${plural(th.length, "thread")}">${icon("review")}${th.length}</span>` : ""}</a>`;
+  }).join("");
+  return walk(root, 0, "") + leaves(root, 0);
+}
+
+/* Light syntax colouring for the Diff tab, like GitHub's: comments in a lighter grey, strings in blue. Comment
+   syntax comes from the file's extension; strings are read so a "//" inside "http://..." isn't taken for a comment.
+   `st` carries an open block comment from one line to the next. */
+const HL_LANG = (() => {
+  const c = { line: ["//"], block: [["/*", "*/"]], q: "\"'`" }, hash = { line: ["#"], block: [], q: "\"'" }, sql = { line: ["--"], block: [["/*", "*/"]], q: "'\"" };
+  const xml = { line: [], block: [["<!--", "-->"]], q: "\"" }, prose = { line: [], block: [["<!--", "-->"]], q: "" };
+  const ps = { line: ["#"], block: [["<#", "#>"]], q: "\"'" }, lua = { line: ["--"], block: [], q: "\"'" };
+  const m = {};
+  "js jsx ts tsx mjs cjs go java kt kts c h cc cpp hpp cs swift rs scala dart php css scss less proto groovy gradle".split(" ").forEach(e => m[e] = c);
+  "py sh bash zsh rb yml yaml toml r pl conf ini env tf hcl dockerfile makefile mk cmake nix".split(" ").forEach(e => m[e] = hash);
+  "sql".split(" ").forEach(e => m[e] = sql); "lua".split(" ").forEach(e => m[e] = lua);
+  "html htm xml wxs wxi svg vue xaml csproj props targets".split(" ").forEach(e => m[e] = xml);
+  "md mdx markdown txt".split(" ").forEach(e => m[e] = prose);  // prose: an apostrophe isn't a string
+  "ps1 psm1 psd1".split(" ").forEach(e => m[e] = ps);
+  return m;
+})();
+const hlLang = path => { const base = path.split("/").pop().toLowerCase(), ext = base.includes(".") ? base.split(".").pop() : base; return HL_LANG[ext] || null; };
+function hlLine(text, lang, st) {
+  if (!lang) return esc(text);
+  let out = "", i = 0, buf = "";
+  const flush = () => { if (buf) { out += esc(buf); buf = ""; } };
+  const span = (cls, s) => { flush(); out += `<span class="${cls}">${esc(s)}</span>`; };
+  while (i < text.length) {
+    if (st.block) {  // inside a comment that started on an earlier line
+      const end = text.indexOf(st.block, i);
+      if (end < 0) { span("tk-c", text.slice(i)); return out; }
+      span("tk-c", text.slice(i, end + st.block.length)); i = end + st.block.length; st.block = null; continue;
+    }
+    const ch = text[i];
+    if (lang.q.includes(ch)) {
+      let j = i + 1;
+      while (j < text.length && text[j] !== ch) j += text[j] === "\\" ? 2 : 1;
+      span("tk-s", text.slice(i, j + 1)); i = j + 1; continue;
+    }
+    const lc = lang.line.find(t => text.startsWith(t, i) && (t !== "#" || !/[\w$]/.test(text[i - 1] || "")));
+    const bc = lang.block.find(([a]) => text.startsWith(a, i));
+    if (bc) { st.block = bc[1]; span("tk-c", bc[0]); i += bc[0].length; continue; }
+    if (lc) { span("tk-c", text.slice(i)); return out; }
+    buf += ch; i++;
+  }
+  flush();
+  return out;
+}
+
+function diffFile(f, i, threads, open) {
+  const [g, cls] = DF_ICON[f.status] || DF_ICON.modified;
+  const keys = new Set(f.hunks.flatMap(h => h.lines.map(rowKey)));
+  const at = {}, loose = [];
+  threads.forEach(t => t.outdated || !keys.has(t.end) ? loose.push(t) : (at[t.end] = at[t.end] || []).push(t));
+  const lang = hlLang(f.path);
+  let st = { block: null };  // block comments carry over within a hunk
+  const row = l => {
+    const k = rowKey(l);
+    return `<tr class="df-l ${l.t === "+" ? "add" : l.t === "-" ? "del" : ""}" data-k="${k}"><td class="df-n" data-df-pick>${l.old ?? ""}</td><td class="df-n" data-df-pick>${l.new ?? ""}<button class="df-plus" data-df-pick tabindex="-1" aria-label="Ask the AI about this line">+</button></td><td class="df-s">${l.t === " " ? "" : l.t}</td><td class="df-c">${hlLine(l.text, lang, st) || " "}</td></tr>${(at[k] || []).map(t => `<tr class="df-trow"><td colspan="4">${diffThread(t)}</td></tr>`).join("")}`;
+  };
+  const body = f.binary ? `<p class="muted small df-pad">Binary file: no lines to show.</p>` : f.too_big ? `<p class="muted small df-pad">This file's diff is too big to show here (${n_(f.additions)} added, ${n_(f.deletions)} removed).</p>`
+    : `<table class="df-t" data-path="${esc(f.path)}"><colgroup><col class="c-n"><col class="c-n"><col class="c-s"><col></colgroup><tbody>${f.hunks.map(h => { st = { block: null }; return `<tr class="df-h"><td colspan="2"></td><td colspan="2">${esc(h.header)}</td></tr>${h.lines.map(row).join("")}`; }).join("")}</tbody></table>`;
+  return `<details class="df-file" id="df-f${i}" data-path="${esc(f.path)}"${open ? " open" : ""}><summary><span class="df-chev">${icon("chev")}</span><span class="df-st ${cls}">${g}</span><span class="df-path">${esc(f.status === "renamed" && f.old_path ? `${f.old_path} → ${f.path}` : f.path)}</span>${threads.length ? `<span class="df-cnt">${icon("review")}${threads.length}</span>` : ""}<span class="grow"></span><span class="small"><span class="add">+${f.additions}</span> <span class="del">−${f.deletions}</span></span></summary>
+    ${loose.length ? `<div class="df-loose">${loose.map(diffThread).join("")}</div>` : ""}${body}</details>`;
+}
+
+function diffThread(t) {
+  const where = keyLabel(t.start, t.end);
+  if (t.resolved) return `<div class="df-th resolved" data-th="${esc(t.id)}"><span class="muted small">Resolved · ${esc(where)} · ${plural(t.messages.length, "message")}</span><button class="btn small" data-th-act="reopen">Show</button></div>`;
+  const answers = t.messages.filter(m => m.role === "ai" && !m.error), spent = answers.reduce((a, m) => a + (m.cost || 0), 0);
+  const msgs = t.messages.map(m => m.role === "me"
+    ? `<div class="df-m me"><div class="df-bub">${esc(m.text)}</div><span class="df-when">You${m.ts ? ` · ${ago(m.ts)}` : ""}</span></div>`
+    : `<div class="df-m ai${m.error ? " bad" : ""}"><div class="df-ai-h"><span class="ai-badge">AI</span>${m.error ? '<span class="small">Didn\'t answer</span>' : ""}</div><div class="md">${md(m.text)}</div>
+        <div class="df-foot">${m.cost ? `<span class="df-cost" title="What this answer cost">${m.cost < 0.01 ? "&lt;$0.01" : usd(m.cost)}</span>` : ""}${VIA_SAY[m.via] ? `<span>${VIA_SAY[m.via]}</span>` : ""}${m.ts ? `<span>${ago(m.ts)}</span>` : ""}</div></div>`).join("");
+  return `<div class="df-th" data-th="${esc(t.id)}"><div class="df-th-h"><span class="ai-badge">AI</span><span class="small">On ${esc(where)}${t.outdated ? ` ${tagHtml("outdated", "warn")}` : ""}</span>${answers.length ? `<span class="muted small">· ${plural(answers.length, "answer")}${spent ? ` · <b class="df-total">${usd(spent)}</b> total` : ""}</span>` : ""}<span class="grow"></span><button class="btn small" data-th-act="resolve"${t.job ? " disabled" : ""}>Resolve</button><button class="icon-btn" data-th-act="delete" title="Delete this thread" aria-label="Delete this thread">&times;</button></div>
+    ${msgs}${t.job ? `<div class="df-m ai muted" data-df-working><span class="spin"></span> Thinking…</div>` : ""}
+    <div class="df-reply"><textarea rows="1" placeholder="${t.job ? "Wait for the answer…" : "Reply or ask a follow-up"}"${t.job ? " disabled" : ""}></textarea><button class="btn small" data-th-reply${t.job ? " disabled" : ""}>Reply</button></div></div>`;
+}
+
+function wireDiff(root) {
+  const d = state.diff, n = state.pr && state.pr.number;
+  clearTimeout(dfPoll);
+  if (!d || d.available === false || !n) return;
+  const refresh = () => route({ soft: true });
+  $$("[data-df-refresh]", root).forEach(b => b.onclick = async () => { b.disabled = true; await api("pr_diff", { n, fresh: "1" }); refresh(); });
+  $$(".df-file", root).forEach(det => det.addEventListener("toggle", () => {
+    const s = new Set(state.dfOpen.paths); det.open ? s.add(det.dataset.path) : s.delete(det.dataset.path); state.dfOpen.paths = [...s];
+  }));
+  // the tree: folders fold, files jump to their diff, the filter narrows the list
+  $$("[data-df-dir]", root).forEach(a => a.onclick = e => { e.preventDefault(); const dir = a.parentNode; dir.classList.toggle("shut"); const s = new Set(state.dfOpen.shut); dir.classList.contains("shut") ? s.add(dir.dataset.dir) : s.delete(dir.dataset.dir); state.dfOpen.shut = [...s]; });
+  $$("[data-df-goto]", root).forEach(a => a.onclick = e => { e.preventDefault(); $$(".df-leaf.on", root).forEach(x => x.classList.remove("on")); a.classList.add("on"); const f = $(`#df-f${a.dataset.dfGoto}`, root); f.open = true; f.scrollIntoView({ block: "start", behavior: "smooth" }); });
+  const filt = $("#df-filter", root);
+  const applyFilter = () => {
+    const q = filt.value.trim().toLowerCase(); state.dfOpen.filter = filt.value;
+    $$(".df-leaf", root).forEach(a => { a.hidden = !!q && !a.dataset.name.includes(q); });
+    $$(".df-dir", root).slice().reverse().forEach(dir => { dir.hidden = !!q && !$$(".df-leaf", dir).some(a => !a.hidden); if (q) dir.classList.remove("shut"); });
+  };
+  if (filt) { filt.oninput = applyFilter; if (filt.value) applyFilter(); }
+
+  // selecting lines: drag down the numbers, or click then shift-click; one file at a time, across - and + rows
+  let sel = null, dragging = false;
+  const rowsOf = table => $$(".df-l", table);
+  const range = () => { const rows = rowsOf(sel.table), i = rows.indexOf(sel.a), j = rows.indexOf(sel.b); return rows.slice(Math.min(i, j), Math.max(i, j) + 1); };
+  const clear = () => { $$(".df-l.sel", root).forEach(r => r.classList.remove("sel")); };
+  const mark = () => { clear(); if (sel) range().forEach(r => r.classList.add("sel")); };
+  const compose = () => {
+    $$(".df-compose", root).forEach(r => r.remove());
+    if (!sel) return;
+    const rows = range(), first = rows[0].dataset.k, last = rows[rows.length - 1].dataset.k;
+    const tr = document.createElement("tr");
+    tr.className = "df-compose";
+    tr.innerHTML = `<td colspan="4"><div class="df-th df-ask"><div class="df-th-h"><span class="ai-badge">AI</span><b class="small">Ask the AI about ${esc(keyLabel(first, last))}</b></div><textarea rows="4" placeholder="What does this do? Is it safe when the list is empty? Why was the label removed?"></textarea><div class="df-reply"><span class="muted small grow">Stays on this computer: nothing goes to GitHub. ⌘↵ to ask.</span><button class="btn small" data-df-cancel>Cancel</button><button class="btn primary small" data-df-ask>Ask AI</button></div></div></td>`;
+    rows[rows.length - 1].after(tr);
+    const ta = $("textarea", tr); ta.focus();
+    const cancel = () => { sel = null; clear(); tr.remove(); };
+    ta.onkeydown = e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("[data-df-ask]", tr).click(); if (e.key === "Escape") cancel(); };
+    $("[data-df-cancel]", tr).onclick = cancel;
+    $("[data-df-ask]", tr).onclick = async e => {
+      if (!ta.value.trim()) return ta.focus();
+      e.target.disabled = true; e.target.textContent = "Asking…";
+      const r = await save("pr_diff_ask", { repo: state.repo, n, text: ta.value, path: sel.table.dataset.path, start: first, end: last });
+      if (!r.ok) { e.target.disabled = false; e.target.textContent = "Ask AI"; return alert(String(r.why || "Couldn't ask.").replace(/`/g, "")); }
+      sel = null; refresh();
+    };
+  };
+  $$("[data-df-pick]", root).forEach(el => el.addEventListener("mousedown", e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const tr = el.closest(".df-l"), table = el.closest(".df-t");
+    if (e.shiftKey && sel && sel.table === table) sel.b = tr; else sel = { table, a: tr, b: tr };
+    dragging = true; mark();
+  }));
+  $$(".df-t", root).forEach(table => table.addEventListener("mouseover", e => {
+    if (!dragging || !sel || sel.table !== table) return;
+    const tr = e.target.closest(".df-l");
+    if (tr && tr !== sel.b) { sel.b = tr; mark(); }
+  }));
+  const up = () => { if (!dragging) return; dragging = false; compose(); };
+  document.removeEventListener("mouseup", state.dfUp || (() => {}));
+  state.dfUp = up; document.addEventListener("mouseup", up);
+
+  $$(".df-th[data-th]", root).forEach(box => {
+    const id = box.dataset.th;
+    $$("[data-th-act]", box).forEach(b => b.onclick = async () => {
+      if (b.dataset.thAct === "delete" && !confirm("Delete this thread? Its questions and answers go too.")) return;
+      const r = await save("pr_diff_thread", { repo: state.repo, n, thread: id, action: b.dataset.thAct });
+      if (!r.ok) return alert(String(r.why || "That didn't work."));
+      refresh();
+    });
+    const rb = $("[data-th-reply]", box), ta = $(".df-reply textarea", box);
+    if (rb && ta) {
+      ta.onkeydown = e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) rb.click(); };
+      rb.onclick = async () => {
+        if (!ta.value.trim()) return ta.focus();
+        rb.disabled = true; rb.textContent = "Sending…";
+        const r = await save("pr_diff_ask", { repo: state.repo, n, thread: id, text: ta.value });
+        if (!r.ok) { rb.disabled = false; rb.textContent = "Reply"; return alert(String(r.why || "Couldn't send.").replace(/`/g, "")); }
+        refresh();
+      };
+    }
+  });
+  if ($("[data-df-working]", root)) dfPoll = setTimeout(function again() {
+    if (!/\/diff$/.test(location.hash)) return;
+    const busy = (document.activeElement && document.activeElement.closest(".df textarea, .df-compose, #df-filter")) || $(".df-compose", root) || dragging;
+    if (busy) { dfPoll = setTimeout(again, 3000); return; }
+    const y = window.scrollY; route({ soft: true }).then(() => window.scrollTo(0, y));
+  }, 4000);
+}
+
 /* Did Claude use LFG in this repo's replies? From each reply's **LFG:** line, recorded by the Stop hook. */
 function lfgReplies(r) {
   const c = (r || {}).counts || {}, total = Object.values(c).reduce((a, x) => a + x, 0);
@@ -1712,6 +2014,116 @@ function lfgReplies(r) {
 }
 
 PAGES.integrations = integrationsPage;
+
+/* Todos: one list across every project, each todo to do, in progress, cancelled or done. A todo becomes a Linear
+   ticket only from its Create Linear ticket button, after you confirm the exact text; it is then tagged with the
+   issue's id, linked to Linear. */
+const TD_SAY = { todo: "To do", in_progress: "In progress", cancelled: "Cancelled", done: "Done" };
+let tdPoll = null;
+PAGES.todos = async () => {
+  const d = await api("todos");
+  if (d.available === false) return unavailable(d);
+  state.todos = d;
+  const of = st => d.todos.filter(t => t.status === st);
+  const lin = t => t.linear && t.linear.key ? `<a class="tg on td-lin" href="${esc(t.linear.url)}" target="_blank" rel="noopener noreferrer" title="Open ${esc(t.linear.key)} in Linear${t.linear.project ? ` · ${esc(t.linear.project)}` : ""}${t.linear.assignee ? ` · ${esc(t.linear.assignee === "me" ? "you" : t.linear.assignee)}` : ""}">${esc(t.linear.key)} ↗</a>`
+    : t.linear_job ? `<span class="tg td-lin" data-td-creating><span class="spin"></span>Creating Linear ticket…</span>`
+    : t.linear_error ? `<span class="td-err small" title="${esc(t.linear_error)}">Linear ticket not created: ${fmtWhy(t.linear_error)}</span>` : "";
+  const row = t => `<div class="td st-${t.status}" data-td="${esc(t.id)}">
+      <select class="td-st" data-td-status aria-label="Status">${d.statuses.map(k => `<option value="${k}"${k === t.status ? " selected" : ""}>${TD_SAY[k]}</option>`).join("")}</select>
+      <div class="grow td-main"><div class="td-text" contenteditable="plaintext-only" spellcheck="true" data-td-text>${esc(t.text)}</div>
+        <div class="td-m">${lin(t)}${t.repo ? `<span class="brtag">${esc(repoName(t.repo))}</span>` : ""}<span class="muted small">${ago(t.status_at || t.created)}</span>${t.notes ? `<span class="muted small" title="${esc(t.notes)}">· notes</span>` : ""}</div></div>
+      <span class="td-a">${t.linear && t.linear.key || t.linear_job ? "" : `<button class="btn small" data-td-linear>${t.linear_error ? "Try again" : "Create Linear ticket"}</button>`}<button class="icon-btn" data-td-more title="Notes and more" aria-label="Notes and more">⋯</button></span></div>`;
+  const group = (st, open) => { const xs = of(st); if (!xs.length) return ""; const body = `<div class="box td-list">${xs.map(row).join("")}</div>`;
+    return open ? section(TD_SAY[st], body, String(xs.length)) : `<details class="td-fold"><summary class="muted small">${TD_SAY[st]} · ${xs.length}</summary>${body}</details>`; };
+  const active = d.counts.todo + d.counts.in_progress;
+  return `${head("Todos", "Things to do, across all your projects. Make any of them a Linear ticket when it needs one.")}
+    <form class="td-add" data-td-add><input type="text" id="td-new" placeholder="Add a todo and press Enter" maxlength="300" autocomplete="off"><button class="btn primary">Add</button></form>
+    ${group("in_progress", true)}${group("todo", true)}${active ? "" : `<div class="box">${empty("Nothing to do", "Add one above. It's tagged with the project you're in.")}</div>`}
+    ${group("done", false)}${group("cancelled", false)}`;
+};
+
+function wireTodos(root) {
+  const d = state.todos;
+  clearTimeout(tdPoll);
+  if (!d || !d.todos) return;
+  const byId = Object.fromEntries(d.todos.map(t => [t.id, t]));
+  const act = async (what, body) => { const r = await save(what, body); if (!r.ok) alert(String(r.why || "That didn't work.").replace(/`/g, "")); return r; };
+  const reload = () => route({ soft: true });
+  const form = $("[data-td-add]", root);
+  if (form) form.onsubmit = async e => { e.preventDefault(); const i = $("#td-new", root); if (!i.value.trim()) return; const r = await act("todo_add", { text: i.value, repo: state.repo }); if (r.ok) { i.value = ""; await reload(); const n = $("#td-new"); if (n) n.focus(); } };
+  $$(".td", root).forEach(el => {
+    const t = byId[el.dataset.td];
+    const st = $("[data-td-status]", el); if (st) st.onchange = async () => { await act("todo_update", { id: t.id, status: st.value }); reload(); };
+    const tx = $("[data-td-text]", el);
+    if (tx) {
+      tx.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); tx.blur(); } if (e.key === "Escape") { tx.textContent = t.text; tx.blur(); } };
+      tx.onblur = async () => { const v = tx.textContent.replace(/\s+/g, " ").trim(); if (v === t.text) return; if (!v) { tx.textContent = t.text; return; } const r = await act("todo_update", { id: t.id, text: v }); if (r.ok) t.text = v; else tx.textContent = t.text; };
+    }
+    const ln = $("[data-td-linear]", el); if (ln) ln.onclick = () => todoToLinear(t, d.linear);
+    const more = $("[data-td-more]", el); if (more) more.onclick = () => todoMore(t);
+  });
+  if ($("[data-td-creating]", root)) tdPoll = setTimeout(() => { if ((location.hash.slice(1) || "").split("/")[0] === "todos" && !document.activeElement.closest(".td-main, .td-add, #drawer")) reload(); }, 4000);
+}
+
+function todoMore(t) {
+  openDrawer("Todo", `<div class="readable td-sheet"><label>Todo<input type="text" id="td-t" maxlength="300" value="${esc(t.text)}"></label>
+    <label>Status<select id="td-s">${Object.entries(TD_SAY).map(([k, v]) => `<option value="${k}"${k === t.status ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+    <label>Notes<textarea id="td-n" rows="6" placeholder="Anything worth keeping with it">${esc(t.notes || "")}</textarea></label>
+    <p class="muted small">${t.repo ? `From ${esc(repoName(t.repo))} · ` : ""}added ${ago(t.created)}${t.linear && t.linear.key ? ` · Linear <a href="${esc(t.linear.url)}" target="_blank" rel="noopener noreferrer">${esc(t.linear.key)} ↗</a>` : ""}</p>
+    <p class="row"><button class="btn primary" id="td-save">Save</button><span class="grow"></span><button class="btn small bad" id="td-del">Delete</button></p></div>`);
+  $("#td-save").onclick = async () => { const r = await save("todo_update", { id: t.id, text: $("#td-t").value, notes: $("#td-n").value, status: $("#td-s").value }); if (!r.ok) return alert(String(r.why || "Not saved.")); closeDrawer(); route({ soft: true }); };
+  $("#td-del").onclick = async () => { if (!confirm(`Delete this todo?\n\n${t.text}${t.linear && t.linear.key ? `\n\n(${t.linear.key} stays in Linear.)` : ""}`)) return; const r = await save("todo_delete", { id: t.id }); if (!r.ok) return alert(String(r.why || "Not deleted.")); closeDrawer(); route({ soft: true }); };
+}
+
+/* Create Linear ticket: you check the exact title and description and pick the team, project and assignee from
+   Linear's own lists (fetched read-only, kept a day); only then is one issue created, and the todo is tagged with
+   its id and linked to it. */
+let tlPoll = null;
+async function todoToLinear(t, lin) {
+  const desc = [t.notes || "", t.repo ? `Repo: ${repoName(t.repo)}` : ""].filter(Boolean).join("\n\n");
+  openDrawer("Create Linear ticket", `<div class="readable td-sheet">
+    <label>Title<input type="text" id="tl-t" maxlength="300" value="${esc(t.text)}"></label>
+    <label>Description<textarea id="tl-d" rows="6" placeholder="Optional">${esc(desc)}</textarea></label>
+    <div id="tl-opts"><p class="muted small"><span class="spin"></span> Getting your Linear teams, projects and people…</p></div>
+    ${t.linear_error ? `<p class="td-err small">Last try: ${fmtWhy(t.linear_error)}</p>` : ""}
+    <p class="muted small">Creates this one issue in Linear, exactly as written and picked here. Nothing else in Linear changes.</p>
+    <p class="row"><button class="btn primary" id="tl-go" disabled>Create Linear ticket</button><span class="muted small" id="tl-msg"></span></p></div>`);
+  const box = $("#tl-opts"), go = $("#tl-go");
+  const pick = { team: lin.team || "", project: "", assignee: "" };
+  const paint = o => {
+    if (!document.body.contains(box)) return;
+    if (!o.teams.length) {
+      box.innerHTML = o.loading ? `<p class="muted small"><span class="spin"></span> Getting your Linear teams, projects and people…</p>`
+        : `<p class="td-err small">${fmtWhy(o.error || o.why || "Couldn't read Linear.")}</p><p><a href="#" class="small" data-tl-refresh>Try again</a></p>`;
+    } else {
+      if (!o.teams.some(x => x.key === pick.team)) pick.team = (o.teams.find(x => x.key === o.default_team) || o.teams.find(x => !x.retired) || o.teams[0]).key;
+      const projects = o.projects.filter(p => !p.teams.length || p.teams.includes(pick.team));
+      if (!projects.some(p => p.name === pick.project)) pick.project = "";
+      const opt = (v, label, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label)}</option>`;
+      box.innerHTML = `<label>Team<select id="tl-team">${o.teams.map(x => opt(x.key, `${x.name} (${x.key})${x.retired ? " · retired" : ""}`, pick.team)).join("")}</select></label>
+        <label>Project<select id="tl-project">${opt("", "No project", pick.project)}${projects.map(p => opt(p.name, p.name, pick.project)).join("")}</select></label>
+        <label>Assignee<select id="tl-who">${opt("", "Unassigned", pick.assignee)}${opt("me", "Me", pick.assignee)}${o.users.map(u => opt(u.name, u.display && u.display !== u.name ? `${u.name} (${u.display})` : u.name, pick.assignee)).join("")}</select></label>
+        <p class="muted small">${o.loading ? '<span class="spin"></span> Updating from Linear… · ' : o.at ? `From Linear ${ago(new Date(o.at * 1000).toISOString())} · ` : ""}<a href="#" data-tl-refresh>Refresh</a></p>`;
+      $("#tl-team").onchange = e => { pick.team = e.target.value; paint(o); };
+      $("#tl-project").onchange = e => { pick.project = e.target.value; };
+      $("#tl-who").onchange = e => { pick.assignee = e.target.value; };
+    }
+    go.disabled = !o.teams.length;
+    const r = $("[data-tl-refresh]", box); if (r) r.onclick = e => { e.preventDefault(); load(true); };
+    clearTimeout(tlPoll);
+    if (o.loading) tlPoll = setTimeout(() => load(false), 3000);
+  };
+  const load = async fresh => paint(await api("linear_options", fresh ? { fresh: "1" } : {}).then(o => Object.assign({ teams: [], projects: [], users: [] }, o)));
+  load(false);
+  go.onclick = async () => {
+    const who = pick.assignee === "me" ? "you" : pick.assignee || "nobody";
+    if (!confirm(`Create this ticket in Linear?\n\n${$("#tl-t").value}\n\nTeam ${pick.team}${pick.project ? ` · project ${pick.project}` : ""} · assigned to ${who}`)) return;
+    go.disabled = true; go.textContent = "Starting…";
+    const r = await save("todo_linear", { id: t.id, title: $("#tl-t").value, description: $("#tl-d").value, team: pick.team, project: pick.project, assignee: pick.assignee });
+    if (!r.ok) { go.disabled = false; go.textContent = "Create Linear ticket"; $("#tl-msg").innerHTML = fmtWhy(r.why || "Not started."); return; }
+    clearTimeout(tlPoll); closeDrawer(); route({ soft: true });
+  };
+}
 
 PAGES.usage = async () => {
   const [d, H] = await Promise.all([api("usage", { days: UR.days > 30 ? 90 : 30 }), api("headroom", { days: UR.days > 30 ? 90 : 30 })]);
@@ -1847,16 +2259,19 @@ PAGES.help = async () => {
 };
 
 // ------------------------------------------------------------------ shell
-const NAV_GROUPS = [["Your work", ["home", "runs", "issues", "review", "checks"]], ["This project", ["code", "docs", "knowledge"]], ["LFG", ["usage", "skills", "integrations", "settings", "help"]]];
+const NAV_GROUPS = [["Your work", ["home", "todos", "runs", "issues", "review", "checks"]], ["This project", ["code", "docs", "knowledge"]], ["LFG", ["usage", "skills", "integrations", "settings", "help"]]];
 /* 24px line icons, drawn for these pages (stroke = currentColor) */
 const ICON = {
   home: "M3 10.5 12 3l9 7.5M5 9v11h5v-6h4v6h5V9",
   runs: "M5 4l14 8-14 8z",
+  todos: "M4 6.5l1.5 1.5L8 5.5M4 12.5l1.5 1.5L8 11.5M4 18.5l1.5 1.5L8 17.5M11 7h9M11 13h9M11 19h9",
   issues: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
   checks: "M12 3l8 3v6c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V6zM9 12l2 2 4-4",
   review: "M4 5h16v11H9l-5 4zM8 9h8M8 12h5",
   code: "M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 5l-3 14",
   docs: "M14 3H6v18h12V7zM14 3v4h4M9 12h6M9 16h6",
+  stack: "M12 3l9 4.5-9 4.5-9-4.5zM3 12l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5",
+  chev: "M6 9l6 6 6-6",
   folder: "M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z",
   knowledge: "M4 5.5C6.5 4 9.5 4 12 6c2.5-2 5.5-2 8-.5V19c-2.5-1.5-5.5-1.5-8 .5-2.5-2-5.5-2-8-.5zM12 6v13.5",
   usage: "M4 20V10M10 20V4M16 20v-6M2 20h20",
@@ -1945,6 +2360,8 @@ async function route(opts) {
   $$("[data-href]", view).forEach(li => li.onclick = () => (location.hash = li.dataset.href));
   if (key === "docs") wireDocs();
   if (key === "review") wireReview(view);
+  if (key === "todos") wireTodos(view);
+  if (key === "runs" && !arg) wireRuns(view);
   if (key === "checks") { $$('[data-tabs="checks"] .tab', view).forEach(t => t.addEventListener("click", () => setTimeout(() => wireSonar(view), 0))); wireSonar(view); }
   if (key === "usage") { wireUsage(view); loadHeadroom(); }
   if (soft) {
@@ -1975,12 +2392,89 @@ function wireDocs() {
   const on = $(".doc-nav a.on");
   if (on) on.scrollIntoView({ block: "nearest" });
 }
+/* Notifications: every long job (an AI review or answer, a fix run, a Linear ticket, a scan, the checks) is announced
+   when it finishes, by `lfg ui` itself, even with its page closed. They show as toasts, in the bell's list and, when
+   this tab is in the background and you allowed it, as system notifications. A click opens the page. */
+const NOTES = { last: "", seen: localStorage.getItem("lfg.notes.seen") || "", events: [] };
+const NOTE_ICON = { review: "review", diff: "review", fix: "runs", linear: "todos", checks: "checks", sonar: "checks" };
+async function openNote(ev) {
+  closeBell();
+  if (ev.repo && ev.repo !== state.repo && state.repos.some(r => r.id === ev.repo)) {
+    state.repo = ev.repo; localStorage.setItem("lfg.repo", ev.repo);
+    const sel = $("#repo"); if (sel) sel.value = ev.repo;
+    await loadBranches();
+  }
+  if (ev.href && location.hash !== ev.href) location.hash = ev.href; else route();
+}
+function noteHtml(ev, cls) {
+  const proj = ev.repo && ev.repo !== state.repo ? `<span class="brtag">${esc(repoName(ev.repo))}</span>` : "";
+  return `<a href="${esc(ev.href || "#")}" class="${cls}${ev.ok ? "" : " bad"}${ev.id > NOTES.seen ? " new" : ""}" data-note="${esc(ev.id)}"><span class="note-ico">${icon(NOTE_ICON[ev.kind] || "home")}</span><span class="grow"><b>${esc(ev.title)}</b>${ev.body ? `<span class="note-b">${esc(ev.body)}</span>` : ""}<span class="note-m">${proj}${ago(ev.ts)}</span></span></a>`;
+}
+function paintBell() {
+  const unread = NOTES.events.filter(e => e.id > NOTES.seen).length, n = $("#bell-n");
+  n.hidden = !unread; n.textContent = unread > 9 ? "9+" : unread;
+  const pop = $("#bell-pop");
+  if (pop.hidden) return;
+  const perm = NOTES.desktop === "terminal-notifier" ? `<span class="muted small">When this tab isn't in front, you also get a macOS notification; click it to come back here.</span>`
+    : NOTES.desktop === "osascript" ? `<span class="muted small">When this tab isn't in front, you also get a macOS notification. Install terminal-notifier (<code>brew install terminal-notifier</code>) to make it open the page on click.</span>`
+    : !("Notification" in window) ? "" : Notification.permission === "granted" ? `<span class="muted small">System notifications are on when this tab is in the background.</span>`
+    : Notification.permission === "denied" ? `<span class="muted small">System notifications are blocked for this page in your browser's settings.</span>`
+    : `<button class="btn small" id="note-perm">Notify me when this tab is in the background</button>`;
+  pop.innerHTML = `<div class="bell-h"><b>Notifications</b><span class="grow"></span>${unread ? `<a href="#" class="small" id="note-read">Mark all read</a>` : ""}</div>
+    <div class="bell-list">${NOTES.events.slice(0, 30).map(e => noteHtml(e, "note")).join("") || '<p class="muted small bell-empty">Nothing yet. When the AI finishes a review, an answer or a fix run, or a scan or check is done, it shows up here.</p>'}</div>
+    <div class="bell-f">${perm}</div>`;
+  $$("[data-note]", pop).forEach(a => a.onclick = e => { e.preventDefault(); openNote(NOTES.events.find(x => x.id === a.dataset.note)); });
+  const rd = $("#note-read", pop); if (rd) rd.onclick = e => { e.preventDefault(); markSeen(); };
+  const pm = $("#note-perm", pop); if (pm) pm.onclick = async () => { await Notification.requestPermission(); paintBell(); };
+}
+function markSeen() { NOTES.seen = NOTES.events[0] ? NOTES.events[0].id : NOTES.seen; localStorage.setItem("lfg.notes.seen", NOTES.seen); paintBell(); }
+function closeBell() { const pop = $("#bell-pop"); if (!pop.hidden) { pop.hidden = true; $("#bell").setAttribute("aria-expanded", "false"); markSeen(); } }
+function toast(ev) {
+  const box = $("#toasts"), el = document.createElement("div");
+  el.innerHTML = `${noteHtml(ev, "toast")}<button class="toast-x" aria-label="Dismiss">&times;</button>`;
+  const t = el.firstChild, x = el.lastChild;
+  const wrap = document.createElement("div"); wrap.className = "toast-wrap"; wrap.append(t, x); box.prepend(wrap);
+  t.onclick = e => { e.preventDefault(); wrap.remove(); openNote(ev); };
+  x.onclick = () => wrap.remove();
+  setTimeout(() => wrap.remove(), 9000);
+  while (box.children.length > 4) box.lastChild.remove();
+}
+function systemNote(ev) {  // the browser's own notification, only when `lfg ui` can't post macOS ones itself
+  if (NOTES.desktop || !document.hidden || !("Notification" in window) || Notification.permission !== "granted") return;
+  const n = new Notification(`LFG · ${ev.title}`, { body: [ev.body, ev.repo && repoName(ev.repo)].filter(Boolean).join("\n"), tag: ev.id });
+  n.onclick = () => { window.focus(); n.close(); openNote(ev); };
+}
+const inFront = () => document.visibilityState === "visible" && document.hasFocus();
+async function pollNotes(first) {
+  let d;
+  try { d = await api("notifications", Object.assign({ visible: inFront() ? "1" : "0" }, NOTES.last ? { since: NOTES.last } : {})); } catch (e) { return; }
+  if (!d || !d.events) return;
+  NOTES.desktop = d.desktop || "";
+  if (!first) d.events.slice().reverse().forEach(ev => { toast(ev); systemNote(ev); });
+  NOTES.events = d.events.concat(NOTES.events).slice(0, 50);
+  NOTES.last = d.latest || NOTES.last;
+  paintBell();
+}
+function mountBell() {
+  const b = $("#bell"), pop = $("#bell-pop");
+  b.onclick = e => { e.stopPropagation(); if (pop.hidden) { pop.hidden = false; b.setAttribute("aria-expanded", "true"); paintBell(); } else closeBell(); };
+  document.addEventListener("click", e => { if (!pop.hidden && !e.target.closest(".bell")) closeBell(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeBell(); });
+  pollNotes(true);
+  setInterval(() => pollNotes(false), 5000);
+  // tell `lfg ui` at once when this tab goes to the back (or comes forward), so macOS notifications start right away
+  ["visibilitychange", "blur", "focus"].forEach(ev => (ev === "visibilitychange" ? document : window).addEventListener(ev, () => pollNotes(false)));
+}
+
 async function init() {
   if (location.hash.startsWith("#unlock=")) {  // from `lfg ui`: keep the edit key, drop it from the URL
     localStorage.setItem("lfg.editKey", decodeURIComponent(location.hash.slice(8)));
     history.replaceState(null, "", location.pathname);
   }
   $("#drawer-close").onclick = closeDrawer;
+  const linked = new URLSearchParams(location.search).get("repo");  // opened from a macOS notification
+  if (linked) { state.repo = linked; localStorage.setItem("lfg.repo", linked); history.replaceState(null, "", location.pathname + location.hash); }
+  mountBell();
   $("#drawer").onclick = e => { if (e.target.id === "drawer") closeDrawer(); };
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
   try { state.rules = await api("rules"); } catch (e) { state.rules = null; }

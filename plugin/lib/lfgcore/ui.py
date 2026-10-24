@@ -4,9 +4,9 @@ One place for everything LFG knows about a repo: runs, the Linear mirror, review
 graphs, generated docs/playbooks, dev-graph, second-brain, token usage (incl. Headroom), tool health, the Claude Code
 settings that matter for LFG and every skill Claude Code loads (control.py).
 Data comes from dash.py; the page is ui_assets/ (no external resources). Serves files only from ~/.lfg,
-never from the repo, never secrets. Everything is read-only except the Settings page (config.json, LFG
-skills, global CLAUDE.md, see settings.py): those POSTs need the local edit key that `lfg ui` gives the
-browser, a same-origin request and JSON. Author: Varun Singh.
+never from the repo, never secrets. Changes (settings, todos, reviews...) are POSTs that only the dashboard's own
+page can send: Host and Origin must be this dashboard on 127.0.0.1/localhost, with its X-LFG header (which no other
+site can add without a CORS preflight this server never grants) and a JSON body. Author: Varun Singh.
 """
 import glob
 import html
@@ -122,6 +122,19 @@ def api(view, q):
     if view == "integrations":
         from . import control as K
         return K.integrations_view()
+    if view == "todos":
+        from . import todos as T
+        return T.listing()
+    if view == "notifications":
+        from . import notify as N
+        N.page_seen(_arg(q, "visible") == "1")
+        return N.recent(_arg(q, "since"))
+    if view == "linear_options":  # Linear's teams, projects and people for the Create Linear ticket sheet
+        from . import todos as T
+        try:
+            return T.linear_options(fresh=_arg(q, "fresh") == "1")
+        except T.Invalid as e:
+            return {"available": False, "why": str(e)}
     if view == "tours":
         from . import control as K
         return K.tours_view()
@@ -143,7 +156,7 @@ def api(view, q):
         from . import sonar as SQ
         root = dash.repo_root(rid)
         return (SQ.cloud(root) or {"found": False}) if root and os.path.isdir(root) else {"found": False}
-    if view in ("prs", "pr", "pr_outgoing", "mine", "triage", "triage_out"):
+    if view in ("prs", "pr", "pr_outgoing", "mine", "triage", "triage_out", "pr_diff"):
         from . import prreview as PR
         root = dash.repo_root(rid)
         if not root or not os.path.isdir(root):
@@ -159,11 +172,19 @@ def api(view, q):
                 return PR.triage_detail(rid, root, _arg(q, "n"))
             if view == "triage_out":
                 return PR.replies_out(rid, _arg(q, "n"))
+            if view == "pr_diff":
+                from . import prdiff as PD
+                try:
+                    return PD.diff(rid, root, _arg(q, "n"), fresh=_arg(q, "fresh") == "1")
+                except PD.Invalid as e:
+                    return {"available": False, "why": str(e)}
             return PR.outgoing(rid, _arg(q, "n"))
         except PR.Invalid as e:
             return {"available": False, "why": str(e)}
     if view == "runs":
         return dash.runs(rid, _arg(q, "branch"))
+    if view == "runs_search":  # vector search over what each run is about (local only)
+        return dash.search_runs(rid, _arg(q, "q"))
     if view == "run":
         return dash.run_detail(rid, os.path.basename(_arg(q, "run")))
     if view == "file":
@@ -192,7 +213,6 @@ def api(view, q):
 
 
 MAX_BODY = 600_000
-NO_KEY = {"/api/save/graphs_build", "/api/save/tour_done"}  # neither changes your settings
 
 
 def save(what, body):
@@ -214,8 +234,16 @@ def save(what, body):
         return S.reset_rule(body.get("name"))
     if what.startswith("pr_"):
         return pr_action(what, body)
+    if what.startswith("todo_"):
+        return todo_action(what, body)
     if what == "sonar_scan":
         return sonar_scan(str(body.get("repo") or ""))
+    if what == "run_needed":
+        rid = _rid({"repo": [str(body.get("repo") or "")]})
+        try:
+            return dash.set_needed(rid, body.get("run"), bool(body.get("needed")))
+        except ValueError as e:
+            raise S.Invalid(str(e)) from None
     if what == "run_checks":
         return run_checks(_rid({"repo": [str(body.get("repo") or "")]}), body.get("run"))
     if what == "graphs_build":
@@ -235,6 +263,25 @@ def save(what, body):
         res = actions[what]()
         return res if isinstance(res, dict) else {"result": res}
     raise S.Invalid("unknown setting")
+
+
+def todo_action(what, body):
+    """The Todos page. `todo_linear` files one Linear issue, only from its Create Linear ticket button."""
+    from . import todos as T
+    tid = str(body.get("id") or "")
+    try:
+        if what == "todo_add":
+            return T.add(body.get("text"), repo=body.get("repo"), notes=body.get("notes") or "")
+        if what == "todo_update":
+            return T.update(tid, text=body.get("text"), notes=body.get("notes"), status=body.get("status"))
+        if what == "todo_delete":
+            return T.delete(tid)
+        if what == "todo_linear":  # the Create Linear ticket button, after the user confirmed the exact text
+            return T.create_linear(tid, body.get("title"), body.get("description") or "", body.get("team") or "",
+                                   body.get("project") or "", body.get("assignee") or "")
+    except T.Invalid as e:
+        raise S.Invalid(str(e)) from None
+    raise S.Invalid("unknown action")
 
 
 def build_graphs(rid, what):
@@ -264,7 +311,7 @@ def pr_action(what, body):
     n = body.get("n")
     try:
         if what == "pr_start":
-            return PR.start(rid, root, n)
+            return PR.start(rid, root, n, focus=body.get("focus") or "")
         if what == "pr_ask":
             return PR.ask(rid, root, n, body.get("text"))
         if what == "pr_draft":
@@ -276,7 +323,7 @@ def pr_action(what, body):
         if what == "pr_close":
             return PR.close(rid, root, n)
         if what == "pr_triage":
-            return PR.triage(rid, root, n)
+            return PR.triage(rid, root, n, focus=body.get("focus") or "")
         if what == "pr_decide":
             return PR.decide(rid, n, body.get("decisions"))
         if what == "pr_replies":
@@ -285,6 +332,15 @@ def pr_action(what, body):
             return PR.fixlist(rid, n, remove=body.get("remove"), add=body.get("add"))
         if what == "pr_fixall":
             return PR.fix_all(rid, root, n)
+        if what in ("pr_diff_ask", "pr_diff_thread"):  # the Diff tab: local AI threads, never sent to GitHub
+            from . import prdiff as PD
+            try:
+                if what == "pr_diff_ask":
+                    return PD.ask(rid, root, n, body.get("text"), thread=body.get("thread"), path=body.get("path"),
+                                  side=body.get("side") or "new", start=body.get("start"), end=body.get("end"))
+                return PD.thread_action(rid, n, body.get("thread"), body.get("action"))
+            except PD.Invalid as e:
+                raise S.Invalid(str(e)) from None
     except PR.Invalid as e:
         raise S.Invalid(str(e)) from None
     raise S.Invalid("unknown action")
@@ -368,9 +424,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if u.path.startswith("/api/"):
             if self.headers.get("X-LFG") != "1":  # only the dashboard's own scripts may read the API
                 return self._send(403, json.dumps({"why": "forbidden"}), "application/json")
-            if u.path == "/api/unlocked":
-                return self._send(200, json.dumps({"ok": S.key_ok(self.headers.get("X-LFG-Key"))}),
-                                  "application/json")
+            if u.path == "/api/unlocked":  # editing is always on; kept for pages that still ask
+                return self._send(200, json.dumps({"ok": True}), "application/json")
             try:
                 body = json.dumps(api(u.path[5:], urllib.parse.parse_qs(u.query)), default=str)
             except Exception as e:  # keep the dashboard up
@@ -385,8 +440,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._send(404, "not found: %s" % html.escape(u.path), "text/plain")
 
     def do_POST(self):
-        """Settings writes only: same host and origin, the dashboard's header, JSON, and the edit key. Building the
-        code map changes no settings or files of yours (the hooks start the same job), so it needs no key."""
+        """Changes from the dashboard's own page only: same host and origin, the dashboard's header, and JSON."""
         def no(code, why):
             return self._send(code, json.dumps({"ok": False, "why": why}), "application/json")
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
@@ -397,8 +451,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         u = urllib.parse.urlsplit(self.path)
         if not u.path.startswith("/api/save/"):
             return no(404, "not found")
-        if u.path not in NO_KEY and not S.key_ok(self.headers.get("X-LFG-Key")):
-            return no(403, "editing is locked: run `lfg ui --unlock` in your terminal")
         size = int(self.headers.get("Content-Length") or 0)
         if not (self.headers.get("Content-Type") or "").startswith("application/json") or not 0 < size <= MAX_BODY:
             return no(400, "expected a JSON body")
@@ -470,12 +522,82 @@ def open_editor(port):
     return webbrowser.open("http://127.0.0.1:%d/#unlock=%s" % (port, S.edit_key()))
 
 
+def watch_jobs(quiet=False):
+    """One pass over every project's background jobs: anything that finished is read in and announced (notify.py),
+    even when nobody has its page open. Reviews, answers and comment reading, fix runs, Diff-tab threads, Linear
+    tickets, the SonarQube scans and checks started from here, and reviews whose PR was merged or closed. `quiet`
+    (the first pass after start) marks scans and checks that ended before the dashboard started as seen instead of
+    announcing old news."""
+    import glob
+    from . import notify as N
+    from . import prdiff as PD
+    from . import prreview as PR
+    for rid in dash.repo_ids():
+        for d in glob.glob(os.path.join(PR.folder(rid), "pr-*")):
+            n = int(os.path.basename(d)[3:]) if os.path.basename(d)[3:].isdigit() else None
+            if n is None:
+                continue
+            if os.path.exists(os.path.join(d, "job.json")):
+                PR.settle(rid, n)
+            if '"job"' in C.read_text(os.path.join(d, "diffchat.json")):
+                PD.settle(rid, n)
+        if any(m.get("status") != "closed" for _n, m in PR._metas(rid)):  # merged or closed on GitHub since?
+            root = dash.repo_root(rid)
+            if root and os.path.isdir(root):
+                PR.sync_states(rid, root, PR.open_prs(rid, root))
+        if glob.glob(C.lfg_path("runs", rid, "*", "run.json")):  # PR states for the runs' tags, every 10 minutes
+            dash.refresh_pr_states(rid)
+        for d in glob.glob(C.lfg_path("runs", rid, "*", "fix-job.json")):
+            PR.settle_fix(os.path.dirname(d))
+        for p in glob.glob(C.lfg_path("runs", rid, "*", "gate-running.json")):
+            job = C.read_json(p, None)
+            if isinstance(job, dict) and not job.get("announced") and not N.alive(job.get("pid")):
+                ready = C.read_json(os.path.join(os.path.dirname(p), "ready.json"), None) or {}
+                run = os.path.basename(os.path.dirname(p))
+                if not quiet:
+                    N.add("checks", "Checks passed" if ready.get("green") else "Checks failed", run,
+                          "#runs/%s" % run, rid, ok=bool(ready.get("green")))
+                C.write_json(p, dict(job, announced=True))
+        p = C.lfg_path("repos", rid, "sonar-running.json")
+        job = C.read_json(p, None)
+        if isinstance(job, dict) and not job.get("announced") and not N.alive(job.get("pid")):
+            from . import sonar as SQ
+            res = SQ.last(rid) or {}
+            fresh = res.get("ts") and res["ts"] >= (job.get("started") or "")
+            if not quiet:
+                gate = "passed" if res.get("gate") == "OK" else "failed" if res.get("gate") else "unknown"
+                N.add("sonar", "SonarQube scan done: quality gate %s" % gate if fresh
+                      else "The SonarQube scan didn't finish",
+                      "%s issues on this branch" % res.get("mine", 0) if fresh
+                      else "See the scan log on the Checks page",
+                      "#checks", rid, ok=bool(fresh and res.get("gate") == "OK"))
+            C.write_json(p, dict(job, announced=True))
+    if os.path.exists(C.lfg_path("todos.json")) and '"linear_job"' in C.read_text(C.lfg_path("todos.json")):
+        from . import todos as T
+        T.listing()
+
+
+def _watcher(every=4):
+    import time
+    first = True
+    while True:
+        try:
+            watch_jobs(quiet=first)
+            first = False
+        except Exception:  # a bad file must never stop the dashboard; the page shows the job's state anyway
+            pass
+        time.sleep(every)
+
+
 def serve(port, open_browser=True):
     Handler.port = port
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     srv.daemon_threads = True
     # tool/MCP checks take a few seconds; warm them so the first overview shows every integration
     threading.Thread(target=dash.tools, daemon=True).start()
+    from . import notify as N
+    N.DESK["port"] = port  # macOS notifications when no dashboard tab is in front
+    threading.Thread(target=_watcher, daemon=True).start()  # announces finished AI jobs, scans and checks
     print("LFG dashboard: http://127.0.0.1:%d  (Ctrl-C to stop)" % port)
     if open_browser:
         threading.Timer(0.5, open_editor, (port,)).start()

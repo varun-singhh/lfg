@@ -207,6 +207,7 @@ def _run_summary(d):
             "title": title, "about": about,
             "branch": meta.get("branch") or "", "kind": meta.get("kind"), "pr": meta.get("pr"),
             "pr_url": meta.get("pr_url"), "worktree": meta.get("worktree"), "fix": fix,
+            "archived": meta.get("archived"),
             "lane": meta.get("lane"), "stage": meta.get("stage"), "issue": meta.get("issue"),
             "stages": stages, "progress": sum(stages.values()),
             "ready": ready, "checked_at": (rd or {}).get("ts"), "checking": checks_running(d),
@@ -304,13 +305,124 @@ def _run_dir(rid, run):
     return next((d for _, d, _ in shared_runs(rid) if os.path.basename(d) == run), None)
 
 
+def refresh_pr_states(rid, max_age=600):
+    """Fetch every pull request GitHub knows for this repo (open, merged, closed) into pr-states.json, when the saved
+    list is older than `max_age`. One `gh pr list` for the whole repo; run by `lfg ui`'s watcher, never by a page."""
+    p = C.lfg_path("repos", rid, "pr-states.json")
+    hit = C.read_json(p, None)
+    if isinstance(hit, dict) and time.time() - hit.get("at", 0) < max_age:
+        return False
+    root = repo_root(rid)
+    if not root or not os.path.isdir(root) or not C.which("gh"):
+        return False
+    cp = C.run(["gh", "pr", "list", "--state", "all", "--limit", "300", "--json",
+                "number,headRefName,state,mergedAt,closedAt,title,url"], cwd=root, timeout=60)
+    try:
+        prs = json.loads(cp.stdout or "[]") if cp.returncode == 0 else None
+    except ValueError:
+        prs = None
+    if not isinstance(prs, list):
+        return False
+    C.ensure_dir(os.path.dirname(p))
+    C.write_json(p, {"at": time.time(), "prs": prs})
+    return True
+
+
+def pr_states(rid):
+    """The saved list of this repo's pull requests, as ({number: pr}, {branch: newest pr}). Pages only read it, so a
+    page never waits on GitHub; until `lfg ui` has fetched it once, runs simply show no PR tags."""
+    hit = C.read_json(C.lfg_path("repos", rid, "pr-states.json"), None)
+    prs = [x for x in (hit or {}).get("prs") or [] if isinstance(x, dict) and x.get("number")]
+    by_branch = {}
+    for x in sorted(prs, key=lambda x: x["number"]):  # a branch reused for a later PR: the newest one counts
+        by_branch[x.get("headRefName")] = x
+    return {x["number"]: x for x in prs}, by_branch
+
+
+def _lazy_branches(rid):
+    """git_branches(), asked at most once and only when a run needs it."""
+    memo = []
+
+    def get():
+        if not memo:
+            memo.append(git_branches(repo_root(rid)))
+        return memo[0]
+    return get
+
+
+def run_life(r, by_n, by_branch, branches):
+    """A run's tags and whether it still needs anything: its PR (and that PR's state), its issue, what kind of run it
+    is, and active / done / not needed (its PR was merged or closed, its branch merged, or the user said so).
+    `branches` gives git_branches() when called (or is it, or None)."""
+    branch = r.get("branch") or ""
+    gb = (branches() if callable(branches) else branches) if branch and not r.get("pr") else None
+    pr = by_n.get(r["pr"]) if r.get("pr") else \
+        by_branch.get(branch) if branch and gb is not None and branch != gb.get("default") else None
+    tags = []
+    if r.get("kind") == "pr-fix":
+        tags.append({"text": "Fix run", "tone": "on"})
+    if pr:
+        tags.append({"text": "PR #%d" % pr["number"], "tone": {"MERGED": "merged", "CLOSED": "bad"}.get(pr.get("state"),
+                                                                                                    "on"),
+                     "href": pr.get("url"), "state": pr.get("state")})
+    if r.get("issue"):
+        iss = str(r["issue"])
+        if re.match(r"^[a-z]+-\d+$", iss, re.I):  # a Linear key: ATO-123
+            tags.append({"text": iss.upper(), "tone": ""})
+        else:  # a dev-graph slug: iss-rollout-devices-onboarding-gap -> "Issue: rollout devices onboarding…"
+            words = re.sub(r"^iss-", "", iss).replace("-", " ")
+            tags.append({"text": "Issue: " + (words[:28].rsplit(" ", 1)[0] + "…" if len(words) > 30 else words),
+                         "tone": "", "title": iss})
+    stages = r.get("stages") or {}
+    fix = r.get("fix") or {}
+    finished = (fix.get("ok") and not (fix.get("done") or {}).get("failed")) if r.get("kind") == "pr-fix" \
+        else bool(stages) and all(stages.values())
+    if r.get("archived"):
+        life = ("not-needed", "Marked not needed")
+    elif pr and pr.get("state") == "MERGED":
+        life = ("not-needed", "PR #%d merged" % pr["number"])
+    elif pr and pr.get("state") == "CLOSED":
+        life = ("not-needed", "PR #%d closed" % pr["number"])
+    elif gb and branch and branch in gb.get("merged", ()):
+        life = ("not-needed", "Branch merged")
+    elif finished:
+        life = ("done", "All steps done")
+    else:
+        life = ("active", "")
+    return {"tags": tags, "life": life[0], "life_why": life[1]}
+
+
+def set_needed(rid, run, needed):
+    """The user's own call on a run: not needed any more (hidden from Active), or needed again."""
+    d = C.lfg_path("runs", rid, os.path.basename(str(run or "")))
+    p = os.path.join(d, "run.json")
+    if not os.path.isfile(p):
+        raise ValueError("run not found")
+    meta = C.read_json(p, {}) or {}
+    if needed:
+        meta.pop("archived", None)
+    else:
+        meta["archived"] = C.now_iso()
+    C.write_json(p, meta)
+    return {"saved": True}
+
+
+def search_runs(rid, q):
+    from . import runsearch as RS
+    dirs = [d for d in _run_files(rid, "")[:300] if os.path.isdir(d)]
+    return dict(RS.search(rid, q, dirs), available=True)
+
+
 def runs(rid, branch=None):
     cur = C.read_text(C.lfg_path("runs", rid, "CURRENT")).strip()
     out = []
+    by_n, by_branch = pr_states(rid)
+    gb = _lazy_branches(rid)
     for d in _run_files(rid, "", branch)[:100]:
         if os.path.isdir(d):
             r = _run_summary(d)
             r["current"] = r["run"] == cur
+            r.update(run_life(r, by_n, by_branch, gb))
             out.append(r)
     if not branch:  # a shared run's branch is the other repo's, so it only shows under all branches
         for owner, d, mine in shared_runs(rid):
@@ -337,6 +449,8 @@ def run_detail(rid, run):
     ready = C.read_json(os.path.join(d, "ready.json"), None) or {}
     owner = os.path.basename(os.path.dirname(d))
     summary = _run_summary(d)
+    by_n, by_branch = pr_states(rid)
+    summary.update(run_life(summary, by_n, by_branch, _lazy_branches(rid)))
     if owner != rid:  # opened from another repo it has tasks for: that repo's part of it
         tl = [t for t in _tasks(d) if repo_matches(rid, t.get("repo"))]
         summary = _for_repo(summary, tl, d, rid)
