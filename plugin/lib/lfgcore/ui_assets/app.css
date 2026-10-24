@@ -1390,3 +1390,153 @@ a.lp-tk-i b::after { content: " ↗"; color: var(--muted); font-weight: 400; }
 .lp-tk-i b { font-size: 14px; } .lp-tk-i span { font-size: 12.5px; color: var(--muted); }
 .lp-mark img, .brand img { box-shadow: none !important; }
 .doc-tools input { min-width: 0; } .doc-tools .btn { flex: none; }
+
+/* Insights → Files */
+.fx-search { position: relative; display: flex; gap: 8px; margin-bottom: 18px; }
+.fx-search-ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--muted); display: flex; pointer-events: none; }
+.fx-search-ico .ico { width: 16px; height: 16px; }
+.fx-search input { flex: 1; max-width: none; height: 38px; padding-left: 34px; font-size: 14.5px; }
+.fx-search .btn { height: 38px; padding: 0 16px; }
+.fx-intro-h h3 { font-size: 16px; font-weight: 650; } .fx-intro-h p { margin: 4px 0 0; font-size: 14px; }
+.fx-what { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.fx-what > div { display: grid; gap: 4px; font-size: 13.5px; } .fx-what b { font-size: 14px; }
+.fx-what-ico { width: 30px; height: 30px; border-radius: 4px; display: grid; place-items: center; background: var(--blue-bg); color: var(--blue); margin-bottom: 4px; }
+.fx-what-ico .ico { width: 16px; height: 16px; }
+.fx-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.fx-chip { font: inherit; display: inline-flex; align-items: baseline; gap: 1px; max-width: 100%; padding: 7px 11px; border-radius: 4px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); color: var(--text); font-size: 13px; font-family: var(--mono); }
+.fx-chip:hover { border-color: color-mix(in srgb, var(--blue) 45%, var(--line)); background: var(--soft); }
+.fx-chip-dir { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; } .fx-chip b { font-weight: 600; }
+.fx-head { display: grid; gap: 8px; margin-bottom: 14px; position: relative; }
+.fx-path { font-family: var(--mono); font-size: 13px; color: var(--muted); word-break: break-all; padding-right: 130px; }
+.fx-path b { display: block; font-family: var(--sans); font-size: 22px; letter-spacing: -.02em; color: var(--text); margin-top: 2px; }
+.fx-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.fx-back { position: absolute; top: 14px; right: 14px; }
+.fx-sum { font-size: 15px; line-height: 1.6; margin: 4px 0 12px; max-width: 760px; }
+.fx-warn { margin: 0 0 8px; }
+.fx-defs { padding: 0; }
+.fx-def { border-bottom: 1px solid var(--line); } .fx-def:last-child { border-bottom: 0; }
+.fx-def-row { display: grid; grid-template-columns: 30px minmax(110px, auto) minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 9px 14px; }
+.fx-def-row .tag { justify-self: start; }
+.fx-def-n { font-size: 12.5px; justify-self: start; }
+.fx-def-d { font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-def-d .faint { color: var(--faint); }
+.fx-def-l { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fx-def .ins-why:not(:empty) { padding: 4px 14px 12px 56px; margin: 0; }
+.fx-issue { display: flex; gap: 10px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; } .fx-issue:last-child { border-bottom: 0; }
+.fx-file .ins-skel { margin: 4px 0 8px; }
+@media (max-width: 760px) {
+  .fx-what { grid-template-columns: 1fr; }
+  .fx-def-row { grid-template-columns: 30px minmax(0, 1fr) auto; } .fx-def-d { grid-column: 2 / -1; white-space: normal; } .fx-def-l { display: none; }
+  .fx-path { padding-right: 0; } .fx-back { position: static; justify-self: start; }
+}
+
+/* ------------------------------------------------------------------ AI threads on the diff, and the review's AI text:
+   a review conversation in the app's own language (hairline card, avatar rows, accent only for the AI tag) */
+.th { display: grid; gap: 0; max-width: 880px; margin: 2px 0; background: var(--surface); border: 1px solid var(--line-2); border-radius: 6px;
+  font-family: var(--sans); font-size: 14px; overflow: hidden; }
+.th-h { display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); background: var(--soft); }
+.th-lines { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--text); }
+.th-lines .ico { width: 15px; height: 15px; color: var(--blue); }
+.th-h .icon-btn { width: 26px; height: 26px; font-size: 18px; }
+.th-list { display: grid; }
+.th-m { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; padding: 12px 14px; }
+.th-m + .th-m { border-top: 1px solid var(--line); }
+.th-av { width: 28px; height: 28px; border-radius: 4px; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; overflow: hidden; }
+.th-av.me { background: var(--gray-bg); color: var(--gray-tx); }
+.th-av.ai img { display: block; width: 28px; height: 28px; }
+.th-c { min-width: 0; display: grid; gap: 4px; }
+.th-who { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+.th-who b { color: var(--text); font-size: 13.5px; font-weight: 600; }
+.th-who .tag { height: 18px; font-size: 10.5px; padding: 0 6px; }
+.th-cost { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); background: var(--gray-bg); border-radius: 3px; padding: 0 6px; line-height: 18px; }
+.th-text { font-size: 14px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; white-space: pre-wrap; }
+.th-text.md { white-space: normal; max-width: none; }
+.th-text.md > :first-child { margin-top: 0; } .th-text.md > :last-child { margin-bottom: 0; }
+.th-text.md ul, .th-text.md ol { margin: 6px 0; }
+.th-m.bad .th-text { color: var(--red-tx); }
+.th-reply { display: flex; gap: 8px; align-items: flex-end; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--soft); }
+.th-reply textarea, .th-ask > textarea { flex: 1; font: inherit; font-size: 13.5px; color: var(--text); background: var(--field); border: 0; border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--line-2); padding: 7px 10px; resize: vertical; min-height: 34px; }
+.th-reply textarea:focus, .th-ask > textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue), 0 0 0 3px var(--focus); }
+.th-ask > textarea { margin: 12px 14px 0; width: calc(100% - 28px); box-sizing: border-box; }
+.th-ask .df-reply { padding: 10px 14px 12px; }
+.th.resolved { display: flex; align-items: center; gap: 10px; padding: 7px 10px 7px 14px; }
+/* the AI's take on a review comment, and the review chat: same family, no violet panels */
+.ai-take { background: var(--soft); border: 1px solid var(--line); border-left: 2px solid var(--blue); border-radius: 0 4px 4px 0; padding: 9px 12px; }
+.ai-h { color: var(--text-2); } .ai-fix b, .ai-line { color: var(--text-2); }
+.ai-badge, .ai-line b { background: var(--blue-bg); color: var(--blue-tx); border-radius: 3px; }
+.msg { border-radius: 4px; }
+.msg.me { background: var(--soft); border: 1px solid var(--line); color: var(--text); }
+.msg.ai, .msg.ai:not(.bad):not(.muted) { background: var(--surface); border: 1px solid var(--line); border-left: 2px solid var(--blue); border-radius: 0 4px 4px 0; }
+.df-trow > td, .df-compose > td { background: color-mix(in srgb, var(--soft) 60%, var(--page)); }
+
+/* ------------------------------------------------------------------ the brand follows the accent colour.
+   Every hero glow, the logo and the favicon are mixed from --blue (the accent), so Settings → Appearance → Accent
+   recolours all of them. Deep (a) → mid (b) → accent (c) → light (d). */
+:root, :root[data-mode] {
+  --hero-a: color-mix(in srgb, var(--blue) 22%, #020617); --hero-b: color-mix(in srgb, var(--blue) 62%, #020617);
+  --hero-c: var(--blue); --hero-d: color-mix(in srgb, var(--blue) 62%, #ffffff);
+  --logo-a: color-mix(in srgb, var(--blue) 72%, #ffffff); --logo-b: var(--blue); --logo-c: color-mix(in srgb, var(--blue) 62%, #000000);
+}
+:root[data-mode="dark"] { --hero-a: color-mix(in srgb, var(--blue) 10%, #03050b); --hero-b: color-mix(in srgb, var(--blue) 42%, #03050b);
+  --hero-c: color-mix(in srgb, var(--blue) 82%, #000000); --hero-d: var(--blue); }
+@media (prefers-color-scheme: dark) { :root:not([data-mode]) { --hero-a: color-mix(in srgb, var(--blue) 10%, #03050b);
+  --hero-b: color-mix(in srgb, var(--blue) 42%, #03050b); --hero-c: color-mix(in srgb, var(--blue) 82%, #000000); --hero-d: var(--blue); } }
+:root .lp-hero, :root[data-mode] .lp-hero, :root[data-mode="light"] .lp-hero, :root[data-mode="dark"] .lp-hero { background:
+    radial-gradient(1.2px 1.2px at 12% 22%, rgba(255, 255, 255, .8), transparent 60%),
+    radial-gradient(1px 1px at 28% 64%, rgba(255, 255, 255, .55), transparent 60%),
+    radial-gradient(1.4px 1.4px at 71% 18%, rgba(255, 255, 255, .8), transparent 60%),
+    radial-gradient(1px 1px at 86% 52%, rgba(255, 255, 255, .5), transparent 60%),
+    radial-gradient(46% 30% at 50% 100%, var(--page) 0%, color-mix(in srgb, var(--page) 72%, transparent) 40%, transparent 85%),
+    radial-gradient(80% 60% at 50% 94%, var(--hero-d) 0%, var(--hero-c) 32%, color-mix(in srgb, var(--hero-c) 50%, transparent) 60%, transparent 82%),
+    radial-gradient(50% 50% at 85% 0%, color-mix(in srgb, var(--hero-a) 95%, transparent), transparent 70%),
+    radial-gradient(50% 50% at 15% 0%, color-mix(in srgb, var(--hero-a) 95%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--hero-a) 0%, var(--hero-b) 58%, var(--hero-c) 100%); }
+:root .wl-hero, :root[data-mode] .wl-hero { background:
+    radial-gradient(1.2px 1.2px at 12% 22%, rgba(255, 255, 255, .8), transparent 60%),
+    radial-gradient(1.4px 1.4px at 71% 18%, rgba(255, 255, 255, .8), transparent 60%),
+    radial-gradient(58% 34% at 50% 100%, color-mix(in srgb, var(--surface) 96%, transparent) 0%, color-mix(in srgb, var(--surface) 60%, transparent) 34%, transparent 80%),
+    radial-gradient(80% 60% at 50% 92%, var(--hero-d) 0%, var(--hero-c) 32%, color-mix(in srgb, var(--hero-c) 55%, transparent) 58%, transparent 80%),
+    radial-gradient(60% 50% at 82% 8%, color-mix(in srgb, var(--hero-a) 90%, transparent), transparent 70%),
+    radial-gradient(60% 50% at 18% 8%, color-mix(in srgb, var(--hero-a) 90%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--hero-a) 0%, var(--hero-b) 55%, var(--hero-c) 100%);
+  box-shadow: 0 30px 80px -40px color-mix(in srgb, var(--blue) 55%, transparent); }
+:root .ob-vis, :root[data-mode] .ob-vis, :root[data-mode="light"] .ob-vis, :root[data-mode="dark"] .ob-vis {
+  background: radial-gradient(90% 80% at 50% 0%, var(--hero-c), var(--hero-b) 55%, var(--hero-a)); }
+.lp-hero h1 em, .wl-hero h1 em { background: linear-gradient(180deg, #fff, color-mix(in srgb, var(--blue) 22%, #ffffff));
+  -webkit-background-clip: text; background-clip: text; color: transparent; }
+.wl-pill .tag { color: var(--blue); }
+.lp-hero .btn.primary { color: var(--hero-b); box-shadow: 0 6px 24px -6px color-mix(in srgb, var(--hero-a) 60%, transparent); }
+.lp-hero .btn.primary:hover { background: color-mix(in srgb, var(--blue) 8%, #ffffff); }
+.lp-cmd code, .ob-vis .lp-flow.mini code { background: color-mix(in srgb, var(--hero-a) 55%, transparent); color: color-mix(in srgb, var(--blue) 15%, #ffffff); }
+.lp-hero h1, .wl-hero h1 { text-shadow: 0 2px 30px color-mix(in srgb, var(--hero-a) 40%, transparent); }
+.mk-l.sel { box-shadow: inset 3px 0 0 var(--blue); }
+/* the inline logo */
+.lfg-logo { display: block; flex: none; }
+.brand .lfg-logo { width: 20px; height: 20px; }
+.th-av.ai svg { width: 28px; height: 28px; display: block; }
+
+/* sidebar foot: version, update tag, check button; and a faint accent glow rising from the bottom */
+.side { position: sticky; isolation: isolate; }
+.side::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 220px; pointer-events: none; z-index: -1;
+  background: radial-gradient(120% 90% at 50% 105%, color-mix(in srgb, var(--blue) 18%, transparent), color-mix(in srgb, var(--blue) 6%, transparent) 45%, transparent 75%); }
+:root[data-glow="off"] .side::after { display: none; }
+.side-ver { display: flex; align-items: center; gap: 6px; min-height: 26px; padding-top: 10px; border-top: 1px solid var(--line); }
+.side-ver-n { font-size: 12px; font-weight: 600; color: var(--text-2); font-family: var(--mono); letter-spacing: -.01em; }
+.side-ok { font-size: 11.5px; color: var(--muted); }
+.side-upd { height: 19px; font-size: 11px; text-decoration: none; }
+.side-chk { margin-left: auto; width: 24px; height: 24px; }
+.side-chk .ico { width: 14px; height: 14px; }
+.side-chk.spinning .ico { animation: spin .8s linear infinite; }
+@media (max-width: 820px) { .side::after { display: none; } }
+/* keep the whole sidebar, foot included, on a laptop-height screen without scrolling */
+#nav a { height: 30px; }
+.nav-grp { padding: 12px 10px 4px; }
+.side-foot { padding: 10px 6px 0; gap: 8px; }
+.status { flex-wrap: nowrap; gap: 6px; min-width: 0; }
+.status .map-line { min-width: 0; } .status .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status .btn { flex: none; height: 22px; padding: 0 7px; font-size: 11.5px; margin-left: auto; }
+/* the big sign-off: room for descenders (g), since a gradient text fill only paints inside the line box */
+.lp-lfg { line-height: 1.12; padding: 0 0 .14em; margin-top: -.06em; }
+.lp-home { display: inline-flex; color: inherit; text-decoration: none; }

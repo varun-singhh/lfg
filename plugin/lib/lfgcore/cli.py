@@ -173,6 +173,9 @@ def cmd_setup(a):
           "dashboard (packs, settings, skills)\n  lfg doctor                     check everything")
     _print_whats_new(SU)
     from . import onboard as OB
+    if not a.yes and OB.interactive():
+        from . import ghstar
+        ghstar.ask_once()  # once, only with a yes, only when the GitHub CLI is signed in
     if not OB.is_complete():
         print("\nPick the features you'll use: lfg ui (opens Welcome) or lfg onboard")
         if not a.yes and OB.interactive():

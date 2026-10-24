@@ -5,6 +5,10 @@ All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.j
 ## Unreleased
 
 ### Added
+- **Star LFG, only if you want to**: `lfg setup` asks once in a terminal when the GitHub CLI is signed in (Enter means no), and the dashboard's Star buttons star it in one click from your account (or open GitHub when `gh` isn't signed in). LFG never stars or writes to GitHub on its own. Remembered in `~/.lfg/state/github.json`.
+- **README**: a one-command install, and a prompt to paste into Claude Code so it sets LFG up for you.
+- Sidebar foot: the LFG version, an "available" tag when a newer one is out, and a button to check now; a faint glow in the accent colour.
+- **The brand follows your accent colour**: the logo, the favicon and every hero glow (home, Welcome, intro) are drawn from the accent, so picking violet, green, orange or rose recolours them too. Diff threads and the AI's text in reviews now use the app's own look (hairline card, avatar rows) instead of violet panels and chat bubbles.
 - **Appearance** (Settings → Appearance): System, light or dark; three light themes (LFG, Paper, Mist) and three dark (Midnight, Graphite, Carbon); accent colour, density, text size, background glow and motion. Kept per browser.
 - **Docs, reorganised**: *Getting started* (what LFG is, how it works, everyday commands), graphify's *Code wiki* (call flows, the architecture map and one page per area of the code), and *Your docs*, which you can now write and edit in the dashboard in Markdown, for the project or a branch. LFG's own playbooks are no longer listed as docs.
 - **Add knowledge**: paste a note, decision, lesson or rule in Markdown on the Knowledge page. Saved in `~/.lfg/repos/<repo-id>/knowledge/` (`lfg repo knowledge`), and Claude is told to read your docs and knowledge in that project.

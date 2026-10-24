@@ -831,3 +831,45 @@ class GapsTest(HistRepoMixin, unittest.TestCase):
         yes = ["fix: rounding", "UI fixes", "Fixed the login redirect", "Handle null, fixes #88", "crash on save"]
         no = ["LFG 0.3.0: guard fixes", "v1.2.0 - fixes and polish", "Bump lodash", "Revert \"fix: x\"", "tweak pay"]
         self.assertEqual([bool(FIX_RX.search(t)) for t in yes + no], [True] * 5 + [False] * 5)
+
+
+class GitHubStarTest(unittest.TestCase):
+    """Starring happens only on an explicit yes or click, and setup asks only once."""
+
+    def setUp(self):
+        from lfgcore import ghstar as G
+        self.G = G
+        p = C.lfg_path("state", "github.json")
+        if os.path.exists(p):
+            os.remove(p)
+        self.calls = []
+
+        def run(cmd, **kw):
+            self.calls.append(cmd)
+            starred = any(c[:3] == ["gh", "api", "-X"] for c in self.calls[:-1])
+            rc = 0 if cmd[:3] == ["gh", "auth", "status"] or cmd[:3] == ["gh", "api", "-X"] else (0 if starred else 1)
+            return subprocess.CompletedProcess(cmd, rc, "", "")
+        for target, value in (("run", run), ("which", lambda n: "/usr/bin/gh")):
+            m = mock.patch.object(C, target, value)
+            m.start()
+            self.addCleanup(m.stop)
+
+    def puts(self):
+        return [c for c in self.calls if c[:3] == ["gh", "api", "-X"]]
+
+    def test_no_means_no_and_it_never_asks_again(self):
+        self.assertFalse(self.G.ask_once(inp=lambda q: "", out=lambda *a: None))  # Enter = no
+        self.assertEqual(self.puts(), [])
+        self.assertIsNone(self.G.ask_once(inp=lambda q: "y", out=lambda *a: None))  # asked already
+        self.assertEqual(self.puts(), [])
+
+    def test_yes_stars_once(self):
+        self.assertTrue(self.G.ask_once(inp=lambda q: "y", out=lambda *a: None))
+        self.assertEqual(self.puts(), [["gh", "api", "-X", "PUT", "/user/starred/varun-singhh/lfg", "--silent"]])
+        self.assertTrue(self.G.view()["starred"])
+
+    def test_not_signed_in_never_calls_github(self):
+        with mock.patch.object(C, "which", lambda n: None):
+            self.assertIsNone(self.G.ask_once(inp=lambda q: "y", out=lambda *a: None))
+            self.assertFalse(self.G.star()["starred"])
+        self.assertEqual(self.puts(), [])

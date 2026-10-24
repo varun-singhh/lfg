@@ -13,17 +13,35 @@ grill → plan → build → check ∥ secure ∥ pentest → expert review → 
 
 ## Install
 
+One command installs and sets up LFG (macOS, Python 3.9+, Claude Code installed):
+
 ```bash
-git clone https://github.com/varun-singhh/lfg.git && ./lfg/install.sh
+git clone https://github.com/varun-singhh/lfg.git ~/lfg && ~/lfg/install.sh
 ```
 
-The installer looks at your machine first, shows exactly what it would change, and asks before doing anything. Then turn LFG on in the repos where you want it:
+The installer looks at your machine first, shows exactly what it would change, and asks before doing anything. At the end it offers to open the dashboard, which starts with a short intro. Then turn LFG on in the repos where you want it:
 
 ```bash
 cd your-repo && lfg enable
 ```
 
-Start Claude Code there and type `/lfg:wizard <your idea>` for a guided run, or `/lfg:which` to see what to do next.
+Start (or restart) Claude Code there and say what you want: `/lfg:lfg add rate limiting to the public API`, or `/lfg:wizard` for a guided run.
+
+### Or let Claude set it up
+
+Paste this into Claude Code, in the repo where you want LFG:
+
+```text
+Set up LFG for me (https://github.com/varun-singhh/lfg).
+1. If ~/lfg doesn't exist, clone it there: git clone https://github.com/varun-singhh/lfg.git ~/lfg
+   If it does, update it: git -C ~/lfg pull --ff-only
+2. Run ~/lfg/install.sh --yes and show me what it changed.
+3. Run `lfg enable` in this repo, then `lfg doctor`, and tell me if anything needs fixing.
+4. Tell me to restart Claude Code here, and to open the dashboard with `lfg ui`.
+Don't change any other repo or my global Claude Code settings.
+```
+
+LFG never stars or writes to GitHub on its own. If you like it, `lfg setup` asks once whether to star it from your GitHub account (when the GitHub CLI is signed in), and the dashboard has a Star button.
 
 ## A guest on your machine
 

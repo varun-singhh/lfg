@@ -144,6 +144,9 @@ def api(view, q):
     if view == "skilltext":
         from . import control as K
         return K.skill_text(_arg(q, "id"), _rid(q))
+    if view == "github":
+        from . import ghstar
+        return ghstar.view()
     if view in ("features", "onboarding"):  # about LFG itself, not a repo: work before any project exists
         from . import onboard as OB
         return OB.view()
@@ -270,6 +273,9 @@ def save(what, body):
         if not rid:
             raise S.Invalid("open a project first")
         return dash.doc_save(rid, body) if what == "doc_save" else dash.knowledge_add(rid, body)
+    if what == "github_star":  # the user clicked Star: the only way the dashboard writes to GitHub
+        from . import ghstar
+        return ghstar.star()
     if what == "updates_check":
         from . import updates as UP
         return UP.check()

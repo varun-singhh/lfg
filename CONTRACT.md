@@ -22,6 +22,7 @@ After install (`~/.lfg`, mode 700):
 ├── state/{packs.json,gh.json,usage-offsets.json}
 ├── state/onboarding.json  # Welcome: chosen features, show-every-page (never in config.json)
 ├── state/updates.json     # last update check: upstream version, notes, error
+├── state/github.json      # whether setup asked to star LFG, and the answer (stars only on yes or a click)
 ├── repos/<repo-id>/knowledge/*.md  # knowledge the user added (Knowledge → Add knowledge)
 ├── repos/<repo-id>/insights/reviews.json  # Insights: kinds and counts of findings per check (never code), for "keeps coming up"
 ├── config.json             # user config, mode 600 (models, lanes, shipcheck, pentest, ports, linear, graphs.docs,

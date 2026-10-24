@@ -11,9 +11,28 @@ function apApply(a) {
   r.mode = dark ? "dark" : "light"; r.theme = dark ? a.dark : a.light;
   r.accent = a.accent; r.density = a.density; r.text = a.text; r.glow = a.glow; r.motion = a.motion;
 }
-function apSet(k, v) { const a = apRead(); a[k] = v; try { localStorage.setItem("lfg.appearance", JSON.stringify(a)); } catch (e) { /* private window: this visit only */ } apApply(a); return a; }
+function apSet(k, v) { const a = apRead(); a[k] = v; try { localStorage.setItem("lfg.appearance", JSON.stringify(a)); } catch (e) { /* private window: this visit only */ } apApply(a); apFavicon(); return a; }
+/* The logo, drawn in the accent colour (inline, so it follows the theme); the favicon is rebuilt to match. */
+let LOGO_N = 0;
+function logoSvg(size) {
+  const g = "lg" + (++LOGO_N);
+  return `<svg class="lfg-logo" width="${size}" height="${size}" viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="${g}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color:var(--logo-a)"/><stop offset=".55" style="stop-color:var(--logo-b)"/><stop offset="1" style="stop-color:var(--logo-c)"/></linearGradient></defs><rect width="32" height="32" rx="7" fill="url(#${g})"/><path d="M8.5 9.5 15 16l-6.5 6.5" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 9.5 22 16l-6.5 6.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="26.2" cy="16" r="1.6" fill="#fff"/></svg>`;
+}
+function hexMix(a, b, t) {  // t of a, the rest b
+  const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const [x, y] = [p(a), p(b)];
+  return "#" + x.map((v, i) => Math.round(v * t + y[i] * (1 - t)).toString(16).padStart(2, "0")).join("");
+}
+function apFavicon() {
+  const c = (getComputedStyle(document.documentElement).getPropertyValue("--blue") || "").trim();
+  if (!/^#[0-9a-f]{6}$/i.test(c)) return;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${hexMix(c, "#ffffff", .72)}"/><stop offset=".55" stop-color="${c}"/><stop offset="1" stop-color="${hexMix(c, "#000000", .62)}"/></linearGradient></defs><rect width="32" height="32" rx="7" fill="url(#g)"/><path d="M8.5 9.5 15 16l-6.5 6.5" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 9.5 22 16l-6.5 6.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="26.2" cy="16" r="1.6" fill="#fff"/></svg>`;
+  const link = document.querySelector('link[rel="icon"]');
+  if (link) link.href = "data:image/svg+xml," + encodeURIComponent(svg);
+}
 apApply();
-try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => apApply()); } catch (e) { /* old browsers */ }
+document.addEventListener("DOMContentLoaded", apFavicon); apFavicon();
+try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { apApply(); apFavicon(); }); } catch (e) { /* old browsers */ }
 /* LFG dashboard: a plain-language view of what LFG is doing in your repos. Read-only, except Settings, which saves
    only with the local edit key from `lfg ui`. Author: Varun Singh. No external resources. */
 "use strict";
@@ -702,7 +721,7 @@ function settingsAppearance() {
 document.addEventListener("click", e => {
   const b = e.target.closest("[data-ap]");
   if (b) { apSet(b.dataset.ap, b.dataset.v); $$(`[data-ap="${b.dataset.ap}"]`).forEach(x => x.classList.toggle("on", x === b)); return; }
-  if (e.target.closest("[data-ap-reset]")) { try { localStorage.removeItem("lfg.appearance"); } catch (err) { /* ignore */ } apApply(); route({ soft: true }); }
+  if (e.target.closest("[data-ap-reset]")) { try { localStorage.removeItem("lfg.appearance"); } catch (err) { /* ignore */ } apApply(); apFavicon(); route({ soft: true }); }
 });
 function settingsGeneral() {
   const { cfg, unlocked } = state.settings;
@@ -1338,7 +1357,7 @@ PAGES.insights = async arg => {
     ${tabs("insights", [
       ["changes", "Your changes", null, () => `<div id="ins-changes"><div class="loading">Reading your changes…</div></div>`],
       ["hotspots", "Hotspots", null, () => `<div id="ins-hot"><div class="loading">Reading the history…</div></div>`],
-      ["files", "Files", null, () => `<div class="ins-pick"><input id="ins-file" list="ins-files" placeholder="Find a file…" value="${esc(INS.file)}" autocomplete="off"><button class="btn primary" id="ins-open">Open</button></div><div id="ins-file-out"></div>`],
+      ["files", "Files", null, () => `<div class="fx-search"><span class="fx-search-ico">${icon("docs")}</span><input id="ins-file" list="ins-files" placeholder="Type a file path, e.g. src/billing.py" value="${esc(INS.file)}" autocomplete="off" aria-label="File"><button class="btn primary" id="ins-open">Explain</button></div><div id="ins-file-out"></div>`],
     ])}
     <datalist id="ins-files"></datalist>`;
 };
@@ -1383,22 +1402,41 @@ function insWhy(d) {
     <div class="muted small">${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer"><code>${esc(c.sha.slice(0, 7))}</code></a>` : `<code>${esc(c.sha.slice(0, 7))}</code>`} · ${esc(c.author)} · ${esc(c.date)}${c.fix ? ' <span class="tag bad">fix</span>' : ""}${c.refs.map(r => ` · ${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.label)}</a>` : esc(r.label)}`).join("")}</div>
     ${c.body ? `<details><summary class="small">Details</summary><div class="ins-body">${esc(c.body)}</div></details>` : ""}</li>`).join("")}</ol>`;
 }
+/* Files: understand one file without opening it. Empty: what this is for, and files worth starting with. */
+function insFilePicker(hot) {
+  const files = (hot && hot.files) || [];
+  const fragile = files.slice(0, 5), recent = files.slice().sort((a, b) => (b.last || "").localeCompare(a.last || "")).slice(0, 5);
+  const chip = f => `<button class="fx-chip" data-pick="${esc(f.path)}"><span class="fx-chip-dir">${esc(f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/") + 1) : "")}</span><b>${esc(f.path.split("/").pop())}</b></button>`;
+  return `<div class="fx-intro box pad"><div class="fx-intro-h"><h3>Understand any file without opening it</h3><p class="muted">Pick a file and LFG reads it and its git history for you.</p></div>
+    <div class="fx-what">${[["docs", "What it does", "Its purpose, in its own words, and everything it defines."], ["runs", "Why it's like this", "The commits, PRs and tickets that shaped each part."], ["checks", "What to test", "Test ideas, past bugs to guard, and a test file to start from."]].map(([ic, t, d]) => `<div><span class="fx-what-ico">${icon(ic)}</span><b>${t}</b><span class="muted">${d}</span></div>`).join("")}</div></div>
+    ${fragile.length ? `<h3 class="ins-h">Start with a fragile file</h3><div class="fx-chips">${fragile.map(chip).join("")}</div>` : ""}
+    ${recent.length ? `<h3 class="ins-h">Changed recently</h3><div class="fx-chips">${recent.map(chip).join("")}</div>` : ""}`;
+}
 function insFile(ex, ts) {
   if (ex.error) return unavailable({ why: ex.error }, "Couldn't open it");
   const w = ex.why_its_here || {};
   const defs = (ex.how_it_works || []).slice().sort((a, b) => a.line - b.line);
   const ideas = (ts && ts.suggested_tests) || [];
+  const tests = ex.related_tests || [], fixes = w.recent_fixes || [];
+  const dir = ex.file.includes("/") ? ex.file.slice(0, ex.file.lastIndexOf("/") + 1) : "", name = ex.file.split("/").pop();
   const P = { 1: "Start here", 2: "Edge case", 3: "Nice to have" };
   ideas.forEach(t => { if (t.category === "regression") t.kind = "Past bug"; });
-  return `<div class="ins-file"><h2>${esc(ex.file)}</h2>${ex.summary ? `<p>${inline(ex.summary)}</p>` : '<p class="muted">The file doesn\'t describe itself. Ask Claude: <code>/lfg:explain</code> how it works.</p>'}
-    <p class="muted small">${w.created_by ? `Added by ${esc(w.created_by)} on ${esc(w.created_date)} · last changed by ${esc(w.last_modified_by)} on ${esc(w.last_modified_date)} · ${plural(w.total_commits || 0, "commit")}` : "Not committed yet."}
-      ${(ex.related_tests || []).length ? ` · tested in ${ex.related_tests.map(t => insLink(t)).join(", ")}` : " · <b>no test file covers it</b>"}</p>
-    ${(w.recent_fixes || []).length ? `<p class="ins-warn">${dot("warn")}Fixed ${plural(w.recent_fixes.length, "time")} in the last six months: ${w.recent_fixes.slice(0, 2).map(f => esc(f.message)).join("; ")}${w.recent_fixes.length > 2 ? "…" : ""}. Change it carefully.</p>` : ""}
-    <button class="btn small" data-why-file>Why is this file like this?</button><div id="ins-why-file"></div>
-    ${defs.length ? `<h3 class="ins-h">What's in it</h3><ul class="ins-defs box">${defs.map((x, k) => `<li><div class="ins-def"><code>${esc(x.name)}</code><span class="muted small">${esc(x.type)} · line ${x.line}</span><span class="grow muted small">${inline(x.docstring || "")}</span><button class="link small" data-why="${x.line}" data-end="${defs[k + 1] ? defs[k + 1].line - 1 : ""}">Why is this here?</button></div><div class="ins-why"></div></li>`).join("")}</ul>` : ""}
-    ${(ex.potential_issues || []).length ? `<h3 class="ins-h">Worth a look</h3><ul class="ins-list">${ex.potential_issues.map(i => `<li>Line ${esc(i.line)}: ${esc(i.message)}</li>`).join("")}</ul>` : ""}
-    ${ideas.length ? `<details class="ins-more"><summary>${plural(ideas.length, "test idea")}${ideas.some(t => t.category === "regression") ? ` · ${ideas.filter(t => t.category === "regression").length} from past fixes` : ""}</summary>
-      ${ts.skeleton ? `<div class="ins-skel"><div class="row"><span class="muted small">A test file to start from: every test is skipped until it's written, so it runs as-is.</span><span class="grow"></span><button class="btn small" data-copy="ins-skel-code">Copy</button></div><pre class="out" id="ins-skel-code">${esc(ts.skeleton)}</pre></div>` : ""}<div class="box">${table(ideas, [{ k: "priority", label: "", html: r => esc(r.kind || P[r.priority] || ""), sort: r => r.priority }, { k: "test_name", label: "Test", html: r => `<code>${esc(r.test_name)}</code>` }, { k: "reason", label: "Why" }], { sort: "priority", dir: 1, filter: false })}</div></details>` : ""}
+  const kindTag = k => `<span class="tag ${k === "class" ? "blue" : ""}">${k === "class" ? "class" : "fn"}</span>`;
+  const overview = `${ex.summary ? `<p class="fx-sum">${inline(ex.summary)}</p>` : '<p class="muted">The file doesn\'t describe itself. Ask Claude: <code>/lfg:explain</code> how it works.</p>'}
+    ${fixes.length ? `<div class="callout warn fx-warn"><b>Fixed ${plural(fixes.length, "time")} in the last six months:</b> ${fixes.slice(0, 2).map(f => `“${esc(f.message.replace(/[.\s]+$/, ""))}”`).join(", ")}${fixes.length > 2 ? "…" : ""}. Change it carefully.</div>` : ""}
+    ${defs.length ? `<h3 class="ins-h">What's in it <span class="tag">${defs.length}</span></h3>
+      <div class="fx-defs box">${defs.map((x, k) => `<div class="fx-def"><div class="fx-def-row">${kindTag(x.type)}<code class="fx-def-n">${esc(x.name)}</code><span class="fx-def-d">${x.docstring ? inline(x.docstring) : '<span class="faint">no description</span>'}</span><span class="fx-def-l">line ${x.line}</span><button class="btn small" data-why="${x.line}" data-end="${defs[k + 1] ? defs[k + 1].line - 1 : ""}">History</button></div><div class="ins-why"></div></div>`).join("")}</div>` : ""}
+    ${(ex.potential_issues || []).length ? `<h3 class="ins-h">Worth a look</h3><div class="box">${ex.potential_issues.map(i => `<div class="fx-issue"><span class="tag warn">line ${esc(i.line)}</span>${esc(i.message)}</div>`).join("")}</div>` : ""}`;
+  const history = `<div id="ins-why-file"><div class="loading">Reading the history…</div></div>`;
+  const testsTab = `${tests.length ? `<p class="muted">Already tested in ${tests.map(t => insLink(t)).join(", ")}.</p>` : '<p class="muted">No test file covers it yet: start with the file below.</p>'}
+    ${ts && ts.skeleton ? `<div class="ins-skel"><div class="row"><b>A test file to start from</b><span class="muted small">every test is skipped until it's written, so it runs as-is</span><span class="grow"></span><button class="btn small" data-copy="ins-skel-code">Copy</button></div><pre class="out" id="ins-skel-code">${esc(ts.skeleton)}</pre></div>` : ""}
+    ${ideas.length ? `<h3 class="ins-h">Test ideas <span class="tag">${ideas.length}</span></h3><div class="box">${table(ideas, [{ k: "priority", label: "", html: r => `<span class="tag ${r.kind ? "bad" : r.priority === 1 ? "blue" : ""}">${esc(r.kind || P[r.priority] || "")}</span>`, sort: r => r.priority }, { k: "test_name", label: "Test", html: r => `<code>${esc(r.test_name)}</code>` }, { k: "reason", label: "Why" }], { sort: "priority", dir: 1, filter: false })}</div>` : ""}`;
+  return `<div class="fx-file">
+    <div class="fx-head box pad"><div class="fx-path"><span>${esc(dir)}</span><b>${esc(name)}</b></div>
+      <div class="fx-tags">${ex.language ? `<span class="tag">${esc(ex.language)}</span>` : ""}${w.total_commits ? `<span class="tag">${plural(w.total_commits, "commit")}</span>` : '<span class="tag">not committed yet</span>'}${tests.length ? `<span class="tag ok">tested</span>` : '<span class="tag warn">no tests</span>'}${fixes.length ? `<span class="tag bad">${fixes.length} recent ${fixes.length === 1 ? "fix" : "fixes"}</span>` : ""}</div>
+      ${w.created_by ? `<div class="muted small">Added by ${esc(w.created_by)} on ${esc(w.created_date)} · last changed by ${esc(w.last_modified_by)} on ${esc(w.last_modified_date)}</div>` : ""}
+      <button class="link small fx-back" data-fx-back>← Pick another file</button></div>
+    ${tabs("insfile", [["overview", "Overview", null, () => overview], ["history", "History", null, () => history], ["tests", "Tests", ideas.length || null, () => testsTab]])}
   </div>`;
 }
 function wireInsights(root) {
@@ -1421,27 +1459,40 @@ function wireInsights(root) {
     api("insight_hotspots").then(d => { hot.innerHTML = insHotspots(d); mountTables(hot); }).catch(e => { hot.innerHTML = unavailable({ why: e.message }); });
   }
   const out = $("#ins-file-out", root), inp = $("#ins-file", root);
-  if (out && inp) {
-    const open = async () => {
-      const file = inp.value.trim();
-      if (!file) return;
-      INS.file = file;
-      out.innerHTML = '<div class="loading">Reading the file and its history…</div>';
-      const [ex, ts] = await Promise.all([api("insight_explain", { file }), api("insight_tests", { file }).catch(() => null)]);
-      out.innerHTML = insFile(ex, ts); mountTables(out);
-      const wf = $("[data-why-file]", out);
-      if (wf) wf.onclick = async () => { wf.disabled = true; $("#ins-why-file", out).innerHTML = insWhy(await api("insight_why", { file })); wf.remove(); };
-      $$("[data-why]", out).forEach(b => b.onclick = async () => {
-        const box = b.closest("li").querySelector(".ins-why");
-        if (box.innerHTML) { box.innerHTML = ""; b.textContent = "Why is this here?"; return; }
+  if (out && inp && !out.dataset.wired) {
+    out.dataset.wired = "1";
+    const wireFile = file => {
+      const histBox = () => $("#ins-why-file", out);
+      const loadHist = async () => { const b = histBox(); if (b && !b.dataset.done) { b.dataset.done = "1"; b.innerHTML = insWhy(await api("insight_why", { file })); } };
+      $$("[data-tabs=insfile] .tab", out).forEach(t => t.addEventListener("click", () => setTimeout(() => { if (t.dataset.k === "history") loadHist(); wireDefs(); }, 0)));
+      if (sessionStorage.getItem("lfg.tab.insfile") === "history") loadHist();
+      const wireDefs = () => $$("[data-why]", out).forEach(b => b.onclick = async () => {
+        const box = b.closest(".fx-def").querySelector(".ins-why");
+        if (box.innerHTML) { box.innerHTML = ""; b.textContent = "History"; return; }
         b.textContent = "Reading…";
         box.innerHTML = insWhy(await api("insight_why", { file, start: b.dataset.why, end: b.dataset.end }));
         b.textContent = "Hide";
       });
+      wireDefs();
+      const back = $("[data-fx-back]", out); if (back) back.onclick = () => { INS.file = ""; inp.value = ""; showPicker(); };
     };
-    $("#ins-open", root).onclick = open;
+    const open = async file => {
+      file = (file || inp.value).trim();
+      if (!file) return;
+      INS.file = file; inp.value = file;
+      out.innerHTML = '<div class="loading">Reading the file and its history…</div>';
+      const [ex, ts] = await Promise.all([api("insight_explain", { file }), api("insight_tests", { file }).catch(() => null)]);
+      out.innerHTML = insFile(ex, ts); mountTabs(out); mountTables(out); wireFile(file);
+    };
+    const showPicker = async () => {
+      out.innerHTML = insFilePicker(null);
+      let hot = null; try { hot = await api("insight_hotspots"); } catch (e) { hot = null; }
+      if (!INS.file) out.innerHTML = insFilePicker(hot);
+      $$("[data-pick]", out).forEach(b => b.onclick = () => open(b.dataset.pick));
+    };
+    $("#ins-open", root).onclick = () => open();
     inp.onkeydown = e => { if (e.key === "Enter") open(); };
-    if (INS.file && !out.innerHTML) open();
+    if (INS.file) open(INS.file); else showPicker();
   }
   $$(".tab", root).forEach(t => { if (!t.dataset.insWired) { t.dataset.insWired = "1"; t.addEventListener("click", () => setTimeout(() => wireInsights(root), 0)); } });
 }
@@ -1517,13 +1568,13 @@ const THANKS = [
   ["Strix", "offline pentests", ""], ["Ollama", "the local model for pentests", ""], ["SonarQube", "code quality, run locally", ""],
   ["uv", "fast, isolated Python tool installs", ""], ["PyObjC", "the macOS bits of Dictate", ""],
 ];
-const lfgMark = () => `<span class="lp-mark"><img src="/assets/logo.svg" alt="" width="22" height="22">LFG</span>`;
+const lfgMark = () => `<span class="lp-mark">${logoSvg(22)}LFG</span>`;
 
 PAGES.lfg = async () => {
   let n = 0;
   try { n = ((await api("guide")).skills || []).length; } catch (e) { n = 0; }
   return `<div class="lp">
-  <header class="lp-nav">${lfgMark()}<nav><a href="#lp-flow">How it works</a><a href="#lp-features">Features</a><a href="#lp-reviews">Reviews</a><a href="#onboarding">Intro</a></nav>
+  <header class="lp-nav"><a href="#lfg" class="lp-home" data-scroll="top" aria-label="Back to the top">${lfgMark()}</a><nav><a href="#lfg" data-scroll="lp-flow">How it works</a><a href="#lfg" data-scroll="lp-features">Features</a><a href="#lfg" data-scroll="lp-reviews">Reviews</a><a href="#lfg" data-scroll="lp-thanks">Open source</a><a href="#onboarding">Intro</a></nav>
     <a class="btn primary" href="#home">Open dashboard →</a></header>
   <section class="lp-hero">
     <span class="wl-pill"><span class="tag">New</span> Insights and talk-to-the-diff reviews</span>
@@ -1546,16 +1597,43 @@ PAGES.lfg = async () => {
     ${SHOWCASE.map(([k, t, d, v, href], i) => `<div class="lp-row${i % 2 ? " flip" : ""}"${k === "Reviews" ? ' id="lp-reviews"' : ""}><div class="lp-copy"><span class="tag blue">${k}</span><h3>${t}</h3><p>${d}</p><a href="${href}" class="lp-link">Open ${k} →</a></div><div class="lp-vis" aria-hidden="true">${v()}</div></div>`).join("")}
   </section>
   <section class="lp-facts"><div><b>${n || "25+"}</b><span>skills, one per job</span></div><div><b>8</b><span>specialist agents</span></div><div><b>18</b><span>guard rules, in code</span></div><div><b>0</b><span>lines of your code sent by Insights</span></div></section>
-  <section class="lp-sec lp-thanks"><div class="lp-k">Built on open source</div><h2>Thank you</h2>
+  <section class="lp-sec lp-thanks" id="lp-thanks"><div class="lp-k">Built on open source</div><h2>Thank you</h2>
     <p class="muted">LFG is a thin layer on top of other people's excellent work. These projects do the heavy lifting.</p>
     <div class="lp-tk">${THANKS.map(([n, what, url]) => `<${url ? `a href="${url}" target="_blank" rel="noopener noreferrer"` : "div"} class="lp-tk-i"><b>${esc(n)}</b><span>${esc(what)}</span></${url ? "a" : "div"}>`).join("")}</div></section>
   <section class="lp-end"><h2>Ready when you are.</h2><p class="muted">Open Claude Code in a repo, run <code>lfg enable</code>, and say what you want.</p>
-    <div class="lp-cta"><a class="btn primary big" href="#home">Open dashboard</a><a class="btn big" href="https://github.com/varun-singhh/lfg" target="_blank" rel="noopener noreferrer">Star on GitHub</a></div></section>
+    <div class="lp-cta"><a class="btn primary big" href="#home">Open dashboard</a><a class="btn big" href="https://github.com/varun-singhh/lfg" target="_blank" rel="noopener noreferrer" data-gh-star>★ Star on GitHub</a></div></section>
   <footer class="lp-foot"><div class="lp-lfg">Let's F<span>**</span>king go.</div>
     <div class="lp-foot-row">${lfgMark()}<span class="muted small">Runs on your computer · never pushes or deploys · open source</span><span class="grow"></span><a href="#home">Dashboard</a><a href="#help">Help</a></div></footer>
   </div>`;
 };
 
+/* Star buttons: with the GitHub CLI signed in, one click stars it from your account; otherwise they open GitHub */
+document.addEventListener("click", async e => {
+  const b = e.target.closest("[data-gh-star]");
+  if (!b || b.dataset.busy) return;
+  const g = state.gh;  // fetched at startup, so this click can decide now
+  if (!g || !g.ready) return;  // not signed in: the link opens github.com as usual
+  e.preventDefault();
+  if (g.starred) { b.textContent = "★ Starred, thank you"; return; }
+  b.dataset.busy = "1"; b.textContent = "Starring…";
+  const r = await save("github_star", {});
+  b.textContent = r.ok && r.starred ? "★ Starred, thank you" : "★ Star on GitHub";
+  if (r.ok && r.starred) state.gh = Object.assign({}, g, { starred: true });
+  delete b.dataset.busy;
+  if (!(r.ok && r.starred)) window.open(r.url || b.href, "_blank", "noopener");
+}, true);
+/* In-page links on the home page scroll to their section; the hash stays #lfg, so the router never sees them */
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-scroll]");
+  if (!a) return;
+  e.preventDefault();
+  const el = a.dataset.scroll === "top" ? null : document.getElementById(a.dataset.scroll);
+  if (a.dataset.scroll !== "top" && !el) return;
+  const top = el ? Math.max(0, el.getBoundingClientRect().top + scrollY - 68) : 0, from = scrollY;
+  const calm = document.documentElement.dataset.motion === "off" || matchMedia("(prefers-reduced-motion: reduce)").matches;
+  window.scrollTo({ top, behavior: calm ? "auto" : "smooth" });
+  setTimeout(() => { if (scrollY === from && Math.abs(top - from) > 4) window.scrollTo(0, top); }, 350);  // smooth scrolling unsupported
+});
 /* The first-run intro: one feature per step, each with its snapshot, then pick what to use. */
 const JOURNEY = [
   { k: "Welcome", t: "Welcome to LFG", d: "You're about to stop writing code and start directing it. Here's the 60-second version of how.", v: () => `<div class="jv-stack">${MOCK.run()}</div>` },
@@ -1578,7 +1656,7 @@ async function journeyPicker() {
   return `${unlocked ? "" : `<div class="callout wl-note">Read-only. To change anything, run <code>lfg ui</code> in your own terminal.</div>`}
     <div class="wl-pick-h"><div><h2>What will you use?</h2><p class="muted">The sidebar shows only these pages. Change it any time in Settings.</p></div><span class="tag blue" id="wl-count"></span></div>
     <div class="wl-grid">${(d.features || []).map(tile).join("")}</div>
-    <div class="wl-actions"><button class="btn primary big" id="onboard-save" ${unlocked ? "" : "disabled"}>Start with these</button><button class="btn big" id="onboard-skip" ${unlocked ? "" : "disabled"}>Show me everything</button><span class="save-msg" id="onboard-msg"></span></div>`;
+    <div class="wl-actions"><button class="btn primary big" id="onboard-save" ${unlocked ? "" : "disabled"}>Start with these</button><button class="btn big" id="onboard-skip" ${unlocked ? "" : "disabled"}>Show me everything</button><span class="save-msg" id="onboard-msg"></span><span class="grow"></span><a class="btn big" href="https://github.com/varun-singhh/lfg" target="_blank" rel="noopener noreferrer" data-gh-star>★ Star LFG on GitHub</a></div>`;
 }
 PAGES.onboarding = async arg => {
   OBS.step = arg === "pick" ? JOURNEY.length : 0;
@@ -2454,17 +2532,20 @@ function diffFile(f, i, threads, open) {
     ${loose.length ? `<div class="df-loose">${loose.map(diffThread).join("")}</div>` : ""}${body}</details>`;
 }
 
+/* An AI thread on some diff lines: a review conversation, one row per message (avatar, who and when, then the text) */
+const avMe = () => `<span class="th-av me" aria-hidden="true">You</span>`;
+const avAi = () => `<span class="th-av ai" aria-hidden="true">${logoSvg(28)}</span>`;
 function diffThread(t) {
   const where = keyLabel(t.start, t.end);
-  if (t.resolved) return `<div class="df-th resolved" data-th="${esc(t.id)}"><span class="muted small">Resolved · ${esc(where)} · ${plural(t.messages.length, "message")}</span><button class="btn small" data-th-act="reopen">Show</button></div>`;
+  if (t.resolved) return `<div class="th resolved" data-th="${esc(t.id)}"><span class="tag ok">Resolved</span><span class="muted small">${esc(where)} · ${plural(t.messages.length, "message")}</span><span class="grow"></span><button class="btn small" data-th-act="reopen">Show</button></div>`;
   const answers = t.messages.filter(m => m.role === "ai" && !m.error), spent = answers.reduce((a, m) => a + (m.cost || 0), 0);
+  const cost = c => c ? `<span class="th-cost" title="What this answer cost">${c < 0.01 ? "&lt;$0.01" : usd(c)}</span>` : "";
   const msgs = t.messages.map(m => m.role === "me"
-    ? `<div class="df-m me"><div class="df-bub">${esc(m.text)}</div><span class="df-when">You${m.ts ? ` · ${ago(m.ts)}` : ""}</span></div>`
-    : `<div class="df-m ai${m.error ? " bad" : ""}"><div class="df-ai-h"><span class="ai-badge">AI</span>${m.error ? '<span class="small">Didn\'t answer</span>' : ""}</div><div class="md">${md(m.text)}</div>
-        <div class="df-foot">${m.cost ? `<span class="df-cost" title="What this answer cost">${m.cost < 0.01 ? "&lt;$0.01" : usd(m.cost)}</span>` : ""}${VIA_SAY[m.via] ? `<span>${VIA_SAY[m.via]}</span>` : ""}${m.ts ? `<span>${ago(m.ts)}</span>` : ""}</div></div>`).join("");
-  return `<div class="df-th" data-th="${esc(t.id)}"><div class="df-th-h"><span class="ai-badge">AI</span><span class="small">On ${esc(where)}${t.outdated ? ` ${tagHtml("outdated", "warn")}` : ""}</span>${answers.length ? `<span class="muted small">· ${plural(answers.length, "answer")}${spent ? ` · <b class="df-total">${usd(spent)}</b> total` : ""}</span>` : ""}<span class="grow"></span><button class="btn small" data-th-act="resolve"${t.job ? " disabled" : ""}>Resolve</button><button class="icon-btn" data-th-act="delete" title="Delete this thread" aria-label="Delete this thread">&times;</button></div>
-    ${msgs}${t.job ? `<div class="df-m ai muted" data-df-working><span class="spin"></span> Thinking…</div>` : ""}
-    <div class="df-reply"><textarea rows="1" placeholder="${t.job ? "Wait for the answer…" : "Reply or ask a follow-up"}"${t.job ? " disabled" : ""}></textarea><button class="btn small" data-th-reply${t.job ? " disabled" : ""}>Reply</button></div></div>`;
+    ? `<div class="th-m">${avMe()}<div class="th-c"><div class="th-who"><b>You</b>${m.ts ? `<span>${ago(m.ts)}</span>` : ""}</div><div class="th-text">${esc(m.text)}</div></div></div>`
+    : `<div class="th-m${m.error ? " bad" : ""}">${avAi()}<div class="th-c"><div class="th-who"><b>LFG</b><span class="tag blue">AI</span>${m.error ? '<span class="tag bad">didn\'t answer</span>' : ""}${m.ts ? `<span>${ago(m.ts)}</span>` : ""}${VIA_SAY[m.via] ? `<span>${VIA_SAY[m.via]}</span>` : ""}${cost(m.cost)}</div><div class="md th-text">${md(m.text)}</div></div></div>`).join("");
+  return `<div class="th" data-th="${esc(t.id)}"><div class="th-h"><span class="th-lines">${icon("review")}${esc(where.charAt(0).toUpperCase() + where.slice(1))}</span>${t.outdated ? tagHtml("outdated", "warn") : ""}${answers.length ? `<span class="muted small">${plural(answers.length, "answer")}${spent ? ` · ${usd(spent)}` : ""}</span>` : ""}<span class="grow"></span><button class="btn small" data-th-act="resolve"${t.job ? " disabled" : ""}>Resolve</button><button class="icon-btn" data-th-act="delete" title="Delete this thread" aria-label="Delete this thread">&times;</button></div>
+    <div class="th-list">${msgs}${t.job ? `<div class="th-m" data-df-working>${avAi()}<div class="th-c"><div class="th-who"><b>LFG</b><span class="tag blue">AI</span></div><div class="th-text muted"><span class="spin"></span> Reading the diff and its callers…</div></div></div>` : ""}</div>
+    <div class="th-reply df-reply"><textarea rows="1" placeholder="${t.job ? "Wait for the answer…" : "Reply or ask a follow-up"}"${t.job ? " disabled" : ""}></textarea><button class="btn primary small" data-th-reply${t.job ? " disabled" : ""}>Reply</button></div></div>`;
 }
 
 function wireDiff(root) {
@@ -2499,7 +2580,7 @@ function wireDiff(root) {
     const rows = range(), first = rows[0].dataset.k, last = rows[rows.length - 1].dataset.k;
     const tr = document.createElement("tr");
     tr.className = "df-compose";
-    tr.innerHTML = `<td colspan="4"><div class="df-th df-ask"><div class="df-th-h"><span class="ai-badge">AI</span><b class="small">Ask the AI about ${esc(keyLabel(first, last))}</b></div><textarea rows="4" placeholder="What does this do? Is it safe when the list is empty? Why was the label removed?"></textarea><div class="df-reply"><span class="muted small grow">Stays on this computer: nothing goes to GitHub. ⌘↵ to ask.</span><button class="btn small" data-df-cancel>Cancel</button><button class="btn primary small" data-df-ask>Ask AI</button></div></div></td>`;
+    tr.innerHTML = `<td colspan="4"><div class="th th-ask"><div class="th-h"><span class="th-lines">${icon("review")}Ask about ${esc(keyLabel(first, last))}</span></div><textarea rows="4" placeholder="What does this do? Is it safe when the list is empty? Why was the label removed?"></textarea><div class="df-reply"><span class="muted small grow">Stays on this computer: nothing goes to GitHub. ⌘↵ to ask.</span><button class="btn small" data-df-cancel>Cancel</button><button class="btn primary small" data-df-ask>Ask AI</button></div></div></td>`;
     rows[rows.length - 1].after(tr);
     const ta = $("textarea", tr); ta.focus();
     const cancel = () => { sel = null; clear(); tr.remove(); };
@@ -2529,7 +2610,7 @@ function wireDiff(root) {
   document.removeEventListener("mouseup", state.dfUp || (() => {}));
   state.dfUp = up; document.addEventListener("mouseup", up);
 
-  $$(".df-th[data-th]", root).forEach(box => {
+  $$(".th[data-th]", root).forEach(box => {
     const id = box.dataset.th;
     $$("[data-th-act]", box).forEach(b => b.onclick = async () => {
       if (b.dataset.thAct === "delete" && !confirm("Delete this thread? Its questions and answers go too.")) return;
@@ -2968,6 +3049,7 @@ async function route(opts) {
   mountTables(view); mountTabs(view); wire(view);
   $$("[data-href]", view).forEach(li => li.onclick = () => (location.hash = li.dataset.href));
   if (key === "onboarding") drawJourney(view);
+  if (state.gh && state.gh.starred) $$("[data-gh-star]", view).forEach(b => (b.textContent = "★ Starred, thank you"));
   if (state.pendingTour && state.pendingTour.startsWith("page-")) { const t = state.pendingTour; state.pendingTour = null; setTimeout(() => startTour(t), 400); }
   if (key === "insights") wireInsights(view);
   if (key === "knowledge") wireKnowledgeAdd(view);
@@ -3086,7 +3168,25 @@ function mountBell() {
   ["visibilitychange", "blur", "focus"].forEach(ev => (ev === "visibilitychange" ? document : window).addEventListener(ev, () => pollNotes(false)));
 }
 
+/* Bottom of the sidebar: the LFG version, a tag when a newer one is out, and a button to check now */
+function drawSideVersion(u, checking) {
+  const box = $("#side-ver");
+  if (!box || !u) return;
+  const tip = u.error && !u.upstream ? `Couldn't reach GitHub: ${u.error}` : u.checked_at ? `Checked ${ago(u.checked_at)}` : "Not checked yet";
+  box.innerHTML = `<span class="side-ver-n" title="LFG runs only on this computer">LFG v${esc(u.current)}</span>
+    ${u.update_available ? `<a class="tag blue side-upd" href="#help" title="In your LFG clone run ${esc(u.command)}">${esc(u.upstream)} available</a>` : `<span class="side-ok" title="${esc(tip)}">${u.checked_at ? "up to date" : ""}</span>`}
+    <button class="icon-btn side-chk${checking ? " spinning" : ""}" id="side-chk" title="Check for updates · ${esc(tip)}" aria-label="Check for updates"${checking ? " disabled" : ""}><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>`;
+  $("#side-chk", box).onclick = async () => {
+    drawSideVersion(u, true);
+    const r = await save("updates_check", {});
+    drawSideVersion(r.ok === false ? u : r, false);
+  };
+}
+async function sideVersion() { try { drawSideVersion(await api("updates")); } catch (e) { /* offline: leave the name */ } }
 async function init() {
+  const brand = $(".brand"); if (brand) brand.innerHTML = logoSvg(20);
+  sideVersion();
+  api("github").then(g => { state.gh = g; if (g && g.starred) $$("[data-gh-star]").forEach(b => (b.textContent = "★ Starred, thank you")); }).catch(() => {});
   if (location.hash.startsWith("#unlock=")) {  // from `lfg ui`: keep the edit key, drop it from the URL
     localStorage.setItem("lfg.editKey", decodeURIComponent(location.hash.slice(8)));
     history.replaceState(null, "", location.pathname);
