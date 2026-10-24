@@ -3,6 +3,7 @@
 Headroom writes one line per request to ~/.headroom/savings_events.jsonl (time, model, tokens before and after,
 dollars saved). This adds them up per day, and per hour for today. Nothing here changes Headroom.
 """
+import calendar
 import json
 import os
 import time
@@ -15,9 +16,7 @@ HR_HOME = os.path.join(C.HOME, ".headroom")
 def _local_day_hour(ts):
     """ISO UTC timestamp -> local (day, hour)."""
     try:
-        t = time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
-        if time.localtime(t).tm_isdst:
-            t += 3600
+        t = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))  # UTC; localtime() handles daylight saving
     except ValueError:
         return None, None
     lt = time.localtime(t)

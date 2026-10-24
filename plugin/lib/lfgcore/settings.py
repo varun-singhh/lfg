@@ -100,6 +100,8 @@ FIELDS = [
      "Either way the text also stays on your clipboard.", ("paste", "type")),
     ("dictate.cleanup", "Dictate: clean up with Claude", "bool", "Removes filler words and fixes punctuation. Sends "
      "the text (never audio) to Claude. On by default; off keeps everything on this Mac.", None),
+    ("updates.auto_check", "Check for LFG updates", "bool", "Once a day, when the dashboard is open, asks GitHub "
+     "for LFG's latest version number. Nothing about you or your code is sent.", None),
 ] + [("models.%s" % a, "Model: %s" % a, "choice", "", MODELS) for a in C.DEFAULT_CONFIG["models"]]
 
 

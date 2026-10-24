@@ -126,6 +126,9 @@ CONTEXT = [
     "write it as Markdown with a `# Title` into LFG's docs, not the repo: about the whole project -> the dir "
     "`lfg repo docs` prints; about this branch's work -> the dir `lfg repo docs --branch` prints. They show on the "
     "dashboard's Docs page.",
+    "The user's own project docs (`lfg repo docs`, Markdown, with branch docs under branches/) and the knowledge "
+    "they added (`lfg repo knowledge`: notes, decisions, lessons, rules) are context for this project: read the "
+    "ones that matter before planning or answering, and follow the decisions and rules there.",
     "LFG never creates a Linear issue on its own: ask first with the exact title and text. `lfg issue sync` writes "
     "only to the local dev-graph.",
     "Remember: when the user states a decision, constraint or preference, or work uncovers a root cause or landmine, "

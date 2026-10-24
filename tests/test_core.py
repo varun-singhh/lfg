@@ -241,15 +241,39 @@ class DocsTest(unittest.TestCase):
         C.branch_docs_dir(rid, "empty-branch")
         idx = dash.docs_index(rid)
         self.assertEqual([i["title"] for i in idx["root"]["items"]], ["Glossary", "How billing retries work"])
-        wiki, adr = idx["root"]["folders"]
-        self.assertEqual((wiki["name"], [i["title"] for i in wiki["items"]]),
-                         ("Wiki", ["Onboarding tour", "Landmines", "How to add a route"]))
+        (adr,) = idx["root"]["folders"]  # playbooks are LFG's own notes for its agents: not listed as docs
         self.assertEqual((adr["name"], adr["items"][0]["title"]), ("Decisions", "Use Postgres"))
+        self.assertEqual([i["title"] for i in idx["intro"]], ["What LFG is", "How it works", "Everyday commands"])
+        self.assertIn("lfg enable", dash.doc(rid, "intro", idx["intro"][1]["path"])["text"])
         self.assertEqual(len(idx["branches"]), 1)  # folders with no docs are left out
         b = idx["branches"][0]
         self.assertEqual((b["name"], b["items"][0]["title"]), ("feature/retry-v2", "Retry v2 design"))
         self.assertIn("Retry v2", dash.doc(rid, "repo", b["items"][0]["path"])["text"])
         self.assertEqual(dash.doc(rid, "repo", "branches/../../x.md")["text"], "not found")
+
+    def test_docs_written_in_the_dashboard_and_pasted_knowledge(self):
+        from lfgcore import settings as ST
+        rid = "docs-test-write"
+        r = dash.doc_save(rid, {"title": "How refunds work", "text": "Refunds go through `refund()`.",
+                                "where": "project"})
+        self.assertEqual(r["path"], "how-refunds-work.md")
+        self.assertTrue(dash.doc(rid, "repo", r["path"])["text"].startswith("# How refunds work\n"))
+        again = dash.doc_save(rid, {"title": "How refunds work", "text": "x"})
+        self.assertEqual(again["path"], "how-refunds-work-2.md")
+        dash.doc_save(rid, {"title": "How refunds work", "text": "Edited.", "path": r["path"]})  # edits keep the file
+        self.assertIn("Edited.", dash.doc(rid, "repo", r["path"])["text"])
+        with self.assertRaises(ST.Invalid):
+            dash.doc_save(rid, {"title": "x", "text": "y", "path": "../../config.json"})
+        with self.assertRaises(ST.Invalid):
+            dash.doc_save(rid, {"title": "keys", "text": "AKIAIOSFODNN7EXAMPLE and ghp_" + "a" * 36})
+        with self.assertRaises(ST.Invalid):
+            dash.doc_save(rid, {"title": "", "text": "no title"})
+        k = dash.knowledge_add(rid, {"title": "Money is integer cents", "text": "Never floats.", "kind": "decision"})
+        items = dash.knowledge_list(rid)
+        self.assertEqual((items[0]["title"], items[0]["kind"], items[0]["file"]),
+                         ("Money is integer cents", "decision", k["file"]))
+        with self.assertRaises(ST.Invalid):
+            dash.knowledge_add(rid, {"title": "Empty", "text": "  "})
 
     def test_community_pages_get_readable_names(self):
         rid = "docs-test-0003"

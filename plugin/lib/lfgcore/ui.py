@@ -144,6 +144,12 @@ def api(view, q):
     if view == "skilltext":
         from . import control as K
         return K.skill_text(_arg(q, "id"), _rid(q))
+    if view in ("features", "onboarding"):  # about LFG itself, not a repo: work before any project exists
+        from . import onboard as OB
+        return OB.view()
+    if view == "updates":
+        from . import updates as UP
+        return UP.status_and_maybe_check()
     rid = _rid(q)
     if not rid:
         return {"available": False, "why": "No repo yet. Open Claude Code in a git repo; LFG builds its graphs "
@@ -197,6 +203,8 @@ def api(view, q):
         return dash.docs_index(rid)
     if view == "doc":
         return dash.doc(rid, _arg(q, "src"), _arg(q, "path"))
+    if view == "knowledge_local":
+        return {"items": dash.knowledge_list(rid), "dir": dash.knowledge_dir(rid)}
     if view == "view":
         return graph_view(rid, _arg(q, "kind"))
     if view == "reviews":
@@ -209,6 +217,10 @@ def api(view, q):
         return dash.usage(rid, int(_arg(q, "days")) if (_arg(q, "days") or "").isdigit() else 30)
     if view == "graphs":
         return dash.graph_state(rid)
+    if view in ("insight_files", "insight_review", "insight_hotspots", "insight_explain", "insight_why",
+                "insight_tests"):
+        from . import insights as IN
+        return IN.view(view, rid, q)
     return {"available": False, "why": "unknown view"}
 
 
@@ -244,6 +256,23 @@ def save(what, body):
             return dash.set_needed(rid, body.get("run"), bool(body.get("needed")))
         except ValueError as e:
             raise S.Invalid(str(e)) from None
+    if what in ("onboarding_save", "feature_toggle", "pages_show_all", "feature_suggestion"):
+        from . import onboard as OB
+        if what == "feature_suggestion":
+            return OB.answer_suggestion(body.get("feature"), body.get("answer") == "yes")
+        if what == "onboarding_save":
+            return OB.choose(body.get("features"), everything=bool(body.get("skip")))
+        if what == "feature_toggle":
+            return OB.toggle(body.get("feature"), bool(body.get("enabled")))
+        return OB.set_show_all(body.get("on"))
+    if what in ("doc_save", "knowledge_add"):
+        rid = _rid({"repo": [str(body.get("repo") or "")]})
+        if not rid:
+            raise S.Invalid("open a project first")
+        return dash.doc_save(rid, body) if what == "doc_save" else dash.knowledge_add(rid, body)
+    if what == "updates_check":
+        from . import updates as UP
+        return UP.check()
     if what == "run_checks":
         return run_checks(_rid({"repo": [str(body.get("repo") or "")]}), body.get("run"))
     if what == "graphs_build":

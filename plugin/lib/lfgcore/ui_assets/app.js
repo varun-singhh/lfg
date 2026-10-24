@@ -1,3 +1,19 @@
+/* The full-screen pages (product home, intro) never flash the dashboard shell while the first data loads. */
+(h => { if (!h || h === "#" || /^#(lfg|onboarding|unlock=)/.test(h)) document.body.classList.add("bare"); })(location.hash);
+/* Appearance (Settings → Appearance), kept per browser: mode, a light and a dark theme, accent, density, text size,
+   glow and motion. Applied before the first paint, and again when the system switches light/dark. */
+const AP_DEFAULT = { mode: "system", light: "lfg", dark: "midnight", accent: "blue", density: "comfortable", text: "m", glow: "on", motion: "on" };
+function apRead() { try { return Object.assign({}, AP_DEFAULT, JSON.parse(localStorage.getItem("lfg.appearance") || "{}")); } catch (e) { return Object.assign({}, AP_DEFAULT); } }
+function apApply(a) {
+  a = a || apRead();
+  const dark = a.mode === "dark" || (a.mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  const r = document.documentElement.dataset;
+  r.mode = dark ? "dark" : "light"; r.theme = dark ? a.dark : a.light;
+  r.accent = a.accent; r.density = a.density; r.text = a.text; r.glow = a.glow; r.motion = a.motion;
+}
+function apSet(k, v) { const a = apRead(); a[k] = v; try { localStorage.setItem("lfg.appearance", JSON.stringify(a)); } catch (e) { /* private window: this visit only */ } apApply(a); return a; }
+apApply();
+try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => apApply()); } catch (e) { /* old browsers */ }
 /* LFG dashboard: a plain-language view of what LFG is doing in your repos. Read-only, except Settings, which saves
    only with the local edit key from `lfg ui`. Author: Varun Singh. No external resources. */
 "use strict";
@@ -331,7 +347,8 @@ function md(text, link) {
         while (i < L.length && /^\s{2,}\S/.test(L[i]) && !/^\s*([-*+]|\d+\.)\s+/.test(L[i])) item += " " + L[i++].trim();
         buf.push(item);
       }
-      out += `<${ordered ? "ol" : "ul"}>${buf.map(b => `<li>${inline(b, link)}</li>`).join("")}</${ordered ? "ol" : "ul"}>`; continue;
+      const li = b => { const t = /^\[( |x|X)\]\s+(.*)$/.exec(b); return t ? `<li class="task${t[1] === " " ? "" : " done"}"><span class="cb" aria-hidden="true"></span><span>${inline(t[2], link)}</span></li>` : `<li>${inline(b, link)}</li>`; };
+      out += `<${ordered ? "ol" : "ul"}>${buf.map(li).join("")}</${ordered ? "ol" : "ul"}>`; continue;
     }
     if (!l.trim()) { flush(); i++; continue; }
     para.push(l.trim()); i++;
@@ -457,7 +474,73 @@ const openKnow = e => {
   if (make) openDrawer(...make());
 };
 document.addEventListener("click", openKnow);
+document.addEventListener("click", async e => {  // [data-copy="<id>"]: copy that element's text
+  const b = e.target.closest("[data-copy]");
+  if (!b) return;
+  const el = document.getElementById(b.dataset.copy);
+  try { await navigator.clipboard.writeText(el ? el.textContent : ""); b.textContent = "Copied"; } catch (err) { b.textContent = "Select and copy"; }
+  setTimeout(() => (b.textContent = "Copy"), 1600);
+});
 document.addEventListener("keydown", openKnow);
+
+async function checkUpdates() {
+  const box = $("#update-banner");
+  if (!box) return;
+  let upd;
+  try { upd = await api("updates"); } catch (e) { return; }
+  if (!upd || !upd.update_available) return;
+  let dismissed = null;
+  try { dismissed = localStorage.getItem("lfg.update.dismissed"); } catch (e) { /* ignore */ }
+  if (dismissed === upd.upstream) return;
+  box.innerHTML = `<div class="promo" role="region" aria-label="Update available">
+    <div class="grow">
+      <div class="promo-title"><span class="tag">Update</span> LFG ${esc(upd.upstream)} is available</div>
+      <div class="promo-text">You have ${esc(upd.current)}. In your LFG clone run <code id="upd-cmd">git pull && ./install.sh</code> <button class="btn small" data-copy="upd-cmd">Copy</button>, then restart <code>lfg ui</code>.</div>
+      ${upd.notes ? `<details class="promo-notes"><summary>What's new</summary><div class="md">${md(upd.notes)}</div></details>` : ""}
+    </div>
+    <button class="icon-btn" id="update-close" aria-label="Close" title="Don't show for this version">&times;</button>
+  </div>`;
+  $("#update-close", box).onclick = () => {
+    try { localStorage.setItem("lfg.update.dismissed", upd.upstream); } catch (e) { /* ignore */ }
+    box.innerHTML = "";
+  };
+}
+
+function wireOnboarding(root) {
+  const saveBtn = $("#onboard-save", root);
+  const skipBtn = $("#onboard-skip", root);
+  const msgEl = $("#onboard-msg", root);
+  if (!saveBtn) return;
+  const count = () => { const n = $$("[data-feature]", root).filter(c => c.checked).length; $("#wl-count", root).textContent = `${n} selected`; };
+  $$("[data-feature]", root).forEach(c => c.addEventListener("change", count)); count();
+  saveBtn.onclick = async () => {
+    saveBtn.disabled = true; saveBtn.textContent = "Saving…";
+    const selected = $$("[data-feature]", root).filter(c => c.checked).map(c => c.dataset.feature);
+    const r = await save("onboarding_save", { features: selected });
+    if (r.ok) {
+      state.pages = r.pages || NAV.map(p => p[0]);
+      renderNav("home");
+      state.pendingTour = "page-home";
+      location.hash = "#home";
+    } else {
+      saveBtn.disabled = false; saveBtn.textContent = "Start with these";
+      if (msgEl) saidMsg(msgEl, r);
+    }
+  };
+  skipBtn.onclick = async () => {
+    skipBtn.disabled = true;
+    const r = await save("onboarding_save", { skip: true });
+    if (r.ok) {
+      state.pages = NAV.map(p => p[0]);
+      renderNav("home");
+      state.pendingTour = "page-home";
+      location.hash = "#home";
+    } else {
+      skipBtn.disabled = false;
+      if (msgEl) saidMsg(msgEl, r);
+    }
+  };
+}
 
 function wire(root) {
   $$("[data-run-file]", root).forEach(a => a.onclick = async e => {
@@ -567,15 +650,72 @@ function saidMsg(el, d, okText) {
 }
 function fieldInput(f, locked) {
   const id = `cfg-${f.key}`, dis = locked ? "disabled" : "", v = f.value;
-  if (f.type === "bool") return `<input type="checkbox" id="${id}" data-cfg="${esc(f.key)}" ${v ? "checked" : ""} ${dis}>`;
+  if (f.type === "bool") return `<span class="tgl-wrap"><input type="checkbox" id="${id}" data-cfg="${esc(f.key)}" ${v ? "checked" : ""} ${dis} role="switch"><span class="tgl"></span></span>`;
   if (f.type === "choice") return `<select id="${id}" data-cfg="${esc(f.key)}" ${dis}>${f.options.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
   if (f.type === "int") return `<input type="number" id="${id}" data-cfg="${esc(f.key)}" min="${f.min}" max="${f.max}" value="${esc(v)}" ${dis}>`;
   const val = Array.isArray(v) ? v.join(", ") : v ?? "";
   return `<input type="text" id="${id}" data-cfg="${esc(f.key)}" value="${esc(val)}" ${dis}>`;
 }
+/* General settings, grouped by what they're for; the model choices get their own card */
+const SET_GROUPS = [
+  ["How LFG works", "What Claude may do, how big a change can be for each lane, and the line LFG adds to replies.", k => /^(guard|lanes|replies|graphs)\./.test(k)],
+  ["Agent models", "Which Claude model each of LFG's agents uses.", k => k.startsWith("models.")],
+  ["Dashboard and disk space", "", k => /^(ui|storage)\./.test(k)],
+];
+const settingRow = (f, unlocked) => `<label class="set-row" for="cfg-${esc(f.key)}"><div><div class="set-label">${esc(f.label.replace(/^Model:\s*/, "").replace(/-/g, " ").replace(/^./, c => c.toUpperCase()))}</div>${f.help ? `<div class="set-help">${esc(f.help)}</div>` : ""}</div><div class="set-input">${fieldInput(f, !unlocked)}</div></label>`;
+function settingsGroups(cfg, unlocked) {
+  const fields = cfg.fields.filter(f => !f.owner && f.key !== "updates.auto_check"), used = new Set();
+  const row = f => settingRow(f, unlocked);
+  const card = (title, note, list) => list.length ? `<div class="set-section"><h4>${esc(title)}</h4>${note ? `<p class="muted">${esc(note)}</p>` : ""}${list.map(row).join("")}</div>` : "";
+  let out = SET_GROUPS.map(([t, n, test]) => { const list = fields.filter(f => test(f.key)); list.forEach(f => used.add(f.key)); return card(t, n, list); }).join("");
+  out += card("Other", "", fields.filter(f => !used.has(f.key)));
+  return out;
+}
+const AP_THEMES = {
+  light: [["lfg", "LFG", "Soft white and blue", ["#f6f8fc", "#ffffff", "#0e1729", "#2563eb", "#f1f4fa"]],
+    ["paper", "Paper", "Warm neutral, easy on the eyes", ["#fbfaf7", "#ffffff", "#2b2a26", "#2563eb", "#f6f4ef"]],
+    ["mist", "Mist", "Cool grey, crisp contrast", ["#f4f5f7", "#ffffff", "#111318", "#2563eb", "#eceef2"]]],
+  dark: [["midnight", "Midnight", "Deep navy with a blue glow", ["#070b14", "#0d1424", "#e6ebf5", "#3b82f6", "#0a101e"]],
+    ["graphite", "Graphite", "Neutral grey, no tint", ["#111214", "#18191c", "#ececee", "#3b82f6", "#141518"]],
+    ["carbon", "Carbon", "True black for OLED screens", ["#000000", "#0a0a0b", "#f2f2f3", "#3b82f6", "#050506"]]],
+};
+const AP_ACCENTS = [["blue", "#2563eb"], ["violet", "#7c3aed"], ["green", "#059669"], ["orange", "#ea580c"], ["rose", "#e11d48"]];
+function settingsAppearance() {
+  const a = apRead();
+  const seg = (k, opts) => `<div class="seg">${opts.map(([v, t]) => `<button class="pill${a[k] === v ? " on" : ""}" data-ap="${k}" data-v="${v}">${t}</button>`).join("")}</div>`;
+  const card = (kind, [id, name, about, [pg, sf, tx, ac, sd]]) => `<button class="ap-theme${a[kind] === id ? " on" : ""}" data-ap="${kind}" data-v="${id}" style="--p:${pg}">
+    <span class="ap-prev" style="background:${pg}"><i class="s" style="background:${sd}"></i><span class="c" style="background:${sf};box-shadow:0 0 0 1px ${tx}1a"><b style="background:${tx}"></b><b style="background:${tx}55"></b><b class="a" style="background:${ac}"></b></span></span>
+    <span class="ap-name">${esc(name)}<span class="muted">${esc(about)}</span></span></button>`;
+  const row = (label, help, ctl) => `<div class="set-row"><div><div class="set-label">${label}</div>${help ? `<div class="set-help">${help}</div>` : ""}</div><div class="set-input">${ctl}</div></div>`;
+  return `<div class="set-section"><h4>Mode</h4>${row("Light or dark", "System follows your computer's setting.", seg("mode", [["system", "System"], ["light", "Light"], ["dark", "Dark"]]))}</div>
+    <div class="set-section"><h4>Light theme</h4><div class="ap-grid">${AP_THEMES.light.map(t => card("light", t)).join("")}</div><p class="muted small">Used in light mode.</p></div>
+    <div class="set-section"><h4>Dark theme</h4><div class="ap-grid">${AP_THEMES.dark.map(t => card("dark", t)).join("")}</div><p class="muted small">Used in dark mode.</p></div>
+    <div class="set-section"><h4>Look and feel</h4>
+      ${row("Accent colour", "Buttons, links, selection and focus.", `<div class="ap-acc">${AP_ACCENTS.map(([v, c]) => `<button class="${a.accent === v ? "on" : ""}" data-ap="accent" data-v="${v}" style="background:${c}" title="${v}" aria-label="${v}"></button>`).join("")}</div>`)}
+      ${row("Density", "Compact fits more rows on screen.", seg("density", [["comfortable", "Comfortable"], ["compact", "Compact"]]))}
+      ${row("Text size", "", seg("text", [["s", "Small"], ["m", "Default"], ["l", "Large"]]))}
+      ${row("Background glow", "The faint coloured light behind the page.", seg("glow", [["on", "On"], ["off", "Off"]]))}
+      ${row("Motion", "Animations and transitions.", seg("motion", [["on", "On"], ["off", "Reduced"]]))}
+    </div>
+    <div class="set-actions"><button class="btn" data-ap-reset>Reset to default</button><span class="muted small">Saved in this browser.</span></div>`;
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-ap]");
+  if (b) { apSet(b.dataset.ap, b.dataset.v); $$(`[data-ap="${b.dataset.ap}"]`).forEach(x => x.classList.toggle("on", x === b)); return; }
+  if (e.target.closest("[data-ap-reset]")) { try { localStorage.removeItem("lfg.appearance"); } catch (err) { /* ignore */ } apApply(); route({ soft: true }); }
+});
 function settingsGeneral() {
   const { cfg, unlocked } = state.settings;
-  return `<div>${cfg.fields.filter(f => !f.owner).map(f => `<label class="set-row" for="cfg-${esc(f.key)}"><div><div class="set-label">${esc(f.label)}</div><div class="set-help">${esc(f.help || "")}</div></div><div class="set-input">${fieldInput(f, !unlocked)}</div></label>`).join("")}</div>
+  return `<div class="set-section"><h4>Features</h4><p class="muted">Pick what you use; the sidebar shows only those pages. Changes apply right away.</p>
+      <div id="features-section"><div class="loading">Loading features…</div></div>
+      <label class="row mt"><input type="checkbox" id="show-all-pages" ${state.settings?.showAll ? "checked" : ""} ${!unlocked ? "disabled" : ""}> Show every page in the sidebar anyway</label>
+      <p class="muted small" style="margin-top:8px"><a href="#onboarding">Run the welcome again</a></p>
+    </div>
+    <div class="set-section"><h4>Updates</h4>
+      ${cfg.fields.filter(f => f.key === "updates.auto_check").map(f => settingRow(f, unlocked)).join("")}
+      <div class="row" style="padding: 10px 0 4px"><button class="btn" id="check-updates-btn" ${!unlocked ? "disabled" : ""}>Check for updates</button><span id="updates-msg" class="save-msg ml"></span></div>
+    </div>
+    ${settingsGroups(cfg, unlocked)}
     <div class="set-actions"><button class="btn primary" id="cfg-save" ${unlocked ? "" : "disabled"}>Save</button><span class="save-msg" id="cfg-msg"></span></div>`;
 }
 function settingsSkills() {
@@ -928,6 +1068,7 @@ function wireSettings(root) {
   if ($("#storage-box", root)) loadStorage();
   if ($("#tools-box", root)) loadTools();
   if ($("#int-box", root)) loadIntegrations();
+  if ($("#features-section", root)) loadFeatures();
   wireRules(root);
   const cs = $("#cfg-save", root);
   if (cs) cs.onclick = async () => {
@@ -942,6 +1083,22 @@ function wireSettings(root) {
     const d = await save("config", { values });
     saidMsg($("#cfg-msg"), d, d.ok ? `Saved ${plural(d.changed.length, "change")}.` : "");
     if (d.ok) state.settings.cfg = await api("settings");
+  };
+  const checkBtn = $("#check-updates-btn", root);
+  if (checkBtn) checkBtn.onclick = async () => {
+    checkBtn.disabled = true; checkBtn.textContent = "Checking…";
+    let r;
+    try { r = await save("updates_check", {}); } catch (e) { r = { ok: false, why: e.message }; }
+    if (r.ok && r.current) {
+      if (r.update_available) {
+        saidMsg($("#updates-msg"), r, `LFG ${esc(r.upstream)} is available (you have ${esc(r.current)}). In your LFG clone run <code>git pull && ./install.sh</code>.`);
+      } else {
+        saidMsg($("#updates-msg"), r, `You're on the latest version (${esc(r.current)}).`);
+      }
+    } else if (!r.ok && !r.upstream) {
+      saidMsg($("#updates-msg"), { ok: false }, `Couldn't reach GitHub: ${esc(r.why || "Unknown error")}`);
+    }
+    checkBtn.disabled = false; checkBtn.textContent = "Check for updates";
   };
   $$("[data-skill]", root).forEach(a => a.onclick = e => {
     e.preventDefault();
@@ -1070,6 +1227,34 @@ async function offerTours() {
   const d = t.dictate || {};
   const promo = $("#promo");
   promo.innerHTML = "";
+  // New in this version: Welcome (choose your pages) and Insights. Shown before the Dictate banner, once.
+  if (!t.news_welcome_closed && !seen("news-welcome") && (location.hash.slice(1).split("/")[0] || "home") !== "onboarding") {
+    promo.innerHTML = `<div class="promo" role="region" aria-label="New in LFG">
+      <div class="grow"><div class="promo-title"><span class="tag">New</span> Choose your pages, and Insights</div>
+        <div class="promo-text"><b>Welcome</b> lets you pick the features you use so the sidebar shows only their pages. <b>Insights</b> runs quick checks on this project: a review coach for your changes, explain a file, and test ideas.</div></div>
+      <div class="promo-actions"><button class="btn small primary" data-news="welcome">Choose pages</button><button class="btn small" data-news="insights">Open Insights</button>
+        <button class="icon-btn" data-news="close" aria-label="Close" title="Don't show again">&times;</button></div></div>`;
+    const close = () => { remember("news-welcome", "closed"); promo.innerHTML = ""; };
+    $('[data-news="welcome"]', promo).onclick = () => { close(); location.hash = "#onboarding"; };
+    $('[data-news="insights"]', promo).onclick = () => { close(); location.hash = "#insights"; };
+    $('[data-news="close"]', promo).onclick = close;
+    return;
+  }
+  // A hidden feature the user has started to need: offer its pages once (yes, or "not now" for a month)
+  let feats = null;
+  try { feats = await api("features"); } catch (e) { feats = null; }
+  const sug = feats && feats.suggestion;
+  if (sug) {
+    promo.innerHTML = `<div class="promo" role="region" aria-label="Show more of LFG">
+      <div class="grow"><div class="promo-title">${esc(sug.name)}</div><div class="promo-text">${esc(sug.why)}</div></div>
+      <div class="promo-actions"><button class="btn small primary" data-sug="yes">Show it</button><button class="btn small" data-sug="later">Not now</button></div></div>`;
+    $$("[data-sug]", promo).forEach(b => b.onclick = async () => {
+      const r = await save("feature_suggestion", { feature: sug.feature, answer: b.dataset.sug });
+      promo.innerHTML = "";
+      if (r.ok && b.dataset.sug === "yes") { applyPages(r); location.hash = "#" + sug.pages[0]; }
+    });
+    return;
+  }
   // Dictate off: a banner on every page until it is turned on or closed (new installs and updates alike)
   if (!d.on && !d.banner_closed && !seen("dictate-banner")) {
     promo.innerHTML = `<div class="promo" role="region" aria-label="New: LFG Dictate">
@@ -1106,10 +1291,12 @@ async function offerTours() {
 }
 
 // ------------------------------------------------------------------ pages
-const NAV = [["home", "Home"], ["todos", "Todos"], ["runs", "Runs"], ["issues", "Issues"], ["review", "Reviews"], ["checks", "Checks"], ["code", "Code"], ["docs", "Docs"],
+const NAV = [["home", "Home"], ["todos", "Todos"], ["runs", "Runs"], ["issues", "Issues"], ["review", "Reviews"], ["checks", "Checks"], ["code", "Code"], ["insights", "Insights"], ["docs", "Docs"],
   ["knowledge", "Knowledge"], ["usage", "Usage"], ["skills", "Skills"], ["integrations", "Integrations"], ["settings", "Settings"], ["help", "Help"]];
 const TITLES = Object.fromEntries(NAV);
+TITLES.onboarding = "Welcome"; TITLES.lfg = "Home";
 const PAGES = {};
+state.pages = NAV.map(p => p[0]);  // visible nav pages, set from onboarding
 
 async function cachedRuns() {
   const key = "runs:" + state.repo;
@@ -1135,6 +1322,319 @@ function runAttention(r) {
   if (r.shipcheck === "fail") out.push(["bad", "The ship check failed"]);
   if (r.pentest === "refused") out.push(["warn", "The security test didn't run: open the Security test document to see why"]);
   return out.sort((a, b) => (a[0] === "bad" ? 0 : 1) - (b[0] === "bad" ? 0 : 1));
+}
+
+const FEATURE_ICON = { coding: "code", reviews: "review", security: "checks", knowledge: "knowledge", planning: "issues" };
+
+/* Insights: understand code you didn't write, without opening an editor. Three tabs, each answering one question:
+   Your changes (is this safe to approve?), Hotspots (where does this codebase break?), Files (what is this and why
+   is it like this?). Everything comes from git on this computer; nothing here edits code. */
+const INS = { file: "" };
+PAGES.insights = async arg => {
+  const [tab, ...rest] = (arg || "").split("/");
+  if (tab === "files" && rest.length) { INS.file = rest.join("/"); sessionStorage.setItem("lfg.tab.insights", "files"); }
+  else if (["changes", "hotspots", "files"].includes(tab)) sessionStorage.setItem("lfg.tab.insights", tab);
+  return `${head("Insights", "Understand what changed, where the code is fragile, and why it looks the way it does. From your git history, on this computer.")}
+    ${tabs("insights", [
+      ["changes", "Your changes", null, () => `<div id="ins-changes"><div class="loading">Reading your changes…</div></div>`],
+      ["hotspots", "Hotspots", null, () => `<div id="ins-hot"><div class="loading">Reading the history…</div></div>`],
+      ["files", "Files", null, () => `<div class="ins-pick"><input id="ins-file" list="ins-files" placeholder="Find a file…" value="${esc(INS.file)}" autocomplete="off"><button class="btn primary" id="ins-open">Open</button></div><div id="ins-file-out"></div>`],
+    ])}
+    <datalist id="ins-files"></datalist>`;
+};
+const insLink = p => `<a href="#insights/files/${esc(p)}" class="ins-path">${esc(p)}</a>`;
+const LEVEL = { HIGH_RISK: ["bad", "Fix before merging"], NEEDS_WORK: ["warn", "Needs a look"], READY_TO_REVIEW: ["ok", "No red flags"] };
+function insChanges(d) {
+  if (d.error) return unavailable({ why: d.error }, "Couldn't read your changes");
+  if (d.message) return empty("No changes yet", "When this branch has changes, committed or not, they show up here with what to check before merging.");
+  const [tone, label] = LEVEL[d.risk_level] || ["", d.risk_level];
+  const files = d.files_reviewed || [];
+  const added = files.reduce((a, f) => a + (f.additions || 0), 0);
+  const issues = (d.issues || []).map(i => ({ severity: i.severity, file: i.file, line: i.line, title: i.message, fix: i.suggestion }));
+  const shown = issues.filter(i => i.severity !== "low"), low = issues.filter(i => i.severity === "low");
+  const q = d.questions || [], hot = d.touches_hotspots || [], pat = d.patterns || [];
+  return `<div class="ins-summary"><span class="st"><span class="dot ${tone}"></span>${esc(label)}</span><span class="muted">${plural(files.length, "file")} · +${n(added)} lines · compared with <code>${esc(d.base_branch || "")}</code></span><span class="grow"></span><button class="btn small" id="ins-recheck">Check again</button></div>
+    ${q.length ? `<h3 class="ins-h">Before you approve, ask</h3><ol class="ins-questions box">${q.map(x => `<li>${esc(x.q)}</li>`).join("")}</ol>` : ""}
+    ${shown.length ? `<h3 class="ins-h">Worth a look</h3>${shown.map(findingCard).join("")}` : ""}
+    ${hot.length ? `<h3 class="ins-h">Touches fragile code</h3><ul class="ins-hot box">${hot.slice(0, 5).map(h => `<li>${dot(h.level === "high" ? "bad" : "warn")}<div class="grow">${insLink(h.path)}<div class="muted small">${esc(h.reasons.join(" · "))}</div></div></li>`).join("")}${hot.length > 5 ? `<li class="muted">and ${hot.length - 5} more, in <a href="#insights/hotspots">Hotspots</a></li>` : ""}</ul>` : ""}
+    ${pat.length ? `<h3 class="ins-h">Keeps coming up</h3><ul class="ins-list box">${pat.map(p => `<li>${esc(p.kind)}<span class="muted"> · in ${p.times} of your last ${p.of} checks</span></li>`).join("")}</ul>` : ""}
+    ${!q.length && !shown.length && !hot.length ? `<p class="muted">Nothing stood out. These are pattern checks, not a review: <code>/lfg:expert</code> in Claude Code gives you one.</p>` : ""}
+    <details class="ins-more"><summary>${plural(files.length, "changed file")}${low.length ? ` · ${plural(low.length, "note")} in tests` : ""}</summary>
+      <ul class="ins-list">${files.map(f => `<li>${insLink(f.path)}<span class="muted"> · ${f.new ? "new, " : ""}+${n(f.additions || 0)}${f.deletions ? ` −${n(f.deletions)}` : ""}</span></li>`).join("")}</ul>
+      ${low.length ? low.map(findingCard).join("") : ""}
+      <div class="ins-pick mt"><input id="ins-base" placeholder="Compare with another branch (default: found automatically)"><button class="btn small" id="ins-base-go">Compare</button></div>
+    </details>`;
+}
+function insHotspots(d) {
+  if (d.error) return unavailable({ why: d.error }, "Couldn't read the history");
+  const f = d.files || [];
+  if (!f.length) return empty("No hotspots yet", `Nothing changed often enough in the last ${d.days} days to stand out.`);
+  return `<p class="muted">The files that keep needing fixes are where the next bug most likely is. From ${plural(d.commits, "commit")} in the last ${d.days} days.</p>
+    ${(d.rising || []).length ? `<p class="ins-warn">${dot("bad")}Fixes are rising in ${d.rising.map(a => `<code>${esc(a)}</code>`).join(", ")}: more in the last ${d.half} days than the ${d.half} before.</p>` : ""}
+    <ul class="ins-hot box">${f.map(h => `<li>${dot(h.level === "high" ? "bad" : "warn")}<div class="grow">${insLink(h.path)}<div class="muted small">${esc(h.reasons.join(" · "))}</div>
+      ${h.recent_fixes.length ? `<details class="ins-fixes"><summary>Recent fixes</summary><ul>${h.recent_fixes.map(c => `<li><code>${esc(c.sha.slice(0, 7))}</code> ${esc(c.date)} ${esc(c.subject)}</li>`).join("")}</ul></details>` : ""}</div></li>`).join("")}</ul>
+    ${(d.areas || []).length > 1 ? `<h3 class="ins-h">By folder</h3><div class="box">${table(d.areas, [{ k: "area", label: "Folder", html: r => `<code>${esc(r.area)}</code>` }, { k: "files", label: "Files changed", num: true }, { k: "changes", label: "Changes", num: true }, { k: "fixes", label: "Fixes", num: true }, { k: "trend", label: "Trend", html: r => r.trend === "rising" ? `<b>rising</b> <span class="muted">${r.fixes_recent} vs ${r.fixes_earlier}</span>` : r.trend === "falling" ? `falling <span class="muted">${r.fixes_recent} vs ${r.fixes_earlier}</span>` : '<span class="muted">steady</span>' }], { sort: "fixes", filter: false })}</div>` : ""}
+    <p class="muted small mt">Dependency risks (known vulnerabilities, end-of-life packages) are in <a href="#checks">Checks</a>, from <code>/lfg:secure</code>.</p>`;
+}
+function insWhy(d) {
+  if (d.error) return `<p class="muted">${esc(d.error)}</p>`;
+  if (!d.commits.length) return `<p class="muted">No history yet: this hasn't been committed.</p>`;
+  return `<ol class="ins-timeline">${d.commits.map(c => `<li><div><b>${esc(c.subject)}</b></div>
+    <div class="muted small">${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer"><code>${esc(c.sha.slice(0, 7))}</code></a>` : `<code>${esc(c.sha.slice(0, 7))}</code>`} · ${esc(c.author)} · ${esc(c.date)}${c.fix ? ' <span class="tag bad">fix</span>' : ""}${c.refs.map(r => ` · ${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.label)}</a>` : esc(r.label)}`).join("")}</div>
+    ${c.body ? `<details><summary class="small">Details</summary><div class="ins-body">${esc(c.body)}</div></details>` : ""}</li>`).join("")}</ol>`;
+}
+function insFile(ex, ts) {
+  if (ex.error) return unavailable({ why: ex.error }, "Couldn't open it");
+  const w = ex.why_its_here || {};
+  const defs = (ex.how_it_works || []).slice().sort((a, b) => a.line - b.line);
+  const ideas = (ts && ts.suggested_tests) || [];
+  const P = { 1: "Start here", 2: "Edge case", 3: "Nice to have" };
+  ideas.forEach(t => { if (t.category === "regression") t.kind = "Past bug"; });
+  return `<div class="ins-file"><h2>${esc(ex.file)}</h2>${ex.summary ? `<p>${inline(ex.summary)}</p>` : '<p class="muted">The file doesn\'t describe itself. Ask Claude: <code>/lfg:explain</code> how it works.</p>'}
+    <p class="muted small">${w.created_by ? `Added by ${esc(w.created_by)} on ${esc(w.created_date)} · last changed by ${esc(w.last_modified_by)} on ${esc(w.last_modified_date)} · ${plural(w.total_commits || 0, "commit")}` : "Not committed yet."}
+      ${(ex.related_tests || []).length ? ` · tested in ${ex.related_tests.map(t => insLink(t)).join(", ")}` : " · <b>no test file covers it</b>"}</p>
+    ${(w.recent_fixes || []).length ? `<p class="ins-warn">${dot("warn")}Fixed ${plural(w.recent_fixes.length, "time")} in the last six months: ${w.recent_fixes.slice(0, 2).map(f => esc(f.message)).join("; ")}${w.recent_fixes.length > 2 ? "…" : ""}. Change it carefully.</p>` : ""}
+    <button class="btn small" data-why-file>Why is this file like this?</button><div id="ins-why-file"></div>
+    ${defs.length ? `<h3 class="ins-h">What's in it</h3><ul class="ins-defs box">${defs.map((x, k) => `<li><div class="ins-def"><code>${esc(x.name)}</code><span class="muted small">${esc(x.type)} · line ${x.line}</span><span class="grow muted small">${inline(x.docstring || "")}</span><button class="link small" data-why="${x.line}" data-end="${defs[k + 1] ? defs[k + 1].line - 1 : ""}">Why is this here?</button></div><div class="ins-why"></div></li>`).join("")}</ul>` : ""}
+    ${(ex.potential_issues || []).length ? `<h3 class="ins-h">Worth a look</h3><ul class="ins-list">${ex.potential_issues.map(i => `<li>Line ${esc(i.line)}: ${esc(i.message)}</li>`).join("")}</ul>` : ""}
+    ${ideas.length ? `<details class="ins-more"><summary>${plural(ideas.length, "test idea")}${ideas.some(t => t.category === "regression") ? ` · ${ideas.filter(t => t.category === "regression").length} from past fixes` : ""}</summary>
+      ${ts.skeleton ? `<div class="ins-skel"><div class="row"><span class="muted small">A test file to start from: every test is skipped until it's written, so it runs as-is.</span><span class="grow"></span><button class="btn small" data-copy="ins-skel-code">Copy</button></div><pre class="out" id="ins-skel-code">${esc(ts.skeleton)}</pre></div>` : ""}<div class="box">${table(ideas, [{ k: "priority", label: "", html: r => esc(r.kind || P[r.priority] || ""), sort: r => r.priority }, { k: "test_name", label: "Test", html: r => `<code>${esc(r.test_name)}</code>` }, { k: "reason", label: "Why" }], { sort: "priority", dir: 1, filter: false })}</div></details>` : ""}
+  </div>`;
+}
+function wireInsights(root) {
+  const dl = $("#ins-files", root);
+  if (dl && !dl.dataset.loaded) { dl.dataset.loaded = "1"; api("insight_files").then(d => { dl.innerHTML = (d.files || []).map(f => `<option value="${esc(f)}">`).join(""); }).catch(() => {}); }
+  const ch = $("#ins-changes", root);
+  if (ch && !ch.dataset.done) {
+    ch.dataset.done = "1";
+    const load = async base => {
+      ch.innerHTML = '<div class="loading">Reading your changes…</div>';
+      try { ch.innerHTML = insChanges(await api("insight_review", base ? { base } : {})); } catch (e) { ch.innerHTML = unavailable({ why: e.message }); }
+      const again = $("#ins-recheck", ch); if (again) again.onclick = () => load(base);
+      const go = $("#ins-base-go", ch); if (go) go.onclick = () => load($("#ins-base", ch).value.trim());
+    };
+    load("");
+  }
+  const hot = $("#ins-hot", root);
+  if (hot && !hot.dataset.done) {
+    hot.dataset.done = "1";
+    api("insight_hotspots").then(d => { hot.innerHTML = insHotspots(d); mountTables(hot); }).catch(e => { hot.innerHTML = unavailable({ why: e.message }); });
+  }
+  const out = $("#ins-file-out", root), inp = $("#ins-file", root);
+  if (out && inp) {
+    const open = async () => {
+      const file = inp.value.trim();
+      if (!file) return;
+      INS.file = file;
+      out.innerHTML = '<div class="loading">Reading the file and its history…</div>';
+      const [ex, ts] = await Promise.all([api("insight_explain", { file }), api("insight_tests", { file }).catch(() => null)]);
+      out.innerHTML = insFile(ex, ts); mountTables(out);
+      const wf = $("[data-why-file]", out);
+      if (wf) wf.onclick = async () => { wf.disabled = true; $("#ins-why-file", out).innerHTML = insWhy(await api("insight_why", { file })); wf.remove(); };
+      $$("[data-why]", out).forEach(b => b.onclick = async () => {
+        const box = b.closest("li").querySelector(".ins-why");
+        if (box.innerHTML) { box.innerHTML = ""; b.textContent = "Why is this here?"; return; }
+        b.textContent = "Reading…";
+        box.innerHTML = insWhy(await api("insight_why", { file, start: b.dataset.why, end: b.dataset.end }));
+        b.textContent = "Hide";
+      });
+    };
+    $("#ins-open", root).onclick = open;
+    inp.onkeydown = e => { if (e.key === "Enter") open(); };
+    if (INS.file && !out.innerHTML) open();
+  }
+  $$(".tab", root).forEach(t => { if (!t.dataset.insWired) { t.dataset.insWired = "1"; t.addEventListener("click", () => setTimeout(() => wireInsights(root), 0)); } });
+}
+
+/* ------------------------------------------------------------------ product home, intro journey, page tours
+   The home (#lfg, what `lfg ui` opens) and the first-run intro are full-screen pages without the sidebar. Their
+   pictures are small HTML snapshots of the real screens (aria-hidden), not screenshots, so they follow the theme. */
+const BARE = ["lfg", "onboarding"];
+const MOCK = {
+  run: () => `<div class="mk mk-run"><div class="mk-row"><span class="tag blue">Standard lane</span><span class="mk-dim">run 0142 · feature/rate-limit</span></div>
+    <div class="mk-title">Add rate limiting to the public API</div>
+    <div class="mk-steps">${[["Brief", "done"], ["Plan", "done"], ["Build", "done"], ["Check", "now"], ["Review", ""], ["Ship", ""]].map(([s, c]) => `<span class="mk-step ${c}">${c === "done" ? "✓ " : ""}${s}</span>`).join("")}</div>
+    <div class="mk-bar"><span style="width:62%"></span></div>
+    <div class="mk-dim">Tests 48 passed · lint clean · security check running…</div></div>`,
+  diff: () => `<div class="mk mk-diff"><div class="mk-file"><span class="mk-st">M</span>api/limits.py<span class="grow"></span><span class="mk-add">+14</span><span class="mk-del">−3</span></div>
+    <div class="mk-lines">
+      <div class="mk-l"><i>18</i><i></i><code>def allow(client, now):</code></div>
+      <div class="mk-l del"><i>19</i><i>−</i><code>    window = now // 60</code></div>
+      <div class="mk-l add"><i>19</i><i>+</i><code>    hits = [t for t in log[client] if now - t &lt; 60]</code></div>
+      <div class="mk-l add sel"><i>20</i><i>+</i><code>    if len(hits) &gt;= LIMIT:</code></div>
+      <div class="mk-l add"><i>21</i><i>+</i><code>        return False</code></div>
+    </div>
+    <div class="mk-thread"><div class="mk-me">Why a sliding window and not a fixed one?</div>
+      <div class="mk-ai"><span class="mk-ai-h"><span class="ai-badge">AI</span> from the diff and callers</span>A fixed minute lets a client send 2× the limit across the boundary (59s + 61s). The sliding window counts the last 60 seconds, so bursts stay capped. <code>login()</code> and <code>search()</code> call this.</div>
+      <div class="mk-acts"><span class="tag">Ask a follow-up</span><span class="tag ok">Resolve</span></div></div></div>`,
+  comment: () => `<div class="mk mk-cmt"><div class="mk-row"><span class="tag bad">High</span><span class="mk-dim">reviewer · api/auth.py:42</span></div>
+    <div class="mk-title">Token expiry isn't checked before refresh</div>
+    <div class="mk-ai"><span class="mk-ai-h"><span class="ai-badge">AI</span> take</span>Valid: <code>refresh()</code> trusts the cached token. Fix is one line: compare <code>exp</code> first.</div>
+    <div class="mk-acts"><span class="tag blue">Will fix</span><span class="tag">Discuss</span><span class="tag">Not now</span></div></div>`,
+  questions: () => `<div class="mk mk-q"><div class="mk-row"><span class="st"><span class="dot warn"></span>Needs a look</span><span class="mk-dim">6 files · +212 lines vs main</span></div>
+    <div class="mk-h">Before you approve, ask</div>
+    <ol class="mk-ol"><li>It changes <code>billing.py</code>, which needed 4 fixes recently. How would you know if it broke?</li>
+      <li>Your team decided <b>“money is integer cents”</b>. Does this still follow it?</li>
+      <li>Nothing tests <code>refunds.py</code>. Which check shows it still works?</li></ol></div>`,
+  hotspots: () => `<div class="mk mk-hot">${[["bad", "billing/charge.py", "needed 5 fixes · fixes rising · no tests"], ["warn", "api/limits.py", "changed 14 times · 3 people"], ["warn", "auth/session.py", "needed 2 fixes · 900 lines"]].map(([t, p, r]) => `<div class="mk-hot-r">${dot(t)}<div><code>${p}</code><div class="mk-dim">${r}</div></div></div>`).join("")}</div>`,
+  why: () => `<div class="mk mk-why"><div class="mk-row"><code>def allow()</code><span class="mk-dim">· why is this here?</span></div>
+    <ol class="mk-tl">${[["Count the last 60s instead of the minute", "PR #318", "Sarah · 3 days ago", ""], ["fix: clients doubled their burst at :00", "ENG-412", "Rahul · 2 weeks ago", "fix"], ["Add per-client rate limits", "PR #201", "Mike · 4 months ago", ""]].map(([s, r, w, f]) => `<li><b>${s}</b><div class="mk-dim">${w} · <span class="tag blue">${r}</span>${f ? ' <span class="tag bad">fix</span>' : ""}</div></li>`).join("")}</ol></div>`,
+  guard: () => `<div class="mk mk-term"><div class="mk-dots"><i></i><i></i><i></i></div>
+    <div><span class="mk-p">claude ›</span> git push origin main</div>
+    <div class="mk-red">✕ LFG guard: pushing is yours to do. Changes are ready to commit.</div>
+    <div><span class="mk-p">claude ›</span> cat .env</div>
+    <div class="mk-red">✕ LFG guard: secrets stay unread.</div>
+    <div><span class="mk-p">claude ›</span> git commit -m "Add sliding-window rate limit"</div>
+    <div class="mk-yel">? Asks you first. Approve in Claude Code.</div></div>`,
+  dictate: () => `<div class="mk mk-dict"><div class="mk-dict-text">“Add a test for the refund path, and make it fail on negative amounts”<span class="mk-caret"></span></div>
+    <div class="mk-pill">${"<i></i>".repeat(9)}</div><div class="mk-dim mk-center">Hold <kbd>⌥</kbd> <kbd>Space</kbd>, speak, let go</div></div>`,
+};
+const EDITORS = ["VS Code", "Cursor", "JetBrains", "Zed", "Vim", "Sublime Text", "Xcode"];
+const FLOW = [["Ask", "/lfg:lfg add rate limiting", "One sentence in Claude Code."], ["Grill", "brief + acceptance criteria", "It asks until the goal is sharp."],
+  ["Plan", "design · tasks · lane", "Small, testable slices."], ["Build", "agents in worktrees", "Test-first, one task each."],
+  ["Check", "lint · tests · security · review", "Proof from exit codes."], ["Ship", "ready to commit", "You push. Always."]];
+const SHOWCASE = [
+  ["Reviews", "Talk to the diff", "Open a pull request or an AI chat as a review. Ask about one line, argue with a comment, decide what you'll fix. Answers come from the code and its callers, not from memory.", () => MOCK.diff() + MOCK.comment(), "#review"],
+  ["Insights", "Before you approve, ask", "Every change comes with the questions a senior engineer would ask: the fragile files it touches, the tests it skipped, the team decisions it might break.", () => MOCK.questions(), "#insights"],
+  ["Hotspots", "Know where it breaks next", "Files that keep needing fixes, ranked from your own history, with the reason in plain words. That's where the next bug is, and where debt is worth paying.", () => MOCK.hotspots(), "#insights/hotspots"],
+  ["History", "Why is this here?", "Any function's story, newest first: the commits that shaped it and the PRs and tickets behind them. Context without blame, without an editor.", () => MOCK.why(), "#insights/files"],
+  ["Runs", "Follow the work, not the keystrokes", "Each request becomes a run you can watch: brief, plan, build, checks, review. You step in where it needs a decision.", () => MOCK.run(), "#runs"],
+  ["Guard", "Guard rails that hold", "Agents never push, deploy or read your secrets. Commits wait for your approval. Enforced in code on every command, not asked nicely in a prompt.", () => MOCK.guard(), "#settings"],
+  ["Dictate", "Talk, don't type", "Hold a shortcut anywhere on your Mac and say what you want. Transcribed on your Mac, pasted where your cursor is.", () => MOCK.dictate(), "#integrations"],
+];
+/* The open-source tools LFG stands on. Thank you. */
+const THANKS = [
+  ["Claude Code", "the agent LFG runs inside", "https://claude.com/claude-code"],
+  ["code-review-graph", "the code map agents read instead of whole files", "https://pypi.org/project/code-review-graph/"],
+  ["graphify", "the code wiki, call flows and architecture map", "https://pypi.org/project/graphifyy/"],
+  ["Omnigraph", "dev-graph and second-brain: what LFG remembers", ""],
+  ["Headroom", "context compression that saves tokens", ""],
+  ["Cactus · Whistle", "on-device speech-to-text for Dictate", "https://cactuscompute.com/blog/whistle"],
+  ["mattpocock/skills", "the grill, plan and TDD skills LFG adapts", "https://github.com/mattpocock/skills"],
+  ["Cloudflare security-audit-skill", "the security review method", "https://github.com/cloudflare/security-audit-skill"],
+  ["Semgrep", "code scanning", ""], ["Gitleaks", "secret scanning", ""], ["Trivy", "container and dependency scanning", ""],
+  ["OSV-Scanner", "known vulnerabilities in dependencies", ""], ["Hadolint", "Dockerfile checks", ""], ["zizmor · actionlint", "GitHub Actions checks", ""],
+  ["Strix", "offline pentests", ""], ["Ollama", "the local model for pentests", ""], ["SonarQube", "code quality, run locally", ""],
+  ["uv", "fast, isolated Python tool installs", ""], ["PyObjC", "the macOS bits of Dictate", ""],
+];
+const lfgMark = () => `<span class="lp-mark"><img src="/assets/logo.svg" alt="" width="22" height="22">LFG</span>`;
+
+PAGES.lfg = async () => {
+  let n = 0;
+  try { n = ((await api("guide")).skills || []).length; } catch (e) { n = 0; }
+  return `<div class="lp">
+  <header class="lp-nav">${lfgMark()}<nav><a href="#lp-flow">How it works</a><a href="#lp-features">Features</a><a href="#lp-reviews">Reviews</a><a href="#onboarding">Intro</a></nav>
+    <a class="btn primary" href="#home">Open dashboard →</a></header>
+  <section class="lp-hero">
+    <span class="wl-pill"><span class="tag">New</span> Insights and talk-to-the-diff reviews</span>
+    <h1>Stop writing code.<br><em>Start directing it.</em></h1>
+    <p>The bottleneck moved. It isn't typing any more; it's deciding what to build, steering the agents that build it, and trusting what ships. LFG is the cockpit for that, inside Claude Code.</p>
+    <div class="lp-cta"><a class="btn primary big" href="#home">Open dashboard</a><a class="btn big lp-ghost" href="#onboarding">Take the intro</a></div>
+    <div class="lp-cmd"><code>/lfg:lfg add rate limiting to the public API</code></div>
+  </section>
+  <section class="lp-editors"><div class="lp-k">Go editorless</div>
+    <div class="lp-ed">${EDITORS.map(e => `<span class="lp-no">${esc(e)}</span>`).join("")}</div>
+    <p class="muted">Great editors. You just won't be editing. Describe the change, review the result, ship.</p></section>
+  <section class="lp-punch">
+    <div><b>Coding was the skill.<br><em>Orchestration</em> is the new one.</b><p>You decide what gets built and in what order. Specialist agents do the typing, in their own worktrees.</p></div>
+    <div><b>Read intent,<br>not diffs.</b><p>Every change arrives with why it was made, what it touches and what to ask before you approve it.</p></div>
+    <div><b>Ship with proof,<br>not hope.</b><p>Lint, types, tests, security and a review on every change, judged from exit codes, never an agent's claim.</p></div>
+  </section>
+  <section class="lp-sec" id="lp-flow"><div class="lp-k">How it works</div><h2>From one sentence to a shipped change</h2>
+    <ol class="lp-flow">${FLOW.map(([t, c, d], i) => `<li><span class="lp-n">${String(i + 1).padStart(2, "0")}</span><b>${t}</b><code>${esc(c)}</code><span class="muted">${d}</span></li>`).join("")}</ol></section>
+  <section class="lp-sec" id="lp-features"><div class="lp-k">What you get</div><h2>Everything you'd open an editor for, without one</h2>
+    ${SHOWCASE.map(([k, t, d, v, href], i) => `<div class="lp-row${i % 2 ? " flip" : ""}"${k === "Reviews" ? ' id="lp-reviews"' : ""}><div class="lp-copy"><span class="tag blue">${k}</span><h3>${t}</h3><p>${d}</p><a href="${href}" class="lp-link">Open ${k} →</a></div><div class="lp-vis" aria-hidden="true">${v()}</div></div>`).join("")}
+  </section>
+  <section class="lp-facts"><div><b>${n || "25+"}</b><span>skills, one per job</span></div><div><b>8</b><span>specialist agents</span></div><div><b>18</b><span>guard rules, in code</span></div><div><b>0</b><span>lines of your code sent by Insights</span></div></section>
+  <section class="lp-sec lp-thanks"><div class="lp-k">Built on open source</div><h2>Thank you</h2>
+    <p class="muted">LFG is a thin layer on top of other people's excellent work. These projects do the heavy lifting.</p>
+    <div class="lp-tk">${THANKS.map(([n, what, url]) => `<${url ? `a href="${url}" target="_blank" rel="noopener noreferrer"` : "div"} class="lp-tk-i"><b>${esc(n)}</b><span>${esc(what)}</span></${url ? "a" : "div"}>`).join("")}</div></section>
+  <section class="lp-end"><h2>Ready when you are.</h2><p class="muted">Open Claude Code in a repo, run <code>lfg enable</code>, and say what you want.</p>
+    <div class="lp-cta"><a class="btn primary big" href="#home">Open dashboard</a><a class="btn big" href="https://github.com/varun-singhh/lfg" target="_blank" rel="noopener noreferrer">Star on GitHub</a></div></section>
+  <footer class="lp-foot"><div class="lp-lfg">Let's F<span>**</span>king go.</div>
+    <div class="lp-foot-row">${lfgMark()}<span class="muted small">Runs on your computer · never pushes or deploys · open source</span><span class="grow"></span><a href="#home">Dashboard</a><a href="#help">Help</a></div></footer>
+  </div>`;
+};
+
+/* The first-run intro: one feature per step, each with its snapshot, then pick what to use. */
+const JOURNEY = [
+  { k: "Welcome", t: "Welcome to LFG", d: "You're about to stop writing code and start directing it. Here's the 60-second version of how.", v: () => `<div class="jv-stack">${MOCK.run()}</div>` },
+  { k: "The flow", t: "One sentence in, a checked change out", d: "Say what you want in Claude Code. LFG grills it into a brief, plans small slices, builds them test-first and checks everything before you see it.", v: () => `<ol class="lp-flow mini">${FLOW.map(([t, c], i) => `<li><span class="lp-n">${String(i + 1).padStart(2, "0")}</span><b>${t}</b><code>${esc(c)}</code></li>`).join("")}</ol>` },
+  { k: "Reviews", t: "Talk to the diff", d: "Ask about a single line or a single review comment and get an answer from the code. Decide what to fix without opening a file.", v: () => MOCK.diff() },
+  { k: "Insights", t: "Know what to ask before you approve", d: "The fragile files a change touches, the tests it skipped and the team decisions it might break, as questions.", v: () => MOCK.questions() },
+  { k: "History", t: "Why is this code here?", d: "Every function's story: the commits that shaped it, with the PRs and tickets behind them.", v: () => MOCK.why() },
+  { k: "Guard", t: "Agents can't do the scary things", d: "No pushes, no deploys, no reading secrets. Commits ask you first. Enforced on every command.", v: () => MOCK.guard() },
+];
+const OBS = { step: 0 };
+async function journeyPicker() {
+  const d = await api("onboarding");
+  const unlocked = await isUnlocked();
+  const tile = f => {
+    const on = d.complete ? f.enabled : f.id === "coding";
+    return `<label class="wl-tile"><input type="checkbox" data-feature="${esc(f.id)}" ${on ? "checked" : ""} ${unlocked ? "" : "disabled"}><span class="wl-check" aria-hidden="true"></span>
+      <span class="wl-ico">${icon(FEATURE_ICON[f.id] || "home")}</span><b>${esc(f.name)}</b><span class="wl-desc">${esc(f.description)}</span>
+      ${(f.page_titles || []).length ? `<span class="wl-pages">${f.page_titles.map(t => `<span class="tag blue">${esc(t)}</span>`).join("")}</span>` : ""}<span class="wl-skills">${(f.skills || []).slice(0, 4).map(k => `<code>${esc(k)}</code>`).join(" ")}</span></label>`;
+  };
+  return `${unlocked ? "" : `<div class="callout wl-note">Read-only. To change anything, run <code>lfg ui</code> in your own terminal.</div>`}
+    <div class="wl-pick-h"><div><h2>What will you use?</h2><p class="muted">The sidebar shows only these pages. Change it any time in Settings.</p></div><span class="tag blue" id="wl-count"></span></div>
+    <div class="wl-grid">${(d.features || []).map(tile).join("")}</div>
+    <div class="wl-actions"><button class="btn primary big" id="onboard-save" ${unlocked ? "" : "disabled"}>Start with these</button><button class="btn big" id="onboard-skip" ${unlocked ? "" : "disabled"}>Show me everything</button><span class="save-msg" id="onboard-msg"></span></div>`;
+}
+PAGES.onboarding = async arg => {
+  OBS.step = arg === "pick" ? JOURNEY.length : 0;
+  return `<div class="ob">
+    <header class="lp-nav">${lfgMark()}<span class="grow"></span><a class="ob-skip" href="#onboarding/pick" data-ob-skip>Skip intro</a></header>
+    <div id="ob-body"></div></div>`;
+};
+async function drawJourney(root) {
+  const body = $("#ob-body", root);
+  if (!body) return;
+  const i = OBS.step, last = JOURNEY.length;
+  const dots = `<div class="ob-dots">${JOURNEY.concat([{ k: "Pick" }]).map((s, j) => `<button class="ob-dot${j === i ? " on" : j < i ? " done" : ""}" data-ob-go="${j}" aria-label="${esc(s.k)}"><span></span>${esc(s.k)}</button>`).join("")}</div>`;
+  if (i >= last) {
+    body.innerHTML = `${dots}<section class="wl-pick ob-pick">${await journeyPicker()}</section>`;
+    wireOnboarding(root);
+  } else {
+    const s = JOURNEY[i];
+    body.innerHTML = `${dots}<section class="ob-card"><div class="ob-copy"><span class="tag blue">${esc(s.k)}</span><h1>${esc(s.t)}</h1><p>${esc(s.d)}</p>
+      <div class="ob-nav">${i ? '<button class="btn big" data-ob="back">Back</button>' : ""}<button class="btn primary big" data-ob="next">${i === last - 1 ? "Pick what you'll use →" : "Next →"}</button></div>
+      <div class="muted small">${i + 1} of ${last}</div></div><div class="ob-vis" aria-hidden="true">${s.v()}</div></section>`;
+  }
+  $$("[data-ob-go]", body).forEach(b => b.onclick = () => { OBS.step = +b.dataset.obGo; drawJourney(root); });
+  const nx = $('[data-ob="next"]', body); if (nx) nx.onclick = () => { OBS.step++; drawJourney(root); };
+  const bk = $('[data-ob="back"]', body); if (bk) bk.onclick = () => { OBS.step--; drawJourney(root); };
+  const sk = $("[data-ob-skip]", root); if (sk) sk.onclick = e => { e.preventDefault(); OBS.step = last; drawJourney(root); };
+}
+
+/* A tour for every dashboard page: the Tour button in the top bar starts the one for the page you're on. */
+const PAGE_TOURS = {
+  home: [
+    { sel: "#nav", title: "Your dashboard", body: () => "Everything LFG does, by what you're doing: <b>Your work</b> (runs, todos, reviews, checks), <b>This project</b> (code, insights, docs) and <b>LFG</b> itself (usage, skills, settings)." },
+    { sel: "#repo", title: "Pick a project", body: () => "Every page shows the project picked here, and the branch below it narrows runs and checks to one branch." },
+    { sel: ".view .section", title: "What's happening", body: () => "The run you're on and what needs you. Start one in Claude Code with <code>/lfg:lfg</code> and a sentence." },
+    { sel: "#bell", title: "Notifications", body: () => "When a check finishes, a run needs a decision or a review is ready, it shows up here." },
+    { sel: "#tour-btn", title: "A tour on every page", body: () => "Press <b>Tour</b> on any page to see what it's for." },
+  ],
+  todos: [{ sel: "[data-td-add]", title: "Add a todo", body: () => "Type and press Enter. It's tagged with the project you're in." }, { sel: ".td-st", title: "Status", body: () => "Click the coloured tag to move it along: to do, in progress, done." }, { sel: ".td-a", title: "Linear and notes", body: () => "Turn any todo into a Linear ticket, or add notes." }],
+  runs: [{ title: "Runs", body: () => "Every request you give LFG becomes a run: brief, plan, build, checks, review and ship, with each stage's files." }, { sel: ".runs-bar", title: "Find a run", body: () => "Search by what it was for, its branch or its issue." }],
+  review: [{ title: "Reviews", body: () => "Review pull requests and AI chats here. Open one to see the diff, the comments and a chat beside it." }, { sel: ".rv-top", title: "Start a review", body: () => "Pick a pull request or a chat. LFG reads the diff and its callers before it says anything." }, { title: "Talk to the diff", body: () => "In a review, click a line number to ask about that line, or <b>Discuss</b> on a comment to argue with it. Mark each comment <b>Will fix</b> or <b>Not now</b>." }],
+  checks: [{ sel: ".view .cols", title: "Latest checks", body: () => "The newest code review, security check and ship check for this project, and what they found." }, { sel: ".view .tabs", title: "Findings", body: () => "Every finding with what's wrong, why it matters and what to do, sorted by severity." }],
+  code: [{ title: "Code", body: () => "The code map LFG's agents read instead of whole files, and the architecture's health." }],
+  insights: [{ sel: '[data-tabs="insights"]', title: "Three questions", body: () => "<b>Your changes</b>: is this safe to approve? <b>Hotspots</b>: where does this code break? <b>Files</b>: what is this and why is it like this?" }, { sel: "#ins-changes", title: "Before you approve", body: () => "The questions a senior engineer would ask, the fragile files you touched and the problems that keep coming back." }],
+  docs: [{ sel: ".doc-nav", title: "Docs", body: () => "LFG's wiki for this project and the docs you asked for: project-wide at the top, then one folder per branch." }],
+  knowledge: [{ title: "Knowledge", body: () => "Decisions, rules and lessons LFG remembers about this project, and your own notes. Save one with <code>/lfg:note</code>." }],
+  usage: [{ title: "Usage", body: () => "What Claude Code cost, by day, model and project, and what Headroom saved." }],
+  skills: [{ title: "Skills", body: () => "Every skill Claude Code can load on this computer, yours and every plugin's, with name clashes and how much context they cost." }],
+  integrations: [{ sel: ".int-list", title: "Integrations", body: () => "Turn tools on and off: knowledge graphs, Headroom, SonarQube, Dictate, pentests, Linear. Each one installs locally and can be removed." }],
+  settings: [{ sel: ".view .tabs", title: "Settings", body: () => "<b>Claude Code</b>: where LFG is on. <b>General</b>: features, updates, models. Every change is backed up and can be undone." }],
+  help: [{ title: "Help", body: () => "The guide and every command you can ask for." }],
+};
+Object.keys(PAGE_TOURS).forEach(k => Object.defineProperty(TOURS, "page-" + k, { get: () => PAGE_TOURS[k], enumerable: true }));
+function wireTourButton(key) {
+  const b = $("#tour-btn");
+  if (!b) return;
+  b.hidden = !PAGE_TOURS[key];
+  b.onclick = () => startTour("page-" + key);
 }
 
 PAGES.home = async () => {
@@ -1416,38 +1916,81 @@ PAGES.docs = async arg => {
   const parts = (arg || "").split("/");
   let src = parts[0], path = decodeURIComponent(parts.slice(1).join("/"));
   const all = t => t.items.concat(...t.folders.map(f => f.items));
-  const every = all(d.root).concat(...d.branches.map(all));
-  if (!src && every.length) {
-    const cur = d.branches.find(b => b.name === state.branch);
-    const pick = (d.root.folders[0] || {}).items?.[0] || (cur && all(cur)[0]) || every[0];
-    src = pick.src; path = pick.path;
-  }
+  if (!src) { const pick = (d.intro || [])[0] || (d.views || [])[0] || all(d.root)[0]; if (pick) { src = pick.src; path = pick.path; } }
   const on = it => it.src === src && it.path === path;
-  const link = it => `<a href="#docs/${esc(it.src)}/${encodeURIComponent(it.path)}" class="${on(it) ? "on" : ""}" title="${esc(it.title)}">${esc(it.title)}</a>`;
-  const folder = (name, items, tag, open) => `<details class="doc-folder"${open || items.some(on) ? " open" : ""}><summary>${icon("folder")}<span class="grow">${esc(name)}</span>${tag || ""}<span class="count">${items.length}</span></summary>${items.map(link).join("")}</details>`;
-  const fold = (f, openAuto) => folder(f.name, f.items, f.generated ? '<span class="tag" title="Written by LFG from the code map">auto</span>' : "", openAuto && f.generated);
-  const tree = (t, openAuto) => t.folders.filter(f => f.generated).map(f => fold(f, openAuto)).join("") + t.items.map(link).join("") + t.folders.filter(f => !f.generated).map(f => fold(f)).join("");
+  const link = (it, ico) => `<a href="#docs/${esc(it.src)}/${encodeURIComponent(it.path)}" class="${on(it) ? "on" : ""}" title="${esc(it.title)}">${ico ? icon(ico) : ""}${esc(it.title)}</a>`;
+  const folder = (name, items, tag, open) => `<details class="doc-folder"${open || items.some(on) ? " open" : ""}><summary>${icon("folder")}<span class="grow">${esc(name)}</span>${tag || ""}<span class="count">${items.length}</span></summary>${items.map(x => link(x)).join("")}</details>`;
   const STATE = { current: "current", default: "default", merged: "merged", deleted: "deleted" };
-  const rootHtml = tree(d.root, true);
-  const branchHtml = d.branches.map(b => folder(b.name, all(b), b.state ? `<span class="tag${b.state === "current" ? " blue" : ""}">${STATE[b.state]}</span>` : "", b.name === state.branch || b.state === "current")).join("");
-  const nav = `<div class="grp"><span>Project</span></div>${rootHtml || '<p class="meta small pad">Nothing yet.</p>'}
-    <div class="grp"><span>Branches</span></div>${branchHtml || '<p class="meta small pad">No branch docs yet.</p>'}`;
-  const how = `<p>Ask Claude in a repo where LFG is on, for example <i>"write a doc explaining how billing retries work"</i>. Docs about the whole project go to the top; docs about what you're building on a branch (<i>"write up this branch's design"</i>) go in that branch's folder.</p>
-    <p class="meta small">Project: <code>${esc(d.paths.project)}</code><br>Branches: <code>${esc(d.paths.branches)}/&lt;branch&gt;</code></p>`;
-  let body = `<div class="readable">${empty("No docs yet", "LFG's wiki (onboarding tour, landmines, test gaps) appears after the code map is built.")}${how}</div>`;
-  if (src && path) {
+  const mine = all(d.root).length + d.branches.reduce((n, b) => n + all(b).length, 0);
+  const grp = (t, extra) => `<div class="grp"><span>${t}</span>${extra || ""}</div>`;
+  const nav = `${grp("Getting started")}${(d.intro || []).map(x => link(x, "docs")).join("")}
+    ${(d.views || []).length || (d.code || []).length ? grp("Code wiki", '<span class="tag" title="Generated by graphify from the code">graphify</span>') : ""}
+    ${(d.views || []).map(x => link(x, x.path === "callflow" ? "runs" : "code")).join("")}
+    ${(d.code || []).length ? folder("Areas of the code", d.code, "", (d.code || []).some(on)) : ""}
+    ${grp("Your docs")}${mine ? d.root.items.map(x => link(x)).join("") + d.root.folders.map(f => folder(f.name, f.items)).join("") : '<p class="meta small pad">None yet. Write one with <b>New doc</b>.</p>'}
+    ${d.branches.length ? grp("Branches") + d.branches.map(b => folder(b.name, all(b), b.state ? `<span class="tag${b.state === "current" ? " blue" : ""}">${STATE[b.state]}</span>` : "", b.name === state.branch || b.state === "current")).join("") : ""}`;
+  let body;
+  if (src === "new" || src === "edit") body = await docEditor(src === "edit" ? path : "");
+  else if (src === "view") {
+    const v = await api("view", { kind: path });
+    body = v.src ? `<iframe class="viewer tall" src="${esc(v.src)}" title="${esc(path)}" referrerpolicy="no-referrer"></iframe>` : empty("Not built yet", fmtWhy(v.message || ""));
+  } else if (src && path) {
     const doc = await api("doc", { src, path });
-    body = doc.text === "not found" ? empty("Document not found", "") : `<div class="md">${md(doc.text, true)}</div>`;
-  }
-  return `${head("Docs", "LFG's wiki for this project and the docs you asked LFG to write: project-wide at the top, then one folder per branch.")}
-    <div class="docs"><div class="box doc-nav"><div class="table-tools"><input type="search" id="doc-filter" placeholder="Search docs…"></div>${nav}
-    <details class="doc-help"><summary>How to add a doc</summary>${how}</details></div>
+    body = doc.text === "not found" ? empty("Document not found", "") : `${src === "repo" ? `<div class="doc-bar"><span class="tag">${path.startsWith("branches/") ? "Branch doc" : "Project doc"}</span><span class="grow"></span><a class="btn small" href="#docs/edit/${encodeURIComponent(path)}">Edit</a></div>` : src === "gwiki" ? '<div class="doc-bar"><span class="tag">graphify</span><span class="muted small">Written from the code graph; it updates when the code map does.</span></div>' : ""}<div class="md">${md(doc.text, true)}</div>`;
+  } else body = empty("No docs yet", "Write one with New doc.");
+  return `${head("Docs", "Start here, explore the code wiki graphify builds from your code, and keep your own docs in Markdown.")}
+    <div class="docs"><div class="box doc-nav"><div class="doc-tools"><input type="search" id="doc-filter" placeholder="Search docs…"><a class="btn primary small" href="#docs/new">New doc</a></div>${nav}</div>
     <div class="box" id="doc-body" data-src="${esc(src || "")}" data-path="${esc(path || "")}">${body}</div></div>`;
 };
+async function docEditor(path) {
+  let title = "", text = "";
+  if (path) {
+    const doc = await api("doc", { src: "repo", path });
+    text = doc.text === "not found" ? "" : doc.text;
+    const m = /^# (.+)\n+/.exec(text); if (m) { title = m[1]; text = text.slice(m[0].length); }
+  }
+  const br = state.branch && state.branch !== "-" ? state.branch : "";
+  return `<div class="doc-edit"><input type="text" id="de-title" placeholder="Title" value="${esc(title)}" maxlength="140">
+    ${path ? `<p class="muted small">Editing <code>${esc(path)}</code></p>` : `<div class="row"><span class="muted small">Save it to</span><div class="seg" id="de-where"><button class="pill on" data-w="project">Project</button>${br ? `<button class="pill" data-w="branch" title="Docs about the work on this branch">Branch ${esc(br)}</button>` : ""}</div></div>`}
+    <div class="seg de-mode"><button class="pill on" data-m="write">Write</button><button class="pill" data-m="preview">Preview</button></div>
+    <textarea class="editor" id="de-text" placeholder="Write or paste Markdown: # headings, - lists, - [ ] checklists, \`code\`, tables…">${esc(text)}</textarea>
+    <div class="md de-preview" id="de-preview" hidden></div>
+    <div class="set-actions"><button class="btn primary" id="de-save" data-path="${esc(path)}">Save</button><a class="btn" href="#docs${path ? `/repo/${encodeURIComponent(path)}` : ""}">Cancel</a><span class="save-msg" id="de-msg"></span></div></div>`;
+}
+function wireKnowledgeAdd(root) {
+  const b = $("#kn-save", root);
+  if (!b) return;
+  let kind = "note";
+  $$("#kn-kind .pill", root).forEach(p => p.onclick = () => { kind = p.dataset.k; $$("#kn-kind .pill", root).forEach(x => x.classList.toggle("on", x === p)); });
+  b.onclick = async () => {
+    b.disabled = true;
+    const r = await save("knowledge_add", { repo: state.repo, title: $("#kn-title", root).value, text: $("#kn-text", root).value, kind });
+    b.disabled = false;
+    if (r.ok) { sessionStorage.setItem("lfg.tab.know", "mine"); route(); } else saidMsg($("#kn-msg", root), r);
+  };
+}
+function wireDocEditor(root) {
+  const save$ = $("#de-save", root);
+  if (!save$) return;
+  let where = "project";
+  $$("#de-where .pill", root).forEach(b => b.onclick = () => { where = b.dataset.w; $$("#de-where .pill", root).forEach(x => x.classList.toggle("on", x === b)); });
+  $$(".de-mode .pill", root).forEach(b => b.onclick = () => {
+    $$(".de-mode .pill", root).forEach(x => x.classList.toggle("on", x === b));
+    const pv = b.dataset.m === "preview";
+    $("#de-text", root).hidden = pv; $("#de-preview", root).hidden = !pv;
+    if (pv) $("#de-preview", root).innerHTML = md(`# ${$("#de-title", root).value || "Untitled"}\n\n${$("#de-text", root).value}`);
+  });
+  save$.onclick = async () => {
+    save$.disabled = true;
+    const r = await save("doc_save", { repo: state.repo, title: $("#de-title", root).value, text: $("#de-text", root).value, where, branch: state.branch, path: save$.dataset.path });
+    save$.disabled = false;
+    if (r.ok) location.hash = `#docs/repo/${encodeURIComponent(r.path)}`; else saidMsg($("#de-msg", root), r);
+  };
+}
 
 PAGES.knowledge = async () => {
-  const [k, b] = await Promise.all([api("knowledge"), api("brain")]);
-  if (k.available === false && b.available === false) return `${head("Knowledge", "What LFG remembers between sessions: decisions and lessons about this project, and your own preferences.")}${unavailable(k, "Knowledge isn't available")}${b.why && b.why !== k.why ? unavailable(b, "Your second-brain isn't available") : ""}`;
+  const [k, b, loc] = await Promise.all([api("knowledge"), api("brain"), api("knowledge_local").catch(() => ({ items: [] }))]);
+  const L = (loc && loc.items) || [];
   const K = k.available === false ? { decisions: [], principles: [], invariants: [], unheld: [], gaps: [], learnings: [] } : k;
   const B = b.available === false ? { notes: [], preferences: [] } : b;
   const unheld = new Set((K.unheld || []).map(r => r.slug));
@@ -1467,9 +2010,19 @@ PAGES.knowledge = async () => {
   const rule = r => sheet(r.text, `<span class="tag">${esc(r.kind)}</span> ${st(r.s)}`, `${part("Why", r.why)}${part("Do this instead", r.alt)}${part("Checked by", r.guard)}${part("Where it comes from", r.spec)}`);
   const gap = r => sheet(r.title, `${st(r.state)}${r.updatedAt ? ` <span class="muted small">${ago(r.updatedAt)}</span>` : ""}`, `${part("What happens today", r.currentBehavior)}${part("What it should do", r.targetBehavior)}`);
   const missing = [k, b].filter(x => x.available === false).map(x => `<div class="callout warn">${fmtWhy(x.why)}</div>`).join("");
+  const KIND = { note: ["Note", ""], decision: ["Decision", "blue"], lesson: ["Lesson", "ok"], rule: ["Rule", "warn"] };
+  const mineRow = r => `<li><span class="tag ${KIND[r.kind] ? KIND[r.kind][1] : ""}">${esc((KIND[r.kind] || ["Note"])[0])}</span><div class="grow"><div class="title">${esc(r.title)}</div><div class="meta clamp">${esc(r.text.replace(/^# .*\n+(> .*\n+)?/, "").replace(/[*_`#>]|^\s*[-+] (\[[ x]\] )?/gm, "").slice(0, 240))}</div></div><span class="muted small nowrap">${esc(r.date)}</span></li>`;
+  const mine = r => sheet(r.title, `<span class="tag ${KIND[r.kind] ? KIND[r.kind][1] : ""}">${esc((KIND[r.kind] || ["Note"])[0])}</span> <span class="muted small">${esc(r.date)} · ${esc(r.file)}</span>`, `<div class="md">${md(r.text.replace(/^# .*\n+(> .*\n+)?/, ""))}</div>`);
+  const addForm = `<details class="kn-add box pad"${L.length ? "" : " open"}><summary><b>Add knowledge</b><span class="muted small">Paste Markdown: a decision, a lesson, a rule or a note. Claude reads it in this project.</span></summary>
+    <div class="kn-form"><input type="text" id="kn-title" placeholder="Title, e.g. Money is integer cents" maxlength="140">
+      <div class="seg" id="kn-kind">${Object.entries(KIND).map(([k2, [t]], n) => `<button class="pill${n ? "" : " on"}" data-k="${k2}">${t}</button>`).join("")}</div>
+      <textarea class="editor" id="kn-text" placeholder="Paste or write Markdown…"></textarea>
+      <div class="set-actions"><button class="btn primary" id="kn-save">Save to knowledge</button><span class="save-msg" id="kn-msg"></span><span class="grow"></span><span class="muted small">Saved in <code>${esc((loc && loc.dir) || "")}</code></span></div></div></details>`;
   return `${head("Knowledge", "What LFG remembers between sessions: decisions and lessons about this project, and your own preferences. Agents read these before they work.")}
+    ${addForm}
     ${missing}
     ${tabs("know", [
+      ["mine", "Added by you", L.length || null, () => L.length ? listOf(L, mineRow, mine) : empty("Nothing added yet", "Paste Markdown above, or tell Claude what to remember with <code>/lfg:note</code>.")],
       ["dec", "Decisions", K.decisions.length, () => listOf(K.decisions, r => `<li><div class="grow"><div class="title">${esc(r.title)}</div><div class="meta clamp">${esc(r.decision)}</div></div><span class="muted small nowrap">${ago(r.createdAt)}</span></li>`, dec)],
       ["lrn", "Lessons learned", K.learnings.length, () => listOf(K.learnings, r => `<li><div class="grow"><div class="title">${esc(r.title)}</div><div class="meta clamp">${esc(r.body || "")}</div></div><span class="muted small nowrap">${ago(r.createdAt)}</span></li>`, lrn)],
       ["rules", "Code rules", rules.length, () => listOf(rules, r => `<li><span class="tag">${esc(r.kind)}</span><div class="grow"><div class="title">${esc(r.text)}</div>${r.why ? `<div class="meta clamp">${esc(r.why)}</div>` : ""}</div>${st(r.s)}</li>`, rule)],
@@ -2031,13 +2584,13 @@ PAGES.todos = async () => {
   const row = t => `<div class="td st-${t.status}" data-td="${esc(t.id)}">
       <select class="td-st" data-td-status aria-label="Status">${d.statuses.map(k => `<option value="${k}"${k === t.status ? " selected" : ""}>${TD_SAY[k]}</option>`).join("")}</select>
       <div class="grow td-main"><div class="td-text" contenteditable="plaintext-only" spellcheck="true" data-td-text>${esc(t.text)}</div>
-        <div class="td-m">${lin(t)}${t.repo ? `<span class="brtag">${esc(repoName(t.repo))}</span>` : ""}<span class="muted small">${ago(t.status_at || t.created)}</span>${t.notes ? `<span class="muted small" title="${esc(t.notes)}">· notes</span>` : ""}</div></div>
+        <div class="td-m">${lin(t)}${t.repo ? `<span class="tag">${icon("folder")}${esc(repoName(t.repo))}</span>` : ""}<span class="td-when">${ago(t.status_at || t.created)}</span>${t.notes ? `<span class="muted small" title="${esc(t.notes)}">· notes</span>` : ""}</div></div>
       <span class="td-a">${t.linear && t.linear.key || t.linear_job ? "" : `<button class="btn small" data-td-linear>${t.linear_error ? "Try again" : "Create Linear ticket"}</button>`}<button class="icon-btn" data-td-more title="Notes and more" aria-label="Notes and more">⋯</button></span></div>`;
   const group = (st, open) => { const xs = of(st); if (!xs.length) return ""; const body = `<div class="box td-list">${xs.map(row).join("")}</div>`;
-    return open ? section(TD_SAY[st], body, String(xs.length)) : `<details class="td-fold"><summary class="muted small">${TD_SAY[st]} · ${xs.length}</summary>${body}</details>`; };
+    return open ? section(TD_SAY[st], body, `<span class="tag">${xs.length}</span>`) : `<details class="td-fold"><summary>${TD_SAY[st]} <span class="tag">${xs.length}</span></summary>${body}</details>`; };
   const active = d.counts.todo + d.counts.in_progress;
   return `${head("Todos", "Things to do, across all your projects. Make any of them a Linear ticket when it needs one.")}
-    <form class="td-add" data-td-add><input type="text" id="td-new" placeholder="Add a todo and press Enter" maxlength="300" autocomplete="off"><button class="btn primary">Add</button></form>
+    <form class="td-add" data-td-add><span class="td-add-ico">${icon("plus")}</span><input type="text" id="td-new" placeholder="Add a todo and press Enter" maxlength="300" autocomplete="off"><button class="btn primary">Add</button></form>
     ${group("in_progress", true)}${group("todo", true)}${active ? "" : `<div class="box">${empty("Nothing to do", "Add one above. It's tagged with the project you're in.")}</div>`}
     ${group("done", false)}${group("cancelled", false)}`;
 };
@@ -2204,7 +2757,7 @@ PAGES.settings = async () => {
   state.settings = { cfg, sk, cm, unlocked };
   return `${head("Settings", unlocked ? "Changes are checked, refused if they look like a password or key, and backed up." : "")}
     ${unlocked ? "" : `<div class="callout">Read-only. To make changes, run <code>lfg ui</code> in your own terminal; it opens this page unlocked.</div>`}
-    <div class="section">${tabs("settings", [["claudecode", "Claude Code", null, settingsClaudeCode], ["general", "General", null, settingsGeneral], ["storage", "Disk space", null, settingsStorage], ["rules", "Rules", null, settingsRules], ["claudemd", "Your instructions", null, settingsClaude]])}</div>`;
+    <div class="section">${tabs("settings", [["claudecode", "Claude Code", null, settingsClaudeCode], ["general", "General", null, settingsGeneral], ["storage", "Disk space", null, settingsStorage], ["rules", "Rules", null, settingsRules], ["claudemd", "Your instructions", null, settingsClaude], ["appearance", "Appearance", null, settingsAppearance]])}</div>`;
 };
 
 // ------------------------------------------------------------------ skills: every skill Claude Code loads, from every source
@@ -2216,6 +2769,40 @@ PAGES.skills = async () => {
     ${unlocked ? "" : `<div class="callout">Read-only. To change skills, run <code>lfg ui</code> in your own terminal; it opens this page unlocked.</div>`}
     <div class="section">${tabs("skillspage", [["all", "All skills", null, () => '<div id="skills-box"><div class="loading">Reading skills…</div></div>'], ["lfgedit", "Edit LFG skills", null, settingsSkills]])}</div>`;
 };
+async function loadFeatures() {
+  const box = $("#features-section");
+  if (!box) return;
+  const d = await api("onboarding");
+  state.onboardData = d;
+  state.pages = d.pages || NAV.map(p => p[0]);
+  const unlocked = state.settings?.unlocked;
+  const showAllCb = $("#show-all-pages");
+  // Wire show-all-pages toggle
+  if (showAllCb) {
+    showAllCb.checked = d.show_all || false;
+    showAllCb.onchange = async () => {
+      showAllCb.disabled = true;
+      const r = await save("pages_show_all", { on: showAllCb.checked });
+      if (r.ok) applyPages(r);
+      showAllCb.disabled = false;
+    };
+  }
+  // Render all 5 feature toggles, none disabled
+  box.innerHTML = (d.features || []).map(f =>
+    `<label class="row"><input type="checkbox" data-feat="${esc(f.id)}" ${f.enabled ? "checked" : ""} ${!unlocked ? "disabled" : ""}> <div><b>${esc(f.name)}</b><div class="muted small">${esc(f.description)}</div></div></label>`
+  ).join("") + '<span class="save-msg ml" id="feat-msg"></span>';
+  // Wire feature toggles: save immediately on change
+  $$("[data-feat]", box).forEach(cb => {
+    cb.onchange = async () => {
+      cb.disabled = true;
+      const r = await save("feature_toggle", { feature: cb.dataset.feat, enabled: cb.checked });
+      saidMsg($("#feat-msg"), r, r.ok ? "Saved." : "");
+      if (r.ok) applyPages(r);
+      cb.disabled = false;
+    };
+  });
+}
+
 async function loadSkills() {
   const box = $("#skills-box");
   if (!box) return;
@@ -2251,7 +2838,13 @@ async function showSkillText(id) {
 
 PAGES.help = async () => {
   const d = await api("guide");
+  let u = null;
+  try { u = await api("updates"); } catch (e) { u = null; }
+  const ver = u ? `<div class="box pad mb"><div class="row"><b>LFG ${esc(u.current)}</b><span class="muted">${u.update_available ? `· <b>${esc(u.upstream)}</b> is available: in your LFG clone run <code>${esc(u.command)}</code>` : u.checked_at ? `· up to date (checked ${esc(ago(u.checked_at))})` : "· not checked yet"}</span><span class="grow"></span><button class="btn small" id="help-upd">Check for updates</button><span class="save-msg ml" id="help-upd-msg"></span></div>
+    ${u.update_available && u.notes ? `<details class="promo-notes"><summary>What's new in ${esc(u.upstream)}</summary><div class="md">${md(u.notes)}</div></details>` : ""}
+    <p class="muted small" style="margin:6px 0 0"><a href="#onboarding">Choose which pages you see</a> · <a href="#insights">Insights</a></p></div>` : "";
   return `${head("Help", `New here? Type <code>/lfg:wizard</code> in Claude Code for a guided run, or <code>/lfg:which</code> if you're not sure what to do next. LFG ${esc(d.version)}.`)}
+    ${ver}
     ${tabs("help", [
       ["guide", "Guide", null, () => d.has_guide ? `<iframe class="viewer" src="/guide/guide.html" title="LFG guide" referrerpolicy="no-referrer"></iframe>` : empty("The guide isn't installed", "Re-run <code>bootstrap.sh</code>.")],
       ["skills", "What you can ask for", d.skills.length, () => `<div class="box">${table(d.skills, [{ k: "name", label: "Command", html: r => `<code>/${esc(r.name)}</code>` }, { k: "description", label: "What it does" }])}</div>`],
@@ -2259,7 +2852,7 @@ PAGES.help = async () => {
 };
 
 // ------------------------------------------------------------------ shell
-const NAV_GROUPS = [["Your work", ["home", "todos", "runs", "issues", "review", "checks"]], ["This project", ["code", "docs", "knowledge"]], ["LFG", ["usage", "skills", "integrations", "settings", "help"]]];
+const NAV_GROUPS = [["Your work", ["home", "todos", "runs", "issues", "review", "checks"]], ["This project", ["code", "insights", "docs", "knowledge"]], ["LFG", ["usage", "skills", "integrations", "settings", "help"]]];
 /* 24px line icons, drawn for these pages (stroke = currentColor) */
 const ICON = {
   home: "M3 10.5 12 3l9 7.5M5 9v11h5v-6h4v6h5V9",
@@ -2270,6 +2863,8 @@ const ICON = {
   review: "M4 5h16v11H9l-5 4zM8 9h8M8 12h5",
   code: "M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 5l-3 14",
   docs: "M14 3H6v18h12V7zM14 3v4h4M9 12h6M9 16h6",
+  plus: "M12 5v14M5 12h14",
+  insights: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1.1 2h5c.1-.8.5-1.5 1.1-2A6 6 0 0 0 12 3z",
   stack: "M12 3l9 4.5-9 4.5-9-4.5zM3 12l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5",
   chev: "M6 9l6 6 6-6",
   folder: "M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z",
@@ -2291,7 +2886,18 @@ const ICON = {
 };
 const icon = (k, cls = "ico") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICON[k] || ""}"/></svg>`;
 function renderNav(active) {
-  $("#nav").innerHTML = NAV_GROUPS.map(([g, ks]) => `<div class="nav-grp">${esc(g)}</div>${ks.map(k => `<a class="${k === active ? "on" : ""}" href="#${k}"${k === active ? ' aria-current="page"' : ""}>${icon(k)}<span>${esc(TITLES[k])}</span></a>`).join("")}`).join("");
+  // Filter nav groups by visible pages from onboarding; always include active page
+  const visible = new Set(state.pages || NAV.map(p => p[0]));
+  visible.add(active);  // always show the active page even if hidden
+  $("#nav").innerHTML = NAV_GROUPS.map(([g, ks]) => {
+    const shown = ks.filter(k => visible.has(k));
+    return shown.length ? `<div class="nav-grp">${esc(g)}</div>${shown.map(k => `<a class="${k === active ? "on" : ""}" href="#${k}"${k === active ? ' aria-current="page"' : ""}>${icon(k)}<span>${esc(TITLES[k])}</span></a>`).join("")}` : "";
+  }).filter(Boolean).join("");
+}
+function applyPages(d) {
+  state.pages = d.pages || NAV.map(p => p[0]);
+  const current = (location.hash.slice(1) || "home").split("/")[0];
+  renderNav(current);
 }
 /* Breadcrumb in the top bar: project / page / item. Pages that open an item call crumbs() again with it. */
 function crumbs(page, item, itemHref) {
@@ -2341,15 +2947,18 @@ let renderSeq = 0;
 function softRoute() { return route({ soft: true }); }
 async function route(opts) {
   const soft = !!(opts && opts.soft);
-  let [page, ...rest] = (location.hash.slice(1) || "home").split("/");
+  let [page, ...rest] = (location.hash.slice(1) || "lfg").split("/");
   page = { overview: "home", reviews: "checks", security: "checks", architecture: "code", health: "code", brain: "knowledge", tools: "settings" }[page] || page;
   const key = PAGES[page] ? page : "home";
+  document.body.classList.toggle("bare", BARE.includes(key));
+  wireTourButton(key);
   const arg = rest.join("/");
   renderNav(key);
   crumbs(key);
   document.title = `${TITLES[key]} · LFG`;
   const seq = ++renderSeq, view = $("#view"), y = window.scrollY;
-  view.classList.toggle("wide", key === "review" && !!arg);  // the review screens are two panes: use the width
+  view.classList.toggle("wide", key === "review" && !!arg);
+  view.classList.toggle("welcome", key === "onboarding");  // the review screens are two panes: use the width
   const open = soft ? $$("details[open]", view).map((d, i) => d.id || "i" + i) : [];
   if (!soft) view.innerHTML = '<div class="skeleton" style="height:60px;width:40%"></div><div class="skeleton mt"></div><div class="skeleton mt" style="height:220px"></div>';
   let html;
@@ -2358,6 +2967,16 @@ async function route(opts) {
   view.innerHTML = html;
   mountTables(view); mountTabs(view); wire(view);
   $$("[data-href]", view).forEach(li => li.onclick = () => (location.hash = li.dataset.href));
+  if (key === "onboarding") drawJourney(view);
+  if (state.pendingTour && state.pendingTour.startsWith("page-")) { const t = state.pendingTour; state.pendingTour = null; setTimeout(() => startTour(t), 400); }
+  if (key === "insights") wireInsights(view);
+  if (key === "knowledge") wireKnowledgeAdd(view);
+  if (key === "help" && $("#help-upd", view)) $("#help-upd", view).onclick = async e => {
+    e.target.disabled = true;
+    const r = await save("updates_check", {});
+    saidMsg($("#help-upd-msg", view), r.error && !r.upstream ? { ok: false, why: "Couldn't reach GitHub: " + r.error } : r, r.update_available ? `${r.upstream} is available` : `Up to date (${r.current})`);
+    e.target.disabled = false;
+  };
   if (key === "docs") wireDocs();
   if (key === "review") wireReview(view);
   if (key === "todos") wireTodos(view);
@@ -2371,6 +2990,7 @@ async function route(opts) {
 }
 function wireDocs() {
   const body = $("#doc-body");
+  wireDocEditor(body);
   $$("[data-doclink]", body).forEach(a => a.onclick = e => {
     e.preventDefault();
     const base = body.dataset.path.split("/").slice(0, -1);
@@ -2479,6 +3099,21 @@ async function init() {
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
   try { state.rules = await api("rules"); } catch (e) { state.rules = null; }
   mountRuleTips();
+  // Fetch features BEFORE first route, set pages
+  let d = null;
+  try { d = await api("features"); } catch (e) { d = null; }
+  if (d) {
+    state.pages = d.pages || NAV.map(p => p[0]);
+    if (d.show_all) state.pages = NAV.map(p => p[0]);
+  }
+  // Redirect to onboarding only when: !complete AND (hash empty or #home) AND no welcomeShown
+  let welcomeShown = null;
+  try { welcomeShown = sessionStorage.getItem("lfg.welcomeShown"); } catch (e) { /* ignore */ }
+  const hashEmpty = !location.hash || location.hash === "#" || location.hash === "#home";
+  if (d && !d.complete && hashEmpty && !welcomeShown) {
+    try { sessionStorage.setItem("lfg.welcomeShown", "1"); } catch (e) { /* ignore */ }
+    location.hash = "#onboarding";
+  }
   const r = await api("repos");
   state.repos = r.repos || [];
   if (!state.repos.some(x => x.id === state.repo)) state.repo = state.repos[0] ? state.repos[0].id : "";
@@ -2490,6 +3125,7 @@ async function init() {
   mapStatus();
   route();
   offerTours();
+  checkUpdates();
 }
 async function loadBranches() {
   /* runs and checks are tagged with the branch they ran on; the code map is one per project */

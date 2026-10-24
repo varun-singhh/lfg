@@ -568,6 +568,7 @@ def architecture(rid, full=True):
 # ---------------------------------------------------------------- docs + playbooks
 
 DOC_SOURCES = [  # (id, title, base dir: relative to ~/.lfg, or {graphify}/{crg} = the repo's graph data, description)
+    ("intro", "Getting started", "{intro}", "what LFG is and how to use it"),
     ("playbooks", "Start here", "playbooks/{rid}", "onboarding tour, landmines, test gaps, incident runbooks"),
     ("guides", "From your docs", "{graphify}/wiki", "what your team's own docs and runbooks say"),
     ("gwiki", "Parts of the code", "{graphify}/wiki", "one page per area of the code, largest first"),
@@ -575,7 +576,12 @@ DOC_SOURCES = [  # (id, title, base dir: relative to ~/.lfg, or {graphify}/{crg}
 ]
 
 
+INTRO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui_assets", "intro")
+
+
 def _doc_base(rid, base):
+    if base == "{intro}":
+        return INTRO_DIR
     for kind in ("graphify", "crg"):
         tag = "{%s}" % kind
         if base.startswith(tag):
@@ -636,15 +642,18 @@ def docs_index(rid):
     pages aren't listed: the first is in the repo already, the second isn't written for people."""
     base = C.lfg_path("repos", rid, "docs")
     root = _doc_files(base)
-    pb = C.lfg_path("playbooks", rid)
-    wiki, known = [], dict(WIKI)
-    if os.path.isdir(pb):
-        for name in [w[0] for w in WIKI] + sorted(n for n in os.listdir(pb) if n.endswith(".md") and n not in known):
-            p = os.path.join(pb, name)
-            if os.path.isfile(p):
-                wiki.append({"src": "playbooks", "path": name, "title": known.get(name) or _title(p)})
-    if wiki:
-        root["folders"].insert(0, {"name": "Wiki", "items": wiki, "generated": True})
+    intro = [{"src": "intro", "path": n, "title": _title(os.path.join(INTRO_DIR, n))}
+             for n in sorted(os.listdir(INTRO_DIR)) if n.endswith(".md")] if os.path.isdir(INTRO_DIR) else []
+    code = []  # graphify's wiki: its overview, then one page per area of the code, largest first
+    gw = _doc_base(rid, "{graphify}/wiki")
+    if gw and os.path.isfile(os.path.join(gw, "index.md")):
+        code.append({"src": "gwiki", "path": "index.md", "title": "Overview"})
+    code += [{"src": "gwiki", "path": pg["path"], "title": pg["title"]}
+             for pg in D.wiki_pages(rid) if pg["kind"] == "code" and pg["nodes"] >= MIN_AREA_NODES]
+    gout = _doc_base(rid, "{graphify}")
+    views = [{"src": "view", "path": k, "title": t} for k, t, f in (("callflow", "How calls flow", "callflow.html"),
+                                                                     ("architecture", "Map of the code", "graph.html"))
+             if gout and os.path.isfile(os.path.join(gout, f))]
     gb = git_branches(repo_root(rid))
     out = []
     bdir = os.path.join(base, "branches")
@@ -661,8 +670,94 @@ def docs_index(rid):
                                        else "deleted")
         out.append(dict(tree, name=name, state=state))
     out.sort(key=lambda b: (b["state"] != "current", b["state"] != "default", b["name"].lower()))
-    return {"root": root, "branches": out, "state": D.docs_state(rid), "due": D.due(rid),
-            "paths": {"project": base, "branches": bdir}}
+    return {"intro": intro, "code": code, "views": views, "root": root, "branches": out, "state": D.docs_state(rid),
+            "due": D.due(rid), "paths": {"project": base, "branches": bdir}}
+
+
+def _slug(title):
+    return re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")[:60] or "untitled"
+
+
+def _check_md(title, text, limit=200_000):
+    from . import settings as S
+    title, text = (title or "").strip(), (text or "").replace("\r\n", "\n")
+    if not title:
+        raise S.Invalid("give it a title")
+    if len(text) > limit:
+        raise S.Invalid("that's over %d KB; split it into smaller docs" % (limit // 1000))
+    if S._secret_kinds(text):
+        raise S.Invalid("it looks like it contains a password or key; secrets never go in docs")
+    return title, text
+
+
+def doc_save(rid, body):
+    """A doc the user wrote or edited in the dashboard: about the whole project, or about one branch's work.
+    Editing keeps the file; a new doc gets a file named after its title (never overwriting another)."""
+    from . import settings as S
+    title, text = _check_md(body.get("title"), body.get("text"))
+    base = C.lfg_path("repos", rid, "docs")
+    if not text.lstrip().startswith("# "):
+        text = "# %s\n\n%s" % (title, text.lstrip())
+    path = (body.get("path") or "").strip()
+    if path:  # an edit
+        full = os.path.realpath(os.path.join(base, path))
+        if not path.endswith(".md") or not full.startswith(os.path.realpath(base) + os.sep) or not os.path.isfile(full):
+            raise S.Invalid("that doc can't be edited here")
+    else:
+        if body.get("where") == "branch":
+            branch = (body.get("branch") or C.git_branch(repo_root(rid)) or "").strip()
+            if not branch or branch.startswith("detached@"):
+                raise S.Invalid("pick a branch, or save it to the project instead")
+            d = C.branch_docs_dir(rid, branch)
+        else:
+            d = C.repo_docs_dir(rid)
+        full, n = os.path.join(d, _slug(title) + ".md"), 2
+        while os.path.exists(full):
+            full, n = os.path.join(d, "%s-%d.md" % (_slug(title), n)), n + 1
+        path = os.path.relpath(full, base)
+    C.write_text(full, text.rstrip() + "\n")
+    C.audit("doc_saved", {"repo": rid, "path": path})
+    return {"src": "repo", "path": path}
+
+
+# ---------------------------------------------------------------- knowledge the user pastes in (Markdown files)
+
+KNOWLEDGE_KINDS = ("note", "decision", "lesson", "rule")
+
+
+def knowledge_dir(rid):
+    return C.lfg_path("repos", rid, "knowledge")
+
+
+def knowledge_list(rid):
+    d = knowledge_dir(rid)
+    out = []
+    for n in sorted(os.listdir(d), reverse=True) if os.path.isdir(d) else []:
+        if not n.endswith(".md"):
+            continue
+        text = C.read_text(os.path.join(d, n))
+        m = re.match(r"^# (.+)\n(?:\n?> (\w+) · (\S+)\n)?", text)
+        out.append({"file": n, "title": m.group(1) if m else n[:-3],
+                    "kind": m.group(2) if m and m.group(2) else "note",
+                    "date": m.group(3) if m and m.group(3) else n[:10], "text": text})
+    return out
+
+
+def knowledge_add(rid, body):
+    from . import settings as S
+    title, text = _check_md(body.get("title"), body.get("text"), limit=100_000)
+    if not text.strip():
+        raise S.Invalid("write or paste something first")
+    kind = body.get("kind") if body.get("kind") in KNOWLEDGE_KINDS else "note"
+    day = time.strftime("%Y-%m-%d")
+    d = C.ensure_dir(knowledge_dir(rid))
+    full, n = os.path.join(d, "%s-%s.md" % (day, _slug(title))), 2
+    while os.path.exists(full):
+        full, n = os.path.join(d, "%s-%s-%d.md" % (day, _slug(title), n)), n + 1
+    body_md = re.sub(r"^# .*\n+", "", text.lstrip(), count=1)
+    C.write_text(full, "# %s\n\n> %s · %s\n\n%s\n" % (title, kind, day, body_md.rstrip()))
+    C.audit("knowledge_added", {"repo": rid, "kind": kind})
+    return {"file": os.path.basename(full)}
 
 
 def doc(rid, src, path):

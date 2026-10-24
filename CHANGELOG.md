@@ -2,6 +2,29 @@
 
 All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.json`.
 
+## Unreleased
+
+### Added
+- **Appearance** (Settings → Appearance): System, light or dark; three light themes (LFG, Paper, Mist) and three dark (Midnight, Graphite, Carbon); accent colour, density, text size, background glow and motion. Kept per browser.
+- **Docs, reorganised**: *Getting started* (what LFG is, how it works, everyday commands), graphify's *Code wiki* (call flows, the architecture map and one page per area of the code), and *Your docs*, which you can now write and edit in the dashboard in Markdown, for the project or a branch. LFG's own playbooks are no longer listed as docs.
+- **Add knowledge**: paste a note, decision, lesson or rule in Markdown on the Knowledge page. Saved in `~/.lfg/repos/<repo-id>/knowledge/` (`lfg repo knowledge`), and Claude is told to read your docs and knowledge in that project.
+- **A logo**, and a thank-you on the home page to the open-source projects LFG is built on.
+- **Product home** (what `lfg ui` opens): a full-screen page with the pitch, the flow from one sentence to a shipped change, a snapshot of each feature (talk-to-the-diff reviews, Insights questions, hotspots, why-is-this-here history, runs, guard rails, Dictate), and a button into the dashboard.
+- **Intro journey** for first-time users: six steps, one feature each with its snapshot, then pick what you'll use; it ends on the dashboard with its tour. Replay it from the home page.
+- **A tour for every page**: the Tour button in the top bar explains the page you're on.
+- **Sharper finish**: small corners (3-6px) everywhere, one spacing scale, quieter shadows. Todos show status as a coloured tag, the project as a tag, and roomier rows.
+- **New look**: the dashboard is card-based and blue. Light mode is soft white and blue, dark mode deep navy, both with a faint blue glow; Welcome gets the full LFG hero. Things that behave alike share a card (Settings → General is now Features, Updates, How LFG works, Agent models, Dashboard and disk space). Pill tags and status badges, blue checkboxes, switches for on/off settings, segmented tabs, dark code panels, task-list checkboxes in docs (`- [ ]` / `- [x]`), numbered review questions and a commit timeline in Insights.
+- **Welcome** (dashboard, or `lfg onboard`): pick the features you use (building code, reviews, security, docs and knowledge, planning) and the sidebar shows only their pages. Change it any time in Settings → General (switches apply at once, plus "Show every page"). Nothing is hidden until you choose, and installs from before this keep every page. Stored in `~/.lfg/state/onboarding.json`, not config.json.
+- **Update check**: the dashboard asks GitHub for LFG's latest version at most once a day (`updates.auto_check`, on by default; "Check for updates" in Settings; `lfg update`). A banner shows the new version, what's new, and the command to run (`git pull && ./install.sh` in your clone); close it to hide it for that version. Only the version file and changelog are fetched; nothing about you or your code is sent, and LFG never updates itself.
+- **Insights** (dashboard, under This project): understand code you didn't write without opening an editor. *Your changes* reviews everything the branch changes, committed or not, and adds the questions a senior engineer would ask before approving it, the fragile files it touches, and the findings that keep coming back. *Hotspots* ranks files by fixes and churn from git history, with the reasons. *Files* explains a file and, for any function, why it's there: the commits that shaped it with their issues, tickets and PRs as links. Read-only git, nothing leaves the machine. Also `lfg hotspots`, `lfg why <file>[:lines]` and **/lfg:why**.
+- **Check-ins**: once you start using a feature you hid (its skill used 3+ times, or its page already has something to show), the dashboard offers its pages once: *Show it* or *Not now* (asked again after a month at the earliest; never in the first days, never more than once a week). From the skills LFG already records per reply.
+- **Tests from past bugs**: test ideas now include one per fix commit on the file in the last year, and a test file to start from in the project's own style (pytest, unittest, vitest or jest, reusing how existing tests import the module). Every test is skipped until written, so it runs as-is. Copy from Insights → Files.
+- **Debt trend**: hotspots and folders say when fixes are rising (the recent half of the window vs the half before).
+- **Team decisions in review questions**: Your changes asks whether the change still follows a decision record or dev-graph decision that names a changed file or its module.
+- First setup in a terminal offers to open the dashboard, which starts on Welcome.
+- Fix detection (hotspots, history, recent fixes, regression ideas) no longer counts release roll-ups like "LFG 0.3.0: … fixes" as bug fixes.
+- **/lfg:explain5**, **/lfg:review-coach**, **/lfg:suggest-tests** (and `lfg explain5`, `lfg review-coach`, `lfg suggest-tests`): quick heuristic first passes (a file in plain terms; secrets, eval, swallowed errors and queries in loops at `file:line` across the branch's changes; test ideas per function with the case each targets). The skills tell Claude to check every finding in the code before repeating it.
+
 ## 0.3.0 (2026-10-20)
 
 ### Added

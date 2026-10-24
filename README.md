@@ -39,12 +39,24 @@ LFG is built so that installing it can't disturb how you already use Claude Code
 
 | | |
 |---|---|
-| **Skills** (`/lfg:<name>`) | `lfg`, `wizard` (whole pipeline) · `grill` · `plan` · `build`, `fix` · `check`, `secure`, `pentest`, `expert` · `ship` · `learn` · helpers: `which`, `explain`, `impact`, `spike`, `research`, `map`, `inbox`, `handoff`, `note`, `health` |
+| **Skills** (`/lfg:<name>`) | `lfg`, `wizard` (whole pipeline) · `grill` · `plan` · `build`, `fix` · `check`, `secure`, `pentest`, `expert` · `ship` · `learn` · helpers: `which`, `explain`, `why`, `impact`, `spike`, `research`, `map`, `inbox`, `handoff`, `note`, `health`, `review-coach`, `explain5`, `suggest-tests` |
 | **Agents** | product manager, architecture designer, software engineer, AI engineer, QA, security analyst, expert reviewer, lane triage. They hand work to each other through run-folder files, never chat history |
 | **Graphs** | [code-review-graph](https://pypi.org/project/code-review-graph/) and [graphify](https://pypi.org/project/graphifyy/) for code; Omnigraph **dev-graph** (decisions, issues, learnings) and **second-brain** (your notes) |
 | **Guard** | A PreToolUse hook that parses whole shell commands and blocks pushes, GitHub writes, secret reads, env dumps, deploys and more (18 rules, self-tested with `lfg doctor --selftest`). Commits are an approval prompt (Commit approval, on by default, switchable in Settings) |
 | **Gates** | Lint, types, tests, build, CI replay, secret scan, security vetting, an offline pentest with a local model, expert review and a Docker ship check, all from exit codes, never an agent's claim |
-| **Dashboard** | `lfg ui`: runs, issues, checks, code maps, docs and playbooks, usage and cost, **every skill on your machine** (with name clashes and context cost), and **Settings → Claude Code**, where you choose where LFG is on, add packs, and undo any change |
+| **Dashboard** | `lfg ui`: runs, issues, checks, code maps, docs and playbooks, usage and cost, **every skill on your machine** (with name clashes and context cost), and **Settings → Claude Code**, where you choose where LFG is on, add packs, and undo any change. It opens on a product home with the whole flow and a snapshot of each feature; the first time, a short intro walks through the major features and asks which you use and shows only their pages; later it offers a hidden page once you start needing it ("you've used `/lfg:secure` 4 times: show Checks?"), and it tells you when a newer LFG is out |
+
+## Understand code you didn't write
+
+Most code is now written by an agent, so the hard part is no longer typing it: it's knowing what changed, whether it's safe, and why the code looks the way it does. **Insights** in the dashboard answers that without opening an editor, from your git history, on your computer:
+
+- **Your changes**: everything your branch changes (committed or not), what looks risky in it, the questions a senior engineer would ask before approving it ("this touches three files that keep needing fixes: how would you know if one broke?"), and the problems that keep coming back in your checks.
+- **Hotspots**: the files and folders that keep needing fixes, with the evidence (fixes, churn, size, no tests) and whether fixes are rising. That's where the next bug most likely is, and where debt is worth paying down.
+- **Files**: what a file does, what's in it, and for any function, *why it's there*: the commits that shaped it, with the issues, tickets and pull requests they mention as links. Plus test ideas, including one per bug the file already had, and a test file to start from in your project's own test style.
+
+The questions also check your team's recorded decisions (decision records from `/lfg:grill`, and dev-graph when the Knowledge pack is on): "your team decided *money is integer cents*, and this changes `pay.py`: does it still follow that?"
+
+The same answers in Claude Code: `/lfg:why`, `/lfg:review-coach`, `/lfg:explain5`, `/lfg:suggest-tests`, and in the terminal: `lfg why <file>[:lines]`, `lfg hotspots`. They are pattern checks that tell you what to read, not a substitute for a review (`/lfg:expert`) or a security check (`/lfg:secure`, which covers vulnerable and end-of-life dependencies).
 
 ## Feature packs
 

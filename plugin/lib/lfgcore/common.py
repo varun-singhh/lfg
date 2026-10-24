@@ -65,6 +65,10 @@ DEFAULT_CONFIG = {
         "graphs": {"second-brain": {"graph": "brain", "port": 47181},
                    "dev-graph": {"graph": "dev", "port": 47182}},
     },
+    "updates": {
+        "check_interval_hours": 24,
+        "auto_check": True,
+    },
 }
 
 

@@ -298,7 +298,7 @@ def legacy_fix(item_id):
 
 # ---------------------------------------------------------------- guided tours (shown once, skippable)
 
-TOURS = ("dictate", "dictate-intro", "dictate-banner")
+TOURS = ("dictate", "dictate-intro", "dictate-banner", "news-welcome")
 
 
 def tours_view():
@@ -311,11 +311,12 @@ def tours_view():
     full = bool(done.get("dictate")) or (done.get("dictate-intro") or {}).get("how") == "finished"  # saw every control
     return {"dictate": {"ready": on, "on": on, "done": full,
                         "intro_done": bool(done.get("dictate-intro") or done.get("dictate")),
-                        "banner_closed": bool(done.get("dictate-banner"))}}
+                        "banner_closed": bool(done.get("dictate-banner"))},
+            "news_welcome_closed": bool(done.get("news-welcome"))}
 
 
 def tour_done(name, how="finished"):
-    if name not in TOURS:
+    if name not in TOURS and not re.match(r"^page-[a-z]{2,20}$", str(name)):
         raise Invalid("unknown tour")
     p = C.lfg_path("state", "tours.json")
     d = C.read_json(p, {}) or {}
