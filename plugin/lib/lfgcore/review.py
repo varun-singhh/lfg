@@ -1474,33 +1474,11 @@ def _reply_text(text):
 
 
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
-IMAGE_MAX, FILE_MAX = 5_000_000, 20_000_000
-ATTACH_RX = re.compile(r"\[(?:image|file): ([^\]\s]+)\]")
+FILE_MAX = 20_000_000
 
 
 def chat_files_dir():
     return C.lfg_path("tmp", "chat")
-
-
-def save_attachment(data, kind, name):
-    """A file dropped, pasted or attached in a review chat (an image, a CSV, a document, code, anything): kept under
-    ~/.lfg/tmp/chat for Claude to read, under its own name. The message carries it as [image: <path>] or
-    [file: <path>]."""
-    import base64
-    import uuid
-    image = kind in IMAGE_TYPES
-    try:
-        raw = base64.b64decode(str(data or ""), validate=True)
-    except ValueError:
-        raise ReviewError("that file didn't come through") from None
-    if not raw or len(raw) > (IMAGE_MAX if image else FILE_MAX):
-        raise ReviewError("images up to 5 MB, other files up to 20 MB")
-    base = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(str(name or "file"))).strip(".-")[:80] or "file"
-    folder = os.path.join(C.ensure_dir(chat_files_dir()), uuid.uuid4().hex[:12])
-    path = os.path.join(C.ensure_dir(folder), base)
-    with open(path, "wb") as fh:
-        fh.write(raw)
-    return {"path": path, "name": base, "image": image}
 
 
 PREVIEW_MAX = 400_000  # characters of text, rows of a table: enough to read, never the whole of a big file
@@ -1553,31 +1531,6 @@ def session_history(sid, limit=20):
     return {"turns": turns[-limit:], "more": max(0, len(turns) - limit)}
 
 
-def _chat_prompt(context_prompt, q):
-    """What a chat message sends: a message starting with / runs that command or skill in the session as typed (the
-    review is added after it); files the message carries are named for the Read tool. Returns (prompt, files)."""
-    base = os.path.realpath(chat_files_dir()) + os.sep
-    images = [x for x in ATTACH_RX.findall(q) if os.path.realpath(x).startswith(base) and os.path.isfile(x)]
-    seen = ("\n\nOpen each attached file with the Read tool before answering: %s" % ", ".join(images)
-            if images else "")
-    if q.lstrip().startswith("/"):
-        about = context_prompt.split("\n\n", 1)[0]
-        return q.strip() + seen + "\n\n(Asked from the LFG review page. " + about + ")", images
-    return context_prompt + seen, images
-
-
-def _chat_tools(run_, slash, images):
-    """Tools for a chat turn: the review session's read-only set, plus Skill for a / command; without a session, only
-    Read for attached images."""
-    if run_.get("session_id"):
-        allow = [x for x in RUN_ALLOW if "review save" not in x] + (["Skill"] if slash else [])
-        return ["--allowedTools", ",".join(allow), "--disallowedTools", ",".join(RUN_DENY)]
-    if images or slash:
-        return ["--allowedTools", ",".join(["Read"] + (["Skill"] if slash else [])),
-                "--disallowedTools", ",".join(RUN_DENY)]
-    return C.CLAUDE_BARE
-
-
 def _review_now(rec, p):
     """The pass as Claude needs it to change it: ids, ratings, statuses and comments, compact."""
     return json.dumps({"pr": ref(rec["repo"], rec["number"]), "summary": p.get("summary"),
@@ -1585,44 +1538,9 @@ def _review_now(rec, p):
                                                            "reply") if f.get(k) is not None} for f in p["findings"]]})
 
 
-def ask(repo, number, n, question):
-    """Talk to the session that did a review (resumes it), or to Claude with the review when it was imported. What the
-    conversation settles changes the review; the conversation is kept on the pass."""
-    import subprocess
-    if not str(question or "").strip():
-        raise ReviewError("ask something, e.g. \"why is 1.2 a blocker?\"")
-    if not C.which("claude"):
-        raise ReviewError("Claude Code (`claude`) is not on PATH")
-    rec = need(repo, number)
-    p = next((x for x in rec["passes"] if x["n"] == int(n or 0)), None)
-    if not p:
-        raise ReviewError("no review %s on %s" % (n, ref(repo, number)))
-    run_ = p.get("run") or {}
-    q = _text(question, "question", 4000)
-    prompt, images = _chat_prompt(ASK % (_review_now(rec, p), q), q)
-    cmd = ["claude", "-p", prompt] + (["--resume", run_["session_id"]] if run_.get("session_id") else []) \
-        + _chat_tools(run_, q.lstrip().startswith("/"), images)
-    cp = subprocess.run(cmd + ["--output-format", "json", "--permission-mode", "dontAsk"] + _model() + _direct(),
-                        cwd=run_.get("cwd") or None, capture_output=True, text=True, timeout=600,
-                        stdin=subprocess.DEVNULL, env=dict(os.environ, LFG_REVIEWER="1"))
-    try:
-        text = (json.loads(cp.stdout).get("result") or "").strip()
-    except ValueError:
-        text = ""
-    if not text:
-        raise ReviewError("Claude didn't answer: %s" % (cp.stderr or cp.stdout or "")[-300:].strip())
-    shown, out = _reply_text(text)
-    changed = apply_changes(repo, number, p["n"], out) if out else []
-    rec = need(repo, number)  # read again: changes and the page may have saved meanwhile
-    p = next(x for x in rec["passes"] if x["n"] == int(n))
-    p.setdefault("chat", []).append({"q": q, "a": shown, "at": C.now_iso(), "changed": changed})
-    store(rec)
-    return {"q": q, "a": shown, "changed": changed}
-
-
-def answer(repo, number, n, qid, text):
-    """Your answer to a question the review couldn't settle: kept on the question, then sent to the review's
-    conversation, so Claude can change the review to match."""
+def record_answer(repo, number, n, qid, text):
+    """Your answer to a question the review couldn't settle, kept on the question. Returns the question. The answer
+    then goes to the review's chat (reviewchat.answer), where Claude can change the review to match."""
     if not str(text or "").strip():
         raise ReviewError("write an answer")
     rec = need(repo, number)
@@ -1632,15 +1550,7 @@ def answer(repo, number, n, qid, text):
         raise ReviewError("no question %s on review %s" % (qid, n))
     qq["answer"] = _text(text, "answer", 4000)
     store(rec)
-    out = ask(repo, number, n, "You asked: %s\nMy answer: %s" % (qq["ask"], qq["answer"]))
-    rec = need(repo, number)  # Claude's reply stays under the question too, with what it changed
-    p = next(x for x in rec["passes"] if x["n"] == int(n))
-    qq = next(x for x in p.get("questions") or [] if x["id"] == qid)
-    qq.update(reply=out["a"], changed=out["changed"])
-    if p.get("chat"):
-        p["chat"][-1]["qid"] = qid  # the chat shows it as your answer to that question
-    store(rec)
-    return out
+    return qq
 
 
 VERDICTS = ("mergeable", "almost", "not")
@@ -1886,50 +1796,6 @@ def post_reply(repo, number, fid, body=None):
     return f["replied"]
 
 
-def discuss(repo, number, fid, question):
-    """Talk one finding through before deciding on it: resumes the session that did the review when there is one, else
-    asks Claude with the finding and its code. The conversation is kept on the finding."""
-    import subprocess
-    if not str(question or "").strip():
-        raise ReviewError("say something about it, e.g. \"is this really reachable?\"")
-    if not C.which("claude"):
-        raise ReviewError("Claude Code (`claude`) is not on PATH")
-    rec = need(repo, number)
-    f = find(rec, fid)
-    p = next(x for x in rec["passes"] if f in x["findings"])
-    run_ = p.get("run") or {}
-    q = _text(question, "question", 4000)
-    said = "".join("\n\nEarlier, Lee: %s\nYou: %s" % (x["q"], x["a"]) for x in f.get("chat") or [])
-    about = DISCUSS % (fid, f.get("title") or f.get("issue") or "", f.get("file") or "the PR as a whole",
-                       f.get("line") or "-", f.get("issue") or "", f.get("fix") or "", f.get("body") or "", said, q)
-    slash = q.lstrip().startswith("/")
-    if run_.get("session_id"):
-        prompt, images = _chat_prompt(ASK % (_review_now(rec, p), about), q)
-        cmd = ["claude", "-p", prompt, "--resume", run_["session_id"]] + _chat_tools(run_, slash, images)
-    else:
-        snip = snippet(repo, number, fid)
-        code = "\n".join("%s %s" % (r["new"] or r["old"] or "", r["text"]) for r in (snip or {}).get("rows") or [])
-        about += "\n\nThe code:\n" + code if code else ""
-        prompt, images = _chat_prompt(ASK % (_review_now(rec, p), about), q)
-        cmd = ["claude", "-p", prompt] + _chat_tools(run_, slash, images)
-    cp = subprocess.run(cmd + ["--output-format", "json", "--permission-mode", "dontAsk"] + _model() + _direct(),
-                        cwd=run_.get("cwd") or None, capture_output=True, text=True, timeout=600,
-                        stdin=subprocess.DEVNULL, env=dict(os.environ, LFG_REVIEWER="1"))
-    try:
-        text = (json.loads(cp.stdout).get("result") or "").strip()
-    except ValueError:
-        text = ""
-    if not text:
-        raise ReviewError("Claude didn't answer: %s" % (cp.stderr or cp.stdout or "")[-300:].strip())
-    rec = need(repo, number)  # read again: the answer took a while and the page may have saved meanwhile
-    shown, out = _reply_text(text)
-    changed = apply_changes(repo, number, p["n"], out) if out else []
-    rec = need(repo, number)
-    find(rec, fid).setdefault("chat", []).append({"q": q, "a": shown, "at": C.now_iso(), "changed": changed})
-    store(rec)
-    return {"q": q, "a": shown, "changed": changed}
-
-
 CHECK = ("A code review found this problem in a pull request. Since then the author pushed more commits. Say whether "
          "this one finding is fixed now, from the changes and the code below. Answer only with one ```json block "
          "{\"state\": \"fixed\" or \"partly\" or \"not\", \"why\": \"one plain sentence a person can check, naming "
@@ -2008,10 +1874,11 @@ def check_fixed(repo, number, fid):
     return out
 
 
-DISCUSS = ("This is about one finding, %s: %s\nWhere: %s line %s\nIssue: %s\nSuggested fix: %s\nThe comment drafted "
-           "for the author: %s%s\n\nLee says: %s\n\nIf Lee says it isn't needed and the code agrees, say so in a "
-           "sentence and drop it (\"status\": \"drop\"); LFG gives its points back. If you "
-           "disagree, keep it and say plainly why it still matters and what has to change.")
+FINDING_ABOUT = ("This is about one finding, %s: %s\nWhere: %s line %s\nIssue: %s\nSuggested fix: %s\nThe comment "
+                 "drafted for the author: %s%s")
+FINDING_RULE = ("If Lee says it isn't needed and the code agrees, say so in a sentence and drop it (\"status\": "
+                "\"drop\"); LFG gives its points back. If you disagree, keep it and say plainly why it still matters "
+                "and what has to change.")
 
 
 # ---------------------------------------------------------------- code snippets
@@ -2521,7 +2388,9 @@ def sessions_for(repo, number, days=30):
             _SESS_SEEN[key] = _session_row(p, repo, number)
         if _SESS_SEEN[key]:
             out.append(_SESS_SEEN[key])
-    out = sorted(out, key=lambda s: s["modified"], reverse=True)
+    rec = load(repo, number) or {}  # the review chat's own copies and sessions aren't sessions to ask about
+    mine = set((rec.get("session_forks") or {}).values()) | {rec.get("chat_session")}
+    out = sorted((x for x in out if x["id"] not in mine), key=lambda s: s["modified"], reverse=True)
     _SESS_LAST[(repo, int(number))] = out
     return out
 
@@ -2545,7 +2414,8 @@ def _session_row(p, repo, number):
                 title = ev.get("customTitle") or title
             cwd = cwd or ev.get("cwd") or ""
             c = (ev.get("message") or {}).get("content") if ev.get("type") == "user" else None
-            c = re.sub(r"\s+", " ", re.sub(r"</?pasted_content[^>]*>", " ", c)).strip() if isinstance(c, str) else c
+            c = re.sub(r"\s+", " ", re.sub(r"</?pasted_content[^>]*>|<lfg-review\b[^>]*>[\s\S]*?</lfg-review>", " ", c)
+                       ).strip() if isinstance(c, str) else c
             if not first and isinstance(c, str) and not c.startswith("<"):  # a paste's wrapper isn't a name
                 first = c
     return {"path": p, "id": os.path.basename(p)[:-6], "title": title or first[:80] or "(untitled)",
@@ -2555,71 +2425,7 @@ def _session_row(p, repo, number):
 
 ASK_SESSION = ("Lee is reviewing pull request %s from the LFG dashboard and asks you about it. You worked on this, so "
                "answer from what you know and from the code: a few plain sentences he could hand to the reviewer as "
-               "they are. Don't change any files, commit or push.\n\n%s")
-ASK_FINDING = ("It's about one finding of the review, %s: %s\nWhere: %s line %s\nIssue: %s\nSuggested fix: %s\n\n"
-               "Lee asks: %s")
-SESSION_TOOLS = ["Read", "Grep", "Glob", "Bash(git log *)", "Bash(git show *)", "Bash(git diff *)", "Bash(git blame *)",
-                 "Bash(git grep *)", "Bash(gh pr view *)", "Bash(gh pr diff *)"]
-
-
-def _session_about(repo, number, sid):
-    """One of the sessions this PR's page lists (it mentions the PR, or you linked it): {id, title, cwd}."""
-    from . import sessions as SS
-    pr = ref(repo, number)
-    if sid in linked_sessions(pr):
-        s = next((x for x in SS.listing(scripted=True, hidden=True)["sessions"] if x["id"] == sid), None)
-        if s:
-            return {"id": sid, "title": s.get("name") or sid, "cwd": s.get("cwd") or ""}
-    s = next((x for x in sessions_for(repo, number) if x["id"] == sid), None)
-    if not s:
-        raise ReviewError("that session isn't one about %s" % pr)
-    return {"id": sid, "title": s["title"], "cwd": s["cwd"]}
-
-
-def ask_session(repo, number, sid, question, n=None, fid=None):
-    """Ask one of your sessions about this PR (say the one where you built it), from the review page. The first
-    question forks it, so the session itself is never changed; later ones continue the fork. With `n`, the turn is
-    kept in that review's chat; with `fid`, it is about that one finding and kept in the finding's chat. The review
-    itself doesn't change (only its own session's answers do that)."""
-    import subprocess
-    if not str(question or "").strip():
-        raise ReviewError("ask something")
-    if not C.which("claude"):
-        raise ReviewError("Claude Code (`claude`) is not on PATH")
-    s = _session_about(repo, number, str(sid or ""))
-    if not s["cwd"] or not os.path.isdir(s["cwd"]):
-        raise ReviewError("that session's folder (%s) isn't on this computer any more" % (s["cwd"] or "unknown"))
-    q = _text(question, "question", 4000)
-    rec = need(repo, number)
-    fork = (rec.get("session_forks") or {}).get(s["id"])
-    about = q
-    if fid:
-        f = find(rec, fid)
-        about = ASK_FINDING % (fid, f.get("title") or f.get("issue") or "", f.get("file") or "the PR as a whole",
-                               f.get("line") or "-", f.get("issue") or "", f.get("fix") or "", q)
-    prompt, images = _chat_prompt(ASK_SESSION % (ref(repo, number), about), q)
-    cmd = ["claude", "-p", prompt, "--resume", fork or s["id"]] + ([] if fork else ["--fork-session"]) + [
-        "--output-format", "json", "--permission-mode", "dontAsk", "--allowedTools", ",".join(SESSION_TOOLS),
-        "--disallowedTools", ",".join(RUN_DENY)] + _model() + _direct()
-    cp = subprocess.run(cmd, cwd=s["cwd"], capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL)
-    try:
-        out = json.loads(cp.stdout)
-    except ValueError:
-        out = {}
-    text = (out.get("result") or "").strip()
-    if not text:
-        raise ReviewError("the session didn't answer: %s" % (cp.stderr or cp.stdout or "")[-300:].strip())
-    rec = need(repo, number)
-    if out.get("session_id"):
-        rec.setdefault("session_forks", {})[s["id"]] = out["session_id"]
-    turn = {"q": q, "a": text, "at": C.now_iso(), "session": s["title"], "session_id": s["id"]}
-    p = next((x for x in rec["passes"] if x["n"] == int(n)), None) if n and not fid else None
-    if fid:
-        find(rec, fid).setdefault("chat", []).append(turn)
-    elif p:
-        p.setdefault("chat", []).append(turn)
-    store(rec)
-    return turn
+               "they are. Don't change any files, commit or push, and don't change the review.\n\n%s")
 
 
 CONVERT = ("Below is a code review someone did in a Claude Code session. Turn it into this JSON and reply with only "

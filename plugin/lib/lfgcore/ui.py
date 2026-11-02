@@ -282,11 +282,15 @@ def api(view, q):
             return R.notices(int(_arg(q, "since") or 0))
         except ValueError:
             return {"last": 0, "items": []}
-    if view in ("chatfile", "chatsession"):  # a review chat's attachment to look at; a session's recent talk
-        from . import review as R
+    if view in ("chatfile", "chatsession", "review_chat"):  # a review chat's attachment; a session's recent talk; where
+        from . import review as R  # the chat on a PR's page is pointed
         try:
             if view == "chatfile":
                 return R.attachment_preview(_arg(q, "path"))
+            if view == "review_chat":
+                from . import reviewchat as RC
+                repo, number = R.parse_pr(_arg(q, "pr"))
+                return RC.target(repo, number, _arg(q, "pass"), _arg(q, "session"))
             return R.session_history(_arg(q, "id"), limit=int(_arg(q, "limit") or 20))
         except (R.ReviewError, ValueError) as e:
             return {"available": False, "why": str(e)}
@@ -360,7 +364,8 @@ def api(view, q):
     if view in ("studio", "studio_session"):  # Studio: Claude Code sessions run from the dashboard
         from . import claudesess as CS
         root = dash.repo_root(rid)
-        return CS.listing(rid, root) if view == "studio" else CS.detail(rid, root, _arg(q, "id"))
+        return CS.listing(rid, root) if view == "studio" else \
+            CS.detail(rid, root, _arg(q, "id"), limit=int(_arg(q, "limit") or 0) or None)
     if view == "studio_changes":  # every file a session changed, as diffs, from its transcript
         from . import claudesess as CS
         return CS.changes(rid, dash.repo_root(rid), _arg(q, "id"))
@@ -583,7 +588,7 @@ def save(what, body):
                             fork=body.get("fork", True) is not False)
         except (SR.RunError, ValueError, TypeError) as e:
             raise S.Invalid(str(e)) from None
-    if what.startswith("review_") or what == "chat_file":
+    if what.startswith("review_"):
         return review_action(what, body)
     from . import control as K
     actions = {
@@ -607,8 +612,6 @@ def review_action(what, body):
     `lfg review post` away from agents."""
     from . import review as R
     try:
-        if what == "chat_file":
-            return R.save_attachment(body.get("data"), str(body.get("type") or ""), body.get("name"))
         if what == "review_sources":
             return R.set_sources(body.get("sources"))
         if what == "review_model":
@@ -650,19 +653,22 @@ def review_action(what, body):
             return R.cancel(repo, number)
         if what == "review_discard":
             return R.discard(repo, number, int(body.get("pass") or 0))
-        if what == "review_answer":
-            return R.answer(repo, number, body.get("pass"), str(body.get("id") or ""), body.get("answer"))
+        if what in ("review_answer", "review_chat_say"):  # the review page's chat is Studio's, bound to the review
+            from . import reviewchat as RC
+            rid = _rid({"repo": [str(body.get("repo") or "")]})
+            root = R.local_checkout(repo) or (dash.repo_root(rid) if rid else None)
+            if not root:
+                raise S.Invalid("LFG doesn't know where %s is on disk" % repo)
+            if what == "review_answer":
+                return RC.answer(rid, root, repo, number, body.get("pass"), str(body.get("id") or ""),
+                                 body.get("answer"))
+            return RC.say(rid, root, repo, number, body.get("pass"), body.get("text"),
+                          fid=str(body.get("finding") or ""), qid=str(body.get("question") or ""),
+                          sid=str(body.get("session") or ""), attachments=body.get("attachments"))
         if what == "review_reply":
             return R.post_reply(repo, number, str(body.get("id") or ""), body.get("body"))
-        if what == "review_ask":
-            return R.ask(repo, number, body.get("pass"), body.get("question"))
         if what == "review_fix":
             return R.fix_start(repo, number)
-        if what == "review_ask_session":
-            return R.ask_session(repo, number, str(body.get("session") or ""), body.get("question"),
-                                 n=body.get("pass") or None, fid=str(body.get("id") or "") or None)
-        if what == "review_discuss":
-            return R.discuss(repo, number, str(body.get("id") or ""), body.get("question"))
         if what == "review_rewrite":
             return R.rewrite(repo, number, str(body.get("id") or ""), body.get("instruction"))
         if what == "review_sessions":
@@ -905,7 +911,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if u.path not in NO_KEY and not S.key_ok(self.headers.get("X-LFG-Key")):
             return no(403, "editing is locked: run `lfg ui --unlock` in your terminal")
         size = int(self.headers.get("Content-Length") or 0)
-        limit = MAX_UPLOAD if u.path in ("/api/save/chat_file", "/api/save/sess_upload") else MAX_BODY
+        limit = MAX_UPLOAD if u.path == "/api/save/sess_upload" else MAX_BODY
         if not (self.headers.get("Content-Type") or "").startswith("application/json") or not 0 < size <= limit:
             return no(400, "expected a JSON body")
         try:

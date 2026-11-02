@@ -13,6 +13,7 @@ permission prompts) comes from the running process. Nothing here leaves the comp
 calls. Author: Varun Singh."""
 import base64
 import binascii
+import collections
 import glob
 import json
 import os
@@ -72,6 +73,7 @@ def transcript(sid, cwd=None):
 
 # ---------------------------------------------------------------- reading a transcript
 
+REVIEW_NOTE = re.compile(r"\s*<lfg-review\b[^>]*>[\s\S]*?</lfg-review>\s*")  # what a review's chat adds to a message
 COMMAND = re.compile(r"<command-name>/?([^<]+)</command-name>")
 ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 NOISE = re.compile(r"^\s*<(local-command-stdout|local-command-caveat|system-reminder|bash-input|bash-stdout|"
@@ -206,14 +208,15 @@ def read(path, limit=MAX_ITEMS):
                     continue
                 items.append({"k": "me", "text": text[:20000], "ts": ts, "u": ev.get("uuid"), "p": ev.get("parentUuid"),
                               "images": images})
-                meta["first"] = meta["first"] or text or "(image)"
+                meta["first"] = meta["first"] or REVIEW_NOTE.sub("", text) or "(image)"
             else:
                 meta["model"] = msg.get("model") if msg.get("model") not in (None, "<synthetic>") else meta["model"]
                 for c in msg.get("content") or []:
                     if not isinstance(c, dict):
                         continue
                     if c.get("type") == "text" and c.get("text", "").strip():
-                        items.append({"k": "ai", "text": c["text"], "ts": ts, "u": ev.get("uuid")})
+                        items.append({"k": "ai", "text": c["text"], "ts": ts, "u": ev.get("uuid"),
+                                      "mid": msg.get("id")})
                     elif c.get("type") == "tool_use":
                         it = {"k": "tool", "id": c.get("id"), "name": c.get("name"), "input": c.get("input") or {},
                               "ts": ts}
@@ -251,6 +254,7 @@ def read(path, limit=MAX_ITEMS):
         if a["status"] == "running" and a.get("task") and a["task"] in stops:
             a["status"] = "stopped"
     meta["activity"] = list(acts.values())
+    meta["total"] = len(items)
     return items[-limit:], meta
 
 
@@ -482,11 +486,14 @@ def _one_line(text):
 class Live:
     """One running `claude -p` in stream-json mode, kept open by `lfg ui` between your messages."""
 
-    def __init__(self, sid, rid, root, model, mode, title, resume, fork_of=None, fork_at=None):
+    def __init__(self, sid, rid, root, model, mode, title, resume, fork_of=None, fork_at=None, review=None):
         self.sid, self.rid, self.root, self.model, self.mode, self.title = sid, rid, root, model, mode, title
         self.state, self.pending, self.allowed = "starting", {}, set()
         self.started, self.cost, self.error, self.queued = C.now_iso(), None, None, []
         self._branch, self._replies = (0, ""), {}
+        # a PR review this session is the chat of ({"pr", "n"}): its messages carry the review (reviewchat.py), and
+        # each turn's reply is read for changes to it when the turn ends. _turns: what each sent message was, in order.
+        self.review, self._turns, self._qmeta, self._last = review, collections.deque(), [], (None, "")
         from . import prreview as PR
         env, self.via = PR._child_env(root)
         env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "1"  # so Rewind can put files back, as in the terminal
@@ -498,6 +505,9 @@ class Live:
         argv = [C.which("claude") or "claude", "-p", "--input-format", "stream-json", "--output-format",
                 "stream-json", "--verbose", "--permission-prompt-tool", "stdio", "--permission-mode", mode] + \
             (["--model", model] if model else []) + where
+        if review:  # a review's chat may look at anything, but never write to GitHub
+            from . import review as RV
+            argv += ["--disallowedTools", ",".join(RV.RUN_DENY)]
         self.log = open(os.path.join(C.ensure_dir(C.lfg_path("sessions")), sid + ".stderr"), "ab")
         self.proc = subprocess.Popen(argv, cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self.log, start_new_session=True, close_fds=True)
@@ -542,7 +552,14 @@ class Live:
                     self.state = "idle"
             elif t == "assistant" and self.state in ("starting", "idle"):
                 self.state = "working"
-            elif t == "result":
+            if t == "assistant" and not ev.get("parent_tool_use_id"):  # the last thing said this turn, and its id
+                msg = ev.get("message") or {}
+                said = "".join(c.get("text") or "" for c in msg.get("content") or [] if isinstance(c, dict)
+                               and c.get("type") == "text")
+                if said.strip():
+                    self._last = (msg.get("id"), said)
+            if t == "result":
+                self._turn_done(ev)
                 self.cost = ev.get("total_cost_usd") if ev.get("total_cost_usd") is not None else self.cost
                 if ev.get("is_error"):
                     self.error = str(ev.get("result") or ev.get("subtype") or "the turn failed")[:400]
@@ -564,6 +581,20 @@ class Live:
             self.proc.wait(timeout=5)  # reap it
         except subprocess.TimeoutExpired:
             pass
+
+    def _turn_done(self, ev):
+        """A turn ended: when it answered a message about a review, apply what the reply settled to the review, before
+        the session shows as idle, so the page that sees it idle also sees the changes."""
+        turn = self._turns.popleft() if self._turns else None
+        mid, said = self._last
+        self._last = (None, "")
+        if not (turn and self.review and said and not ev.get("is_error")):
+            return
+        try:
+            from . import reviewchat as RC
+            RC.finish(self, turn, mid, said)
+        except Exception as e:  # a review that can't be updated must not take the session down with it
+            self.error = "the review couldn't be updated from that reply: %s" % str(e)[:200]
 
     def _ask(self, ev):
         req = ev.get("request") or {}
@@ -653,15 +684,18 @@ class Live:
             raise Invalid(str(r.get("error") or "Claude Code said no")[:300])
         return r.get("response") or {}
 
-    def say(self, text, attachments=None):
+    def say(self, text, attachments=None, turn=None):
+        """`turn`: what a message about a review is ({"pr", "n", "fid", "qid", "q", "edits"}), kept until its reply."""
         content = _content(text, attachments)
         if self.state in ("working", "needs-you") or self.pending:
             self.queued.append(content)  # Claude is mid-turn or waiting on you: it goes in when this turn ends
+            self._qmeta.append(turn)
             return "queued"
         self.error = None
         if not self._write({"type": "user", "message": {"role": "user", "content": content}}):
             self.state = "ended"
             raise Invalid("this session has ended; continue it to start it again")
+        self._turns.append(turn)
         self.state = "working"
         return "sent"
 
@@ -715,11 +749,13 @@ class Live:
 
     def _send_queued(self, content):
         self.error = None
+        turn = self._qmeta.pop(0) if self._qmeta else None
         if self._write({"type": "user", "message": {"role": "user", "content": content}}):
+            self._turns.append(turn)
             self.state = "working"
 
     def interrupt(self):
-        self.queued = []
+        self.queued, self._qmeta = [], []
         self._write({"type": "control_request", "request_id": "stop-" + uuid.uuid4().hex[:8],
                      "request": {"subtype": "interrupt"}})
 
@@ -868,12 +904,11 @@ def start(rid, root, text, model=None, mode="default", title="", where=None, att
     return {"id": sid}
 
 
-def fork(rid, root, sid, at, text, attachments=None):
-    """Claude Code's fork: a new session with this one's conversation (up to line `at`, else all of it), carried on
-    with `text`. The original stays as it was. It works in the same folder."""
+def fork_open(rid, root, sid, at=None, review=None):
+    """Claude Code's fork, without a first message: a new session with this one's conversation (up to line `at`, else
+    all of it). The original stays as it was. It works in the same folder. Returns the new id."""
     if not re.match(r"^[0-9a-f-]{36}$", str(sid or "")) or (at and not re.match(r"^[0-9a-f-]{36}$", str(at))):
         raise Invalid("not a session id")
-    text = _check(text, attachments)
     path = transcript(sid, root)
     if not path:
         raise Invalid("that session's transcript is gone")
@@ -885,20 +920,45 @@ def fork(rid, root, sid, at, text, attachments=None):
     mode = mine.get("mode") or "default"
     with _LOCK:
         live = _LIVE[new] = Live(new, rid, cwd, mine.get("model"), mode, title, resume=False, fork_of=sid,
-                                 fork_at=at or None)
+                                 fork_at=at or None, review=review)
     _remember(new, lfg=True, rid=rid, title=title, mode=mode, created=live.started, root=root, cwd=cwd,
-              forked_from=sid)
-    live.say(text, attachments)
+              forked_from=sid, **({"review": review} if review else {}))
+    return new
+
+
+def fork(rid, root, sid, at, text, attachments=None):
+    """A fork (see fork_open), carried on with `text`."""
+    text = _check(text, attachments)
+    new = fork_open(rid, root, sid, at)
+    live(new).say(text, attachments)
     return {"id": new}
 
 
-def resume(rid, root, sid):
-    """Continue a saved session (from the terminal, the desktop app or an earlier LFG session) here."""
+def create(rid, root, title, review=None):
+    """A new, empty session, ready for its first message (the chat of a review that has no session of its own)."""
+    if not root or not os.path.isdir(root):
+        raise Invalid("LFG doesn't know where this project is on disk")
+    if not C.which("claude"):
+        raise Invalid("Claude Code (claude) isn't on PATH")
+    sid, title = str(uuid.uuid4()), _one_line(title or "New session")[:90]
+    with _LOCK:
+        live = _LIVE[sid] = Live(sid, rid, root, None, "default", title, resume=False, review=review)
+    _remember(sid, lfg=True, rid=rid, title=title, mode="default", created=live.started, root=root, cwd=root,
+              **({"review": review} if review else {}))
+    return sid
+
+
+def resume(rid, root, sid, review=None):
+    """Continue a saved session (from the terminal, the desktop app or an earlier LFG session) here. `review`: make
+    it the chat of that PR review ({"pr", "n"}); a session that already is one stays so."""
     if not re.match(r"^[0-9a-f-]{36}$", str(sid or "")):
         raise Invalid("not a session id")
     with _LOCK:
         live = _LIVE.get(sid)
         if live and live.state != "ended":
+            if review:
+                live.review = review
+                _remember(sid, review=review)
             return {"id": sid, "live": True}
         path = transcript(sid, root)
         if not path:
@@ -906,9 +966,11 @@ def resume(rid, root, sid):
         _items, meta = read(path, limit=1)
         cwd = meta["cwd"] if meta["cwd"] and os.path.isdir(meta["cwd"]) else root
         mine = _index().get(sid) or {}
+        review = review or mine.get("review")
         _LIVE[sid] = Live(sid, rid, cwd, mine.get("model"), mine.get("mode") or "default",
-                          mine.get("title") or meta["title"] or _one_line(meta["first"]) or "Session", resume=True)
-    _remember(sid, lfg=True, rid=rid, resumed=C.now_iso())
+                          mine.get("title") or meta["title"] or _one_line(meta["first"]) or "Session", resume=True,
+                          review=review)
+    _remember(sid, lfg=True, rid=rid, resumed=C.now_iso(), **({"review": review} if review else {}))
     return {"id": sid, "live": True}
 
 
@@ -919,14 +981,47 @@ def live(sid):
     return l_
 
 
-def detail(rid, root, sid):
-    """One session: what was said and done (from its transcript), plus its live state and open permission prompts."""
+REVIEW_BLOCK = re.compile(r"```json\s*\{[\s\S]*?\}\s*```\s*$")
+
+
+def add_chips(sid, mid, changed):
+    """What the reply with message id `mid` changed in the review this session is the chat of, kept by that id."""
+    with _LOCK:
+        d = _index()
+        mine = dict(d.get(sid) or {})
+        mine["chips"] = dict(mine.get("chips") or {}, **{mid: changed})
+        d[sid] = mine
+        C.ensure_dir(os.path.dirname(_index_path()))
+        C.write_json(_index_path(), d)
+
+
+def _review_items(items, chips):
+    """In a review's chat, Claude's closing ```json block (the changes LFG applied) isn't shown: its replies show what
+    they changed as chips instead."""
+    out = []
+    for it in items:
+        if it.get("k") == "ai":
+            shown = REVIEW_BLOCK.sub("", it["text"]).strip() if '"changes"' in it["text"] or '"new"' in it["text"] \
+                else it["text"]
+            it = dict(it, text=shown, **({"changed": chips[it["mid"]]} if chips.get(it.get("mid")) else {}))
+            if not shown and not it.get("changed"):
+                continue
+        out.append(it)
+    return out
+
+
+def detail(rid, root, sid, limit=None):
+    """One session: what was said and done (from its transcript), plus its live state and open permission prompts.
+    `limit`: only the last that many items (a review's chat shows the recent part; `earlier` says how many it left)."""
     if not re.match(r"^[0-9a-f-]{36}$", str(sid or "")):
         return {"available": False, "why": "not a session id"}
     l_ = _LIVE.get(sid)
     path = transcript(sid, l_.root if l_ else root)
-    items, meta = read(path)
+    items, meta = read(path, limit=max(1, min(int(limit), MAX_ITEMS)) if limit else MAX_ITEMS)
     mine = _index().get(sid) or {}
+    earlier = max(0, meta.get("total", 0) - len(items))
+    if mine.get("review") or mine.get("chips"):
+        items = _review_items(items, mine.get("chips") or {})
     from . import headroom as H
     via = l_.via if l_ else ("headroom" if H.base_url(root, use_env=False).rstrip("/") == H.local_url() else "direct")
     return {"available": True, "id": sid, "items": items, "title": mine.get("title") or meta["title"] or
@@ -937,8 +1032,9 @@ def detail(rid, root, sid):
             {"claude-desktop": "desktop", "cli": "terminal"}.get(meta["entry"], "background"),
             "state": l_.state if l_ else "saved", "pending": [{k: v for k, v in p.items() if k != "raw"}
                                                               for p in (l_.pending.values() if l_ else [])],
-            "queued": [_text_of(q) if isinstance(q, list) else q for q in l_.queued] if l_ else [],
+            "queued": [REVIEW_NOTE.sub("", _text_of(q) if isinstance(q, list) else q) for q in l_.queued] if l_ else [],
             "error": l_.error if l_ else None, "forked_from": mine.get("forked_from"),
+            "review": mine.get("review"), "earlier": earlier,
             "cost": _cost(path) if path else None, "additions": meta.get("additions", 0),
             "deletions": meta.get("deletions", 0),
             "skills": meta["skills"], "via": via, "updated": meta["updated"], "files": meta["files"],

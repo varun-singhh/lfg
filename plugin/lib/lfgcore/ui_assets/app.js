@@ -4101,7 +4101,7 @@ function questionsBox(pr, p, unlocked) {
     const said = q.answer || waiting;
     return `<div class="pr-question" id="q-${esc(q.id)}" data-ask="${esc(q.ask)}"><div class="pr-ask">${q.costs ? `<span class="pts q-pts ${q.answer ? "off" : ""}" title="${q.answer ? `Cost ${q.costs} points until you answered it` : `This question costs ${q.costs} points until it's answered: it could become a finding that holds the merge back`}">−${q.costs}</span>` : ""}<button class="btn tiny pr-q-copy" data-copy="${esc(q.ask + (q.why ? "\n\nWhy it matters: " + q.why : ""))}" title="Copy the question, and why it matters">Copy</button>${txt(q.ask)}${q.why ? `<div class="muted small">${txt(q.why)}</div>` : ""}</div>${said
       ? `<div class="pr-chat-thread">${chatTurn({ q: said, a: waiting ? null : q.reply || (q.answer ? "" : null), changed: q.changed }, pr).replace('<div class="bubble md"></div>', '<div class="bubble md muted">Sent to the review\'s chat. Answers from before this update show their reply there.</div>')}</div>${q.answer ? rememberRow(pr, p.n, q, unlocked) : ""}`
-      : `<div class="pr-compose"><textarea data-grow rows="2" data-pr-answer placeholder="Your answer" ${unlocked ? "" : "disabled"}></textarea><button class="btn small primary" data-pr-answergo='${esc(JSON.stringify([pr, p.n, q.id]))}' ${unlocked ? "" : "disabled"}>Answer</button>${((state.prSessions || {})[pr] || []).length ? `<button class="btn small" data-pr-qsession='${esc(JSON.stringify([pr, q.id]))}' ${unlocked ? "" : "disabled"} title="Ask a session about this PR, such as the one where you built it. Its answer goes in the box for you to check and send">Ask a session…</button>` : ""}</div>`}</div>`;
+      : `<div class="pr-compose"><textarea data-grow rows="2" data-pr-answer placeholder="Your answer" ${unlocked ? "" : "disabled"}></textarea><button class="btn small primary" data-pr-answergo='${esc(JSON.stringify([pr, p.n, q.id]))}' ${unlocked ? "" : "disabled"}>Answer</button>${((state.prSessions || {})[pr] || []).length ? `<button class="btn small" data-pr-qsession='${esc(JSON.stringify([pr, q.id]))}' ${unlocked ? "" : "disabled"} title="Ask a session about this PR, such as the one where you built it. Its answer comes back in the chat">Ask a session…</button>` : ""}</div>`}</div>`;
   }).join("")}</div>`;
 }
 /* The review's own conversation, beside it: ask, push back, or ask for changes, and the review changes to match. */
@@ -4193,25 +4193,24 @@ const chatMode = () => localStorage.getItem("lfg.chat") || "side";
 function talkPane(pr, p, unlocked, byId) {
   state.lastTalk = { pr, p, unlocked, byId };  // what a Discuss redraws from at once, before the page catches up
   const about = (state.chatAbout || {})[pr], f = about && byId[about];
-  const key = f ? `f:${pr}:${f.id}` : `r:${pr}:${p.n}`;
-  const turns = [...(f ? f.chat || [] : p.chat || [])], waiting = (state.chatPending || {})[key];
-  const toSess = ((state.prSessions || {})[pr] || []).find(x => x.id === (state.chatTo || {})[pr]);
-  if (waiting) turns.push({ q: waiting, a: null, session: toSess ? toSess.title : "" });
-  turns.push(...((state.chatQueue || {})[key] || []).map(q => ({ q, a: null, queued: true })));
   const mode = chatMode(), count = (p.chat || []).length;
   const hint = f ? `Ask about ${f.id}, push back, or say it isn't needed. If Claude agrees after checking the code, it drops the finding; if not, it says why it still matters.`
     : `Ask why something is rated the way it is, push back, or ask for a change: "drop 1.3, it's handled in the caller", "make 1.1 softer". The review changes to match.`;
-  const icon = d => `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
-  return `<button class="chat-fab" data-chat-mode="side" ${mode === "hidden" ? "" : "hidden"}>${icon("M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z")}Chat${count ? `<span class="n">${count}</span>` : ""}</button>
+  const ico = d => `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
+  const old = (f ? f.chat || [] : p.chat || []).filter(x => !x.studio);  // said before this chat became Studio's: kept, read only
+  const askAgain = f && f.status === "drop" && !f.passed_on && !f.comment_id && (f.chat || []).length
+    ? `<div class="pr-remember chat-save"><div class="row"><span class="muted small">Dropped. Should reviews stop raising it?</span><button class="btn small" data-pr-passoffer='${esc(JSON.stringify([pr, f.id]))}' ${unlocked ? "" : "disabled"} title="Tell reviews not to flag this again: on this PR, on every PR in this repo, or in every repo">Don't flag again…</button></div></div>` : "";
+  return `<button class="chat-fab" data-chat-mode="side" ${mode === "hidden" ? "" : "hidden"}>${ico("M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z")}Chat${count ? `<span class="n">${count}</span>` : ""}</button>
   <aside class="pr-talk ${mode}" ${mode === "hidden" ? "hidden" : ""} data-chat="${esc(JSON.stringify([pr, p.n, f ? f.id : ""]))}">
-    <div class="pr-talk-h"><b>Chat</b>${((state.prSessions || {})[pr] || []).length ? `<select class="chat-to" data-chat-to="${esc(pr)}" title="Who your messages go to, about the whole review or the finding you're discussing: this review's session, which can change the review, or one of your sessions about this PR, which only answers"><option value="">with the review</option>${state.prSessions[pr].map(x => `<option value="${esc(x.id)}" ${(state.chatTo || {})[pr] === x.id ? "selected" : ""}>with ${esc(x.title.slice(0, 40))}</option>`).join("")}</select>` : ""}<span class="grow"></span>
-      <button class="icon-btn" data-chat-mode="${mode === "wide" ? "side" : "wide"}" title="${mode === "wide" ? "Back to the side" : "Make it bigger"}">${icon(mode === "wide" ? "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" : "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7")}</button>
-      <button class="icon-btn" data-chat-mode="hidden" title="Hide the chat">${icon("M18 6 6 18M6 6l12 12")}</button></div>
+    <div class="pr-talk-h"><b>Chat</b><select class="chat-to" data-chat-to="${esc(pr)}" title="The session your messages go to. It opens on the session that did this review, which can change the review. Any other session only answers; a terminal session is copied first, so the terminal's stays as it was."></select><span class="rv-ctx"></span><span class="grow"></span><a class="icon-btn rv-open" href="#studio" title="Open this session in Studio" hidden>${ico("M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5")}</a>
+      <button class="icon-btn" data-chat-mode="${mode === "wide" ? "side" : "wide"}" title="${mode === "wide" ? "Back to the side" : "Make it bigger"}">${ico(mode === "wide" ? "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" : "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7")}</button>
+      <button class="icon-btn" data-chat-mode="hidden" title="Hide the chat">${ico("M18 6 6 18M6 6l12 12")}</button></div>
     <div class="chat-about"><button class="chip ${f ? "" : "on"}" data-chat-about='${esc(JSON.stringify([pr, ""]))}'>Whole review${count ? ` · ${count}` : ""}</button>${f ? `<span class="chip on" title="${esc(f.title || f.issue || "")}">${esc(f.id)} · ${esc((f.title || f.issue || "").slice(0, 40))}${(f.title || f.issue || "").length > 40 ? "…" : ""}<a href="#" data-chat-about='${esc(JSON.stringify([pr, ""]))}' aria-label="Back to the whole review">×</a></span>` : ""}</div>
-    <div class="pr-thread">${toSess ? `<details class="chat-hist" open data-chat-hist="${esc(toSess.id)}"><summary>Earlier in <b>${esc(toSess.title.slice(0, 60))}</b></summary><div class="loading-inline">Loading the session…</div></details>` : ""}${turns.length ? turns.map(x => chatTurn(x, pr)).join("") : `<div class="chat-empty">${esc(hint)}</div>`}</div>
-    ${f ? findingSaveRow(pr, f, unlocked) : ""}
-    <div class="pr-compose big"><div class="ss-att" data-chat-atts hidden></div><textarea data-grow rows="3" data-pr-chat placeholder="${f ? `Say something about ${esc(f.id)}…` : "Ask, push back, or ask for a change. Start with / for a command or skill."}" ${unlocked ? "" : "disabled"}></textarea>
-      <div class="pr-compose-bar"><button type="button" class="icon-btn ss-clip" data-chat-attach title="Attach files or images. You can also drop them here or paste them." ${unlocked ? "" : "disabled"}>${icon("clip")}</button><input type="file" data-chat-file multiple hidden><span class="muted small grow">Enter to send · Shift+Enter for a new line · drop, paste or attach any file${waiting ? " · more messages queue up" : ""}</span><button class="btn small primary" data-pr-chatgo ${unlocked ? "" : "disabled"}>${waiting ? "Queue" : "Send"}</button></div></div></aside>`;
+    ${old.length ? `<details class="chat-hist chat-old"><summary>${plural(old.length, "earlier message")} from before the chat moved into Studio</summary>${old.map(x => chatTurn(x, pr)).join("")}</details>` : ""}
+    <div class="pr-thread ss-conv rv-conv" data-hint="${esc(hint)}"><div class="loading-inline">Opening the chat…</div></div>
+    ${f ? findingSaveRow(pr, f, unlocked) : ""}${askAgain}
+    <div class="pr-compose big" id="rv-comp"><div class="ss-att" id="rv-att" hidden></div><textarea data-grow rows="3" data-pr-chat placeholder="${f ? `Say something about ${esc(f.id)}…` : "Ask, push back, or ask for a change. Start with / for a command or skill."}" ${unlocked ? "" : "disabled"}></textarea>
+      <div class="pr-compose-bar"><button type="button" class="icon-btn ss-clip" data-rv-attach title="Attach files or images. You can also drop them here or paste them." ${unlocked ? "" : "disabled"}>${icon("clip")}</button><input type="file" data-rv-file multiple hidden><span class="muted small grow">Enter to send · Shift+Enter for a new line · drop, paste or attach any file</span><button class="btn small primary" data-pr-chatgo ${unlocked ? "" : "disabled"}>Send</button></div></div></aside>`;
 }
 /* Copy one finding or earlier comment: short for a person, everything an agent needs to act on it. */
 const copyBtns = (person, agent) => `<button class="btn small" data-copy="${esc(person)}" title="What's wrong, where, and the comment: to paste to a person">Copy</button><button class="btn small" data-copy="${esc(agent)}" title="Everything needed to act on it: file and line, issue, fix, the evidence, the comment and its status">Copy for an agent</button>`;
@@ -4495,84 +4494,119 @@ function chatRedraw(pr) {
   $("[data-pr-chat]")?.focus();
   softRoute();
 }
+/* Who the chat can talk to: the review's own session, sessions about this PR, then your Studio sessions and your
+   terminal and desktop ones. Fetched once a minute; the page shows the select straight away from what it has. */
+async function rvSessions(pr) {
+  const c = state.rvList;
+  if (c && Date.now() - c.at < 60000) return c.list;
+  const d = await api("studio").catch(() => ({ sessions: [] }));
+  state.rvList = { at: Date.now(), list: (d.sessions || []).filter(x => x.id) };
+  return state.rvList.list;
+}
+function rvOptions(pr, to, own, list) {
+  const about = (state.prSessions || {})[pr] || [], seen = new Set([own]);
+  const opt = (id, label) => { seen.add(id); return `<option value="${esc(id)}" ${to === id ? "selected" : ""}>${esc(label.slice(0, 48))}</option>`; };
+  const aboutRows = about.filter(x => !seen.has(x.id)).map(x => opt(x.id, x.title));
+  const mine = list.filter(x => !seen.has(x.id) && x.source === "lfg").slice(0, 15).map(x => opt(x.id, x.title));
+  const other = list.filter(x => !seen.has(x.id) && x.source !== "lfg").slice(0, 15).map(x => opt(x.id, `${x.title} (${x.source === "terminal" ? "terminal" : "other"}, copied)`));
+  const group = (name, rows) => rows.length ? `<optgroup label="${name}">${rows.join("")}</optgroup>` : "";
+  return `<option value="" ${!to || to === own ? "selected" : ""}>${own ? "The review's session" : "A new chat"}</option>${group("About this PR", aboutRows)}${group("Your Studio sessions", mine)}${group("Terminal and other sessions", other)}`;
+}
+/* The chat on a review's page is Studio's chat, bound to the review: the session's own conversation (replies, tool
+   steps, permission prompts, queued messages, context) with Whole review / one finding on top, and what each reply
+   changed as chips. Messages go to the server wrapped with the review; the reply streams back. */
 function wireChatPane(root) {
   $$("[data-chat-to]", root).forEach(sel => sel.onchange = () => { (state.chatTo || (state.chatTo = {}))[sel.dataset.chatTo] = sel.value; chatRedraw(sel.dataset.chatTo); });
-  $$("[data-chat-file]", root).forEach(b => b.onclick = () => openChatFile(b.dataset.chatFile));
-  $$("[data-chat-hist]", root).forEach(async box => {
-    const d = await api("chatsession", { id: box.dataset.chatHist, limit: 20 }).catch(e => ({ available: false, why: e.message }));
-    const body = box.querySelector(".loading-inline");
-    if (!body) return;
-    const who = box.querySelector("b").textContent;
-    body.outerHTML = d.available === false ? `<p class="muted small">${fmtWhy(d.why)}</p>`
-      : `${d.more ? `<p class="muted small">${plural(d.more, "earlier exchange")} not shown.</p>` : ""}${d.turns.map(t => `<div class="msg you"><div class="bubble">${txt(t.q.slice(0, 4000))}${t.images ? `<div class="muted small">${plural(t.images, "image")}</div>` : ""}</div>${t.at ? `<div class="msg-at">${ago(t.at)}</div>` : ""}</div>${t.a ? `<div class="msg claude"><div class="who">Session: ${esc(who)}</div><div class="bubble md">${md(t.a.slice(0, 12000))}</div></div>` : ""}`).join("") || '<p class="muted small">Nothing said in it yet.</p>'}`;
-    const thread = box.closest(".pr-thread"); if (thread) thread.scrollTop = thread.scrollHeight;
-  });
   $$("[data-chat-about]", root).forEach(b => b.onclick = e => {
     e.preventDefault();
     const [pr, id] = JSON.parse(b.dataset.chatAbout);
     (state.chatAbout || (state.chatAbout = {}))[pr] = id;
     chatRedraw(pr);
   });
+  clearTimeout(state.rvTimer);
   const pane = $(".pr-talk", root);
   if (!pane) return;
-  const thread = $(".pr-thread", pane);
-  if (thread && !thread.dataset.scrolled) { thread.scrollTop = thread.scrollHeight; }
-  const [pr, n, fid] = JSON.parse(pane.dataset.chat), input = $("[data-pr-chat]", pane), b = $("[data-pr-chatgo]", pane);
-  const key = fid ? `f:${pr}:${fid}` : `r:${pr}:${n}`;
-  const atts = (state.chatAtts || (state.chatAtts = {}))[key] || (state.chatAtts[key] = []);
-  const attBox = $("[data-chat-atts]", pane);
-  const drawAtts = () => {
-    attBox.hidden = !atts.length;
-    attBox.innerHTML = atts.map((a, i) => `<span class="ss-chip${a.path ? "" : " up"}" title="${esc(a.name)}${a.path ? "" : " (adding…)"}">${a.thumb ? `<img src="${a.thumb}" alt="">` : icon("docs")}<span>${esc(a.name)}</span><button type="button" data-att-x="${i}" aria-label="Remove ${esc(a.name)}">&times;</button></span>`).join("");
-    $$("[data-att-x]", attBox).forEach(x => x.onclick = () => { atts.splice(+x.dataset.attX, 1); drawAtts(); });
+  const [pr, n, fid] = JSON.parse(pane.dataset.chat), conv = $(".rv-conv", pane), input = $("[data-pr-chat]", pane), b = $("[data-pr-chatgo]", pane);
+  const rv = (state.rv || (state.rv = {}))[pr] || (state.rv[pr] = {}), to = () => (state.chatTo || {})[pr] || "";
+  const hint = conv.dataset.hint, sel = $("[data-chat-to]", pane), ctxBox = $(".rv-ctx", pane), open = $(".rv-open", pane);
+  const A = ssAttach({ comp: $("#rv-comp", pane), ta: input, box: $("#rv-att", pane), file: $("[data-rv-file]", pane), btn: $("[data-rv-attach]", pane), say: m => prefToast(m, true) });
+  const fill = () => { sel.innerHTML = rvOptions(pr, to(), rv.own, state.rvList ? state.rvList.list : []); };
+  fill();
+  rvSessions(pr).then(() => { if (document.body.contains(sel)) fill(); });
+  const atBottom = () => conv.scrollTop + conv.clientHeight >= conv.scrollHeight - 120;
+  const wired = () => {
+    const d = rv.d;
+    const wire = ssConvWirer({ conv, S: { id: d.id }, d, go: ssGo, refresh: () => poll(), follow: () => {}, rewound: () => {}, goto: id => {
+      const el = $(`#f-${CSS.escape(id)}`); if (!el) return;
+      el.scrollIntoView({ block: "center", behavior: "smooth" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1600);
+    } });
+    wire();
   };
-  drawAtts();
-  // any file: an image, a CSV, a document, code. Several at once say what went wrong in one message, not one each.
-  const attach = async list => {
-    const bad = [];
-    for (const file of Array.from(list || [])) {
-      if (atts.length >= 10) { bad.push("up to 10 files at a time"); break; }
-      const a = { name: file.name || "pasted-image.png" }; atts.push(a); drawAtts();
-      try {
-        const x = await ssPrepFile(file); a.thumb = x.thumb; drawAtts();
-        const d = await save("chat_file", { data: x.data, type: x.type, name: a.name });
-        if (!d.ok) throw new Error(d.why || "couldn't attach it");
-        Object.assign(a, { path: d.path, image: d.image });
-      } catch (e) { atts.splice(atts.indexOf(a), 1); bad.push(`${a.name}: ${e.message || e}`); }
-      drawAtts();
+  const draw = () => {
+    const d = rv.d, stick = !conv.dataset.drawn || atBottom();
+    conv.dataset.drawn = "1";
+    if (!d) {
+      conv.innerHTML = `<div class="chat-empty">${esc(hint)}</div>`;
+      if (rv.history) conv.innerHTML = `<details class="chat-hist" open><summary>Earlier in <b>${esc(rv.history.title)}</b></summary>${rv.history.html}</details>` + conv.innerHTML;
+    } else {
+      conv.innerHTML = `${d.earlier ? `<p class="muted small chat-more">${plural(d.earlier, "earlier message")} not shown. <a href="#studio/${esc(d.id)}">Open the whole session in Studio</a></p>` : ""}${(d.items || []).length || ssLive(d.state) || (d.queued || []).length ? "" : `<div class="chat-empty">${esc(hint)}</div>`}${ssConv(d, true)}`;
+      wired();
     }
-    if (bad.length) prefToast(bad.join(" · "), true);
+    if (stick) conv.scrollTop = conv.scrollHeight;
+    b.textContent = d && (d.state === "working" || d.state === "needs-you" || d.state === "starting") ? "Queue" : "Send";
+    if (open) { open.hidden = !d; if (d) open.href = `#studio/${d.id}`; }
+    if (ctxBox) ctxBox.innerHTML = d && ssLive(d.state) ? ssCtxHtml((state.ssCtx || {})[d.id]) : "";
   };
-  const fileIn = $("[data-chat-file]", pane);
-  $("[data-chat-attach]", pane).onclick = () => fileIn.click();
-  fileIn.onchange = () => { attach(fileIn.files); fileIn.value = ""; };
-  const files = e => [...(e.dataTransfer || {}).types || []].includes("Files");
-  pane.ondragover = e => { if (!files(e) || input.disabled) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; pane.classList.add("drop"); };
-  pane.ondragleave = e => { if (!pane.contains(e.relatedTarget)) pane.classList.remove("drop"); };
-  pane.ondrop = e => {
-    if (!files(e)) return;
-    e.preventDefault(); pane.classList.remove("drop");
-    if (!input.disabled) attach(e.dataTransfer.files);
+  const loadCtx = async () => {  // how full the session's context is, once Claude is idle
+    const d = rv.d;
+    if (!d || !ssLive(d.state) || d.state === "working") return;
+    const c = await api("studio_context", { id: d.id }).catch(() => null);
+    if (c && c.percent != null) { (state.ssCtx = state.ssCtx || {})[d.id] = c; if (ctxBox && document.body.contains(ctxBox)) ctxBox.innerHTML = ssCtxHtml(c); }
   };
-  input.onpaste = e => { const fs = [...(e.clipboardData || {}).files || []]; if (fs.length) { e.preventDefault(); attach(fs); } };
+  const BUSY = ["working", "starting", "needs-you"];
+  async function poll() {
+    clearTimeout(state.rvTimer);
+    if (!document.body.contains(conv) || !rv.sid) return;
+    const nd = await api("studio_session", { id: rv.sid, limit: 40 }).catch(() => null);
+    if (!nd || nd.available === false || !document.body.contains(conv)) return;
+    const was = rv.d, sig = d => JSON.stringify([d.items.length, d.state, (d.pending || []).length, (d.queued || []).length, d.error, (d.items[d.items.length - 1] || {}).result != null, d.items.map(x => x.changed ? 1 : 0).join("")]);
+    const changed = !was || was.id !== nd.id || sig(was) !== sig(nd);
+    rv.d = nd;
+    if (changed) draw();
+    if (was && BUSY.includes(was.state) && nd.state === "idle") { loadCtx(); return softRoute(); }  // the review may have changed: the page catches up
+    if (ssLive(nd.state)) state.rvTimer = setTimeout(poll, nd.state === "idle" ? 4000 : 1200);
+  }
+  // where the chat is pointed: the session whose conversation shows (a terminal session shows its copy once there is one)
+  (async () => {
+    const t = await api("review_chat", { pr, pass: n, session: to() }).catch(e => ({ available: false, why: e.message }));
+    if (!document.body.contains(conv)) return;
+    if (t.available === false) { conv.innerHTML = `<p class="muted small">${fmtWhy(t.why)}</p>`; return; }
+    rv.own = t.own; fill();
+    if (rv.sid !== t.session) { rv.sid = t.session; rv.d = null; rv.history = null; }
+    if (rv.d) draw();  // what the last visit saw, until the fresh copy arrives
+    if (!t.session && t.to) {  // a terminal session not copied yet: its recent talk, read only
+      const h = await api("chatsession", { id: t.to, limit: 20 }).catch(e => ({ available: false, why: e.message }));
+      if (h.available !== false) {
+        const sess = (state.rvList ? state.rvList.list : []).find(x => x.id === t.to);
+        rv.history = { title: ((sess && sess.title) || "the session").slice(0, 60), html: `${h.more ? `<p class="muted small">${plural(h.more, "earlier exchange")} not shown.</p>` : ""}${h.turns.map(x => `<div class="msg you"><div class="bubble">${txt(x.q.slice(0, 4000))}</div></div>${x.a ? `<div class="msg claude"><div class="bubble md">${md(x.a.slice(0, 12000))}</div></div>` : ""}`).join("") || '<p class="muted small">Nothing said in it yet.</p>'}` };
+      }
+    }
+    if (t.session) await poll(); else draw();
+    conv.scrollTop = conv.scrollHeight;
+    loadCtx();
+  })();
   const go = async () => {
-    const said = input.value.trim();
-    if (!said && !atts.length) return input.focus();
-    if (atts.some(a => !a.path)) return prefToast("Wait for the files to finish adding", true);
-    const text = [said, ...atts.splice(0).map(a => `[${a.image ? "image" : "file"}: ${a.path}]`)].join("\n").trim();
-    input.value = ""; drawAtts(); grow(input);
-    const thread = $(".pr-thread", pane);
-    $(".chat-empty", thread)?.remove();
-    if ((state.chatPending || {})[key]) {  // Claude is still on the one before: this one waits its turn
-      ((state.chatQueue || (state.chatQueue = {}))[key] || (state.chatQueue[key] = [])).push(text);
-      thread.insertAdjacentHTML("beforeend", chatTurn({ q: text, a: null, queued: true }, pr));
-      thread.scrollTop = thread.scrollHeight;
-      return;
-    }
-    thread.insertAdjacentHTML("beforeend", chatTurn({ q: text, a: null, at: new Date().toISOString() }, pr));
-    thread.scrollTop = thread.scrollHeight;
-    b.textContent = "Queue";
-    chatSend(key, pr, n, fid, text);
+    const said = input.value.trim(), files = A.attached();
+    if (!said && !files.length) return input.focus();
+    if (A.busy()) return prefToast("Wait for the files to finish adding", true);
+    input.value = ""; grow(input); A.clear();
+    b.disabled = true;
+    const r = await save("review_chat_say", { repo: state.repo, pr, pass: n, finding: fid, session: to(), text: said, attachments: files });
+    b.disabled = false;
+    if (!r.ok) { input.value = said; grow(input); return prefToast(r.error || r.why || "Couldn't send that", true); }
+    rv.sid = r.session; rv.history = null;
+    conv.querySelector(".chat-empty")?.remove();
+    poll(); setTimeout(poll, 500);
   };
   b.onclick = go;
   input.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); } };
@@ -4593,26 +4627,6 @@ async function openChatFile(path) {
 }
 /* A file dropped anywhere but the chat would open in place of the dashboard: ignore it. */
 ["dragover", "drop"].forEach(t => document.addEventListener(t, e => { if ([...(e.dataTransfer || {}).types || []].includes("Files") && !e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = "none"; } }));
-/* Send one chat message, then the next one queued behind it, in order. A failed one goes back in the box. */
-async function chatSend(key, pr, n, fid, text) {
-  (state.chatPending || (state.chatPending = {}))[key] = text;
-  const to = (state.chatTo || {})[pr];
-  const d = to ? await save("review_ask_session", { pr, pass: n, session: to, question: text, ...(fid ? { id: fid } : {}) })
-    : fid ? await save("review_discuss", { pr, id: fid, question: text })
-    : await save("review_ask", { pr, pass: n, question: text });
-  delete state.chatPending[key];
-  const queue = (state.chatQueue || {})[key] || [];
-  if (!d.ok) {
-    const left = [text, ...queue.splice(0)].join("\n\n");
-    await softRoute();
-    const t = $("[data-pr-chat]");
-    if (t) { t.value = left; grow(t); }
-    return prefToast(d.error || d.why || "Claude didn't answer", true);
-  }
-  const next = queue.shift();
-  if (next) chatSend(key, pr, n, fid, next);
-  await softRoute();
-}
 /* Side, wide or hidden, at once: only classes change, nothing is fetched again. */
 function chatSetMode(mode) {
   localStorage.setItem("lfg.chat", mode);
@@ -4703,19 +4717,13 @@ function wirePrs(root) {
     const go = async () => {
       const text = input.value.trim();
       if (!text) return input.focus();
-      const key = `q:${pr}:${n}:${id}`;
-      (state.chatPending || (state.chatPending = {}))[key] = text;
-      // your answer and Claude "typing" replace the box at once; the page catches up when Claude has replied
-      const q = b.closest(".pr-question");
-      $(".pr-compose", q).outerHTML = `<div class="pr-chat-thread">${chatTurn({ q: text, a: null, at: new Date().toISOString() }, pr)}</div>`;
-      const d = await save("review_answer", { pr, pass: n, id, answer: text });
-      delete state.chatPending[key];
-      if (!d.ok) {  // put your answer back where it was, to try again
-        $(".pr-chat-thread", q).outerHTML = `<div class="pr-compose"><textarea data-grow rows="2" data-pr-answer>${esc(text)}</textarea>${b.outerHTML}</div>`;
-        wirePrs($("#view"));
-        return prefToast(d.error || "Couldn't send the answer", true);
-      }
-      softRoute();
+      b.disabled = true; b.textContent = "Sending…";
+      // your answer goes to the review's own session in the chat; Claude's reply streams in there
+      const d = await save("review_answer", { repo: state.repo, pr, pass: n, id, answer: text });
+      if (!d.ok) { b.disabled = false; b.textContent = "Answer"; return prefToast(d.error || d.why || "Couldn't send the answer", true); }
+      (state.chatAbout || (state.chatAbout = {}))[pr] = ""; (state.chatTo || (state.chatTo = {}))[pr] = "";
+      if (chatMode() === "hidden") localStorage.setItem("lfg.chat", "side");
+      chatRedraw(pr);
     };
     b.onclick = go;
     input.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } };
@@ -4785,7 +4793,7 @@ function wirePrs(root) {
     softRoute();
   });
   $$("[data-pr-passoffer]", root).forEach(b => b.onclick = () => {
-    const [pr, id] = JSON.parse(b.dataset.prPassoffer), card = b.closest(".pr-finding");
+    const [pr, id] = JSON.parse(b.dataset.prPassoffer), card = b.closest(".pr-finding") || $(`#f-${CSS.escape(id)}`);
     offerPass(pr, id, ($(".title", card) || {}).textContent || id, ownCard(card));
   });
   $$("[data-pass-rm]", root).forEach(b => b.onclick = async () => {
@@ -4814,17 +4822,18 @@ function wirePrs(root) {
   $$("[data-pr-qsession]", root).forEach(b => b.onclick = () => {
     const [pr, qid] = JSON.parse(b.dataset.prQsession), box = b.closest(".pr-question"), q = box.dataset.ask;
     const list = (state.prSessions || {})[pr] || [];
-    openDrawer("Ask a session", `<div class="readable"><p>Pick the session to ask, such as the one where you built this PR. LFG asks a copy of it, so the session itself doesn't change. Its answer goes in the box for you to check, then Answer.</p><div class="box pad small">${txt(q)}</div>
+    openDrawer("Ask a session", `<div class="readable"><p>Pick the session to ask, such as the one where you built this PR. Your question goes into the chat and the answer streams back there. A session that isn't one of your Studio sessions is copied first, so the original doesn't change.</p><div class="box pad small">${txt(q)}</div>
       <ul class="items box mt">${list.map(x => `<li><div class="grow"><div class="title">${esc(x.title)}</div><div class="meta">${ago(x.modified)} · ${esc(x.cwd)}${x.linked ? " · linked by you" : ""}</div></div><button class="btn small primary" data-ask-sess="${esc(x.id)}">Ask</button></li>`).join("")}</ul><span class="save-msg" id="ask-sess-msg"></span></div>`);
     $$("[data-ask-sess]").forEach(go => go.onclick = async () => {
       $$("[data-ask-sess]").forEach(x => { x.disabled = true; });
       go.textContent = "Asking…";
-      const d = await save("review_ask_session", { pr, session: go.dataset.askSess, question: q });
+      const n = (state.lastTalk || {}).p ? state.lastTalk.p.n : 0;
+      const d = await save("review_chat_say", { repo: state.repo, pr, pass: n, session: go.dataset.askSess, text: q });
       if (!d.ok) { $$("[data-ask-sess]").forEach(x => { x.disabled = false; }); go.textContent = "Ask"; return saidMsg($("#ask-sess-msg"), d); }
       closeDrawer();
-      const t = $("[data-pr-answer]", box);
-      if (t) { t.value = d.a; grow(t); t.focus(); }
-      prefToast(`Answer from ${d.session}: check it, then Answer`);
+      (state.chatAbout || (state.chatAbout = {}))[pr] = ""; (state.chatTo || (state.chatTo = {}))[pr] = go.dataset.askSess;
+      if (chatMode() === "hidden") localStorage.setItem("lfg.chat", "side");
+      chatRedraw(pr);
     });
   });
   $$("[data-pr-discuss]", root).forEach(b => b.onclick = () => {
@@ -5466,7 +5475,7 @@ function toolBody(t) {
   const out = t.result != null && t.result !== "" ? `<pre class="ss-pre${t.error ? " bad" : ""}">${esc(String(t.result).slice(0, 6000))}${String(t.result).length > 6000 ? "\n…" : ""}</pre>` : "";
   return inp + out;
 }
-function ssItems(items, live) {
+function ssItems(items, live, pr, chat) {
   let html = "", group = [];
   const flush = last => {
     if (!group.length) return;
@@ -5480,9 +5489,9 @@ function ssItems(items, live) {
   items.forEach((it, i) => {
     if (it.k === "tool") { group.push(it); return; }
     flush(false);
-    if (it.k === "me") html += `<div class="ss-me" data-i="${i}">${(it.images || []).length ? `<div class="ss-imgs">${it.images.map(m => `<button class="ss-img" data-img="${esc(m.u)}:${m.i}" title="Show larger"></button>`).join("")}</div>` : ""}${ssMeText(it) ? `<div class="ss-bub">${ssMeText(it)}</div>` : ""}${ssMsgActions(it, i)}</div>`;
-    else if (it.k === "skill") html += `<div class="ss-me" data-i="${i}"><div class="ss-bub skill">${icon("skills")}/${esc(it.name.replace(/^\//, ""))}${it.args ? ` <span>${esc(it.args)}</span>` : ""}</div>${ssMsgActions(it, i)}</div>`;
-    else if (it.k === "ai") html += `<div class="ss-ai" data-i="${i}"><span class="ss-ai-av">${icon("studio")}</span><div class="md">${md(it.text)}</div><div class="ss-msg-a"><button class="ss-ma" data-ss-copy="${i}" title="Copy this answer">${icon("copy")}Copy</button></div></div>`;
+    if (it.k === "me") html += `<div class="ss-me" data-i="${i}">${(it.images || []).length ? `<div class="ss-imgs">${it.images.map(m => `<button class="ss-img" data-img="${esc(m.u)}:${m.i}" title="Show larger"></button>`).join("")}</div>` : ""}${ssMeText(it) ? `<div class="ss-bub">${ssMeText(it)}</div>` : ""}${ssMsgActions(it, i, chat)}</div>`;
+    else if (it.k === "skill") html += `<div class="ss-me" data-i="${i}"><div class="ss-bub skill">${icon("skills")}/${esc(it.name.replace(/^\//, ""))}${it.args ? ` <span>${esc(it.args)}</span>` : ""}</div>${ssMsgActions(it, i, chat)}</div>`;
+    else if (it.k === "ai") html += `<div class="ss-ai" data-i="${i}"><span class="ss-ai-av">${icon("studio")}</span><div class="md">${md(it.text)}</div>${changedChips(it.changed, pr)}<div class="ss-msg-a"><button class="ss-ma" data-ss-copy="${i}" title="Copy this answer">${icon("copy")}Copy</button></div></div>`;
     else if (it.k === "note") html += `<div class="ss-note">${esc(it.text)}</div>`;
   });
   flush(true);
@@ -5503,19 +5512,19 @@ function ssMeText(it) {
   if (old) raw = `<lfg-lines file="${old[1]}" lines="${old[2]}">\n${old[3]}\n</lfg-lines>\n\n${old[4]}`;
   const cards = [];
   raw = raw.replace(/<lfg-lines file="([^"]*)" lines="([^"]*)">\n?([\s\S]*?)\n?<\/lfg-lines>\s*/g, (_m, f, l, b) => { cards.push(ssRefCard(f, l, b)); return `\u0000${cards.length - 1}\u0000`; })
-    .replace(/\s*<lfg-note>[\s\S]*?<\/lfg-note>\s*/g, "");
+    .replace(/\s*<lfg-note>[\s\S]*?<\/lfg-note>\s*/g, "").replace(/\s*<lfg-review\b[^>]*>[\s\S]*?<\/lfg-review>\s*/g, "");
   let t = esc(raw).replace(/\u0000(\d+)\u0000/g, (_m, k) => cards[+k]);
   if ((it.images || []).length) t = t.replace(/\[Image #\d+\]\s?/g, "");
   t = t.replace(/@(\/\S*?\/\.lfg\/uploads\/\d{8}\/[0-9a-f]{8}-(\S+))/g, (_m, path, name) => `<span class="ss-file" title="${path}">${icon("docs")}${name}</span>`);
   return t.trim();
 }
 /* each of your messages: Rewind to before it, Fork from before it (a new session), Copy (as in Claude Code) */
-function ssMsgActions(it, i) {
-  const rw = it.u ? `<button class="ss-ma" data-rw="${esc(it.u)}" title="Undo the conversation from here, the code Claude changed since, or both">${icon("rewind")}Rewind</button>` : "";
-  const fk = it.u && it.p ? `<button class="ss-ma" data-fork="${i}" title="A new session with the conversation up to here; this one stays as it is">${icon("branch")}Fork</button>` : "";
+function ssMsgActions(it, i, chat) {
+  const rw = it.u && !chat ? `<button class="ss-ma" data-rw="${esc(it.u)}" title="Undo the conversation from here, the code Claude changed since, or both">${icon("rewind")}Rewind</button>` : "";
+  const fk = it.u && it.p && !chat ? `<button class="ss-ma" data-fork="${i}" title="A new session with the conversation up to here; this one stays as it is">${icon("branch")}Fork</button>` : "";
   return `<div class="ss-msg-a">${rw}${fk}<button class="ss-ma" data-ss-copy="${i}" title="Copy">${icon("copy")}Copy</button></div>`;
 }
-const ssItemText = it => it.k === "skill" ? `/${it.name.replace(/^\//, "")}${it.args ? " " + it.args : ""}` : it.k === "tool" ? `${it.name} ${JSON.stringify(it.input || {})}` : (it.text || "").replace(/\[Image #\d+\]\s?/g, "");
+const ssItemText = it => it.k === "skill" ? `/${it.name.replace(/^\//, "")}${it.args ? " " + it.args : ""}` : it.k === "tool" ? `${it.name} ${JSON.stringify(it.input || {})}` : (it.text || "").replace(/\[Image #\d+\]\s?/g, "").replace(/\s*<lfg-review\b[^>]*>[\s\S]*?<\/lfg-review>\s*/g, "");
 function ssMarkdown(d) {  // Export: the conversation as Markdown, like /export
   const out = [`# ${d.title}`, "", [d.branch && `Branch: ${d.branch}`, d.updated && `Updated: ${new Date(d.updated).toLocaleString()}`, `Session: ${d.id}`].filter(Boolean).join(" · "), ""];
   (d.items || []).forEach(it => {
@@ -5530,12 +5539,12 @@ function ssDownload(name, text) {
   const a = document.createElement("a"), url = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
   a.href = url; a.download = name; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
-async function ssImages(root) {  // images in messages come from the transcript, one request each, kept for the page
+async function ssImages(root, id) {  // images in messages come from the transcript, one request each, kept for the page
   state.ssImg = state.ssImg || {};
   for (const b of $$(".ss-img[data-img]", root)) {
     if (b.firstChild) continue;
     const key = b.dataset.img, [u, i] = key.split(":");
-    if (!state.ssImg[key]) { const r = await api("studio_image", { id: state.sess.id, u, i }).catch(() => null); if (!r || !r.src) continue; state.ssImg[key] = r.src; }
+    if (!state.ssImg[key]) { const r = await api("studio_image", { id: id || state.sess.id, u, i }).catch(() => null); if (!r || !r.src) continue; state.ssImg[key] = r.src; }
     const img = new Image(); img.alt = "Image you sent"; img.src = state.ssImg[key]; b.append(img);
   }
 }
@@ -5614,11 +5623,11 @@ function ssFollowups(d) {
   out.push(["", "Summarize what changed", "Summarize what you changed in this session and anything left to do, in a few bullets."]);
   return `<div class="ss-follow"><span class="muted small">Next</span>${out.map(([k, l, p]) => `<button class="chip" data-follow="${esc(p)}">${k ? `<span class="ss-sug-k">${esc(k)}</span>` : ""}${esc(l)}</button>`).join("")}</div>`;
 }
-function ssConv(d) {
+function ssConv(d, chat) {  // chat: on a review's page, where there is no Rewind or Fork and no suggested next steps
   const live = ssLive(d.state);
-  return `${ssItems(d.items || [], live)}${(d.queued || []).map(q => `<div class="ss-me"><div class="ss-bub queued">${esc(q)}<span class="muted small"> · goes in when Claude is ready</span></div></div>`).join("")}
+  return `${ssItems(d.items || [], live, (d.review || {}).pr, chat)}${(d.queued || []).map(q => `<div class="ss-me"><div class="ss-bub queued">${esc(q)}<span class="muted small"> · goes in when Claude is ready</span></div></div>`).join("")}
     ${ssPending(d)}${d.state === "working" || d.state === "starting" ? `<div class="ss-working"><span class="ss-pulse"></span> Claude is working… <button class="btn small" data-ss-interrupt>Stop</button></div>` : ""}
-    ${d.error ? `<div class="callout bad small">${fmtWhy(d.error)}</div>` : ""}${ssFollowups(d)}${!(d.items || []).length && !live ? empty("Nothing to show", "This session has no messages yet.") : ""}`;
+    ${d.error ? `<div class="callout bad small">${fmtWhy(d.error)}</div>` : ""}${chat ? "" : ssFollowups(d)}${!(d.items || []).length && !live && !chat ? empty("Nothing to show", "This session has no messages yet.") : ""}`;
 }
 function ssHead(d) {
   const model = String(d.model || "").replace(/^claude-/, "").replace(/-(\d)-(\d)$/, " $1.$2").replace(/^./, c => c.toUpperCase());
@@ -5868,127 +5877,48 @@ function wireSessChanges(root) {
   };
 }
 
-function wireStudio(root) {
-  clearTimeout(ssPoll);
-  if ($(".ssc", root)) return wireSessChanges(root);
-  ssFit(root);
-  const S = state.sess || {}, d = S.d;
-  const go = async (what, body, btn, busy) => { const was = btn && btn.textContent; if (btn) { btn.disabled = true; if (busy) btn.textContent = busy; } const r = await save(what, Object.assign({ repo: state.repo }, body)); if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = was; } alert(String(r.why || "That didn't work.").replace(/`/g, "")); } return r; };
-  // the list: filter and search
-  $$("[data-ss-filter]", root).forEach(b => b.onclick = () => { state.ssFilter = b.dataset.ssFilter; route({ soft: true }); });
-  const find = $("#ss-find", root);
-  if (find) find.oninput = () => { const q = find.value.trim().toLowerCase(); $$(".ss-row", root).forEach(a => { a.hidden = !!q && !q.split(/\s+/).every(w => a.dataset.title.includes(w)); }); };
-  // the composer
-  const ta = $("#ss-text", root), send = $("#ss-send", root), ac = $("#ss-ac", root);
-  $$("[data-seg]", root).forEach(seg => $$("button", seg).forEach(b => b.onclick = () => {
-    $$("button", seg).forEach(x => { x.classList.toggle("on", x === b); x.setAttribute("aria-checked", x === b); });
-    localStorage.setItem("lfg.ss." + seg.dataset.seg, b.dataset.v);
-    if (seg.dataset.seg === "mode" && S.id && d && ssLive(d.state)) go("sess_mode", { id: S.id, mode: b.dataset.v });
-  }));
-  const segVal = k => { const b = $(`[data-seg="${k}"] button.on`, root); return b ? b.dataset.v : undefined; };
-  if (ta) {
-    ssAutocomplete(ta, ac);
-    ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && ac.hidden) { e.preventDefault(); send.click(); } });
-    ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 280) + "px"; });
-    if (state.ssPrefill) { ta.value = state.ssPrefill; state.ssPrefill = ""; ta.dispatchEvent(new Event("input")); state.ssFresh = true; }
-    if (!S.id || ssLive(d && d.state) || state.ssFresh) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
-    state.ssFresh = false;
-  }
-  // attachments: the paperclip, drag and drop onto the composer, or a pasted screenshot
-  const att = [], attBox = $("#ss-att", root), comp = $("#ss-comp", root), fileIn = $("#ss-file", root);
-  const paintAtt = () => {
-    attBox.hidden = !att.length;
-    attBox.innerHTML = att.map((a, i) => `<span class="ss-chip${a.path ? "" : " up"}" title="${esc(a.name)}${a.path ? "" : " (adding…)"}">${a.thumb ? `<img src="${a.thumb}" alt="">` : icon("docs")}<span>${esc(a.name)}</span><button type="button" data-att-x="${i}" aria-label="Remove ${esc(a.name)}">&times;</button></span>`).join("");
-    $$("[data-att-x]", attBox).forEach(b => b.onclick = () => { att.splice(+b.dataset.attX, 1); paintAtt(); });
+/* Files for a message: the paperclip, files dropped on the box, a pasted screenshot. Each is uploaded as it is added
+   (up to 10); `att` is what is attached, `attached()` what a send carries. Used by Studio and by the chat on a review. */
+function ssAttach({ comp, ta, box, file, btn, say }) {
+  const att = [], tell = say || (m => alert(m));
+  const paint = () => {
+    box.hidden = !att.length;
+    box.innerHTML = att.map((a, i) => `<span class="ss-chip${a.path ? "" : " up"}" title="${esc(a.name)}${a.path ? "" : " (adding…)"}">${a.thumb ? `<img src="${a.thumb}" alt="">` : icon("docs")}<span>${esc(a.name)}</span><button type="button" data-att-x="${i}" aria-label="Remove ${esc(a.name)}">&times;</button></span>`).join("");
+    $$("[data-att-x]", box).forEach(b => b.onclick = () => { att.splice(+b.dataset.attX, 1); paint(); });
   };
-  const addFiles = async files => {
+  const add = async files => {
     for (const f of Array.from(files || [])) {
-      if (att.length >= 10) { alert("Attach up to 10 files at a time."); break; }
-      const a = { name: f.name || "pasted-image.png" }; att.push(a); paintAtt();
+      if (att.length >= 10) { tell("Attach up to 10 files at a time."); break; }
+      const a = { name: f.name || "pasted-image.png" }; att.push(a); paint();
       try {
-        const x = await ssPrepFile(f); a.thumb = x.thumb;  paintAtt();
+        const x = await ssPrepFile(f); a.thumb = x.thumb; paint();
         const r = await save("sess_upload", { repo: state.repo, name: a.name, type: x.type, data: x.data });
         if (!r.ok) throw new Error(r.why || "couldn't attach it");
         Object.assign(a, { path: r.path, type: r.type, image: r.image });
-      } catch (e) { att.splice(att.indexOf(a), 1); alert(`${a.name}: ${String(e.message || e).replace(/`/g, "")}`); }
-      paintAtt();
+      } catch (e) { att.splice(att.indexOf(a), 1); tell(`${a.name}: ${String(e.message || e).replace(/`/g, "")}`); }
+      paint();
     }
   };
-  if (comp && ta) {
-    $("#ss-attach", root).onclick = () => fileIn.click();
-    fileIn.onchange = () => { addFiles(fileIn.files); fileIn.value = ""; };
-    let depth = 0;
-    const hasFiles = e => Array.from((e.dataTransfer || {}).types || []).includes("Files");
-    comp.addEventListener("dragenter", e => { if (!hasFiles(e)) return; e.preventDefault(); depth++; comp.classList.add("drop"); });
-    comp.addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
-    comp.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; comp.classList.remove("drop"); } });
-    comp.addEventListener("drop", e => { if (!hasFiles(e)) return; e.preventDefault(); depth = 0; comp.classList.remove("drop"); addFiles(e.dataTransfer.files); });
-    ta.addEventListener("paste", e => { const fs = Array.from((e.clipboardData || {}).files || []); if (fs.length) { e.preventDefault(); addFiles(fs); } });
-  }
-  const attached = () => att.filter(a => a.path).map(a => ({ path: a.path, type: a.type || "" }));
-  $$("[data-sug]", root).forEach(b => b.onclick = () => { const x = S.sug.suggestions[+b.dataset.sug]; ta.value = x.prompt; ta.dispatchEvent(new Event("input")); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); });
-  const clearComposer = () => { ta.value = ""; ta.style.height = "auto"; att.length = 0; paintAtt(); };
-  if (send) send.onclick = async () => {
-    const text = ta.value.trim(), files = attached();
-    if (att.some(a => !a.path)) return;  // still uploading
-    if (!text && !files.length) return ta.focus();
-    const fork = S.id && state.ssFork && state.ssFork.sid === S.id ? state.ssFork : null;
-    if (fork) {
-      const r = await go("sess_fork", { id: S.id, at: fork.at || "", text, attachments: files }, send, "Forking…");
-      if (r.ok) { state.ssFork = null; clearComposer(); loadNavSessions(); location.hash = "#studio/" + r.id; }
-      return;
-    }
-    if (!S.id) {
-      const where = ssWhereValue(root);
-      if (where.kind === "new" && !where.branch) { const n = $("#ss-wt-name", root); n.focus(); n.placeholder = "Name the new branch"; n.classList.add("need"); return; }
-      const r = await go("sess_start", { text, mode: segVal("mode"), where, attachments: files }, send, where.kind === "here" || where.kind === "worktree" ? "Starting…" : "Making the worktree…");
-      if (r.ok) { clearComposer(); loadNavSessions(); location.hash = "#studio/" + r.id; }
-      return;
-    }
-    if (!ssLive(d.state)) { const r = await go("sess_resume", { id: S.id }, send, "Starting…"); if (!r.ok) return; }
-    const r = await go("sess_say", { id: S.id, text, attachments: files }, send, "Sending…");
-    if (r.ok) { clearComposer(); send.disabled = false; send.textContent = "Send"; refresh(); }
-  };
-  const fx = $("[data-fork-x]", root); if (fx) fx.onclick = () => { state.ssFork = null; route({ soft: true }); };
-  const wsel = $("#ss-where", root);
-  const tag = () => { const [b, wt] = ssTarget(root), t = $("#ss-branch", root), w = $("#ss-wt-tag", root); if (t) t.textContent = b; if (w) { w.hidden = !wt; w.innerHTML = wt ? `${icon("folder")}${esc(wt)}` : ""; } };
-  if (wsel) {
-    const show = () => { $(".ss-newwt", root).hidden = wsel.value !== "new"; tag(); };
-    wsel.onchange = () => { show(); if (wsel.value === "new") $("#ss-wt-name", root).focus(); };
-    $("#ss-wt-name", root).oninput = tag; $("#ss-wt-base", root).onchange = tag;
-    show();
-  }
-  if (!S.id && $("#ss-branch", root)) {  // the checked-out branch can change under us: keep it current
-    const tick = async () => {
-      if (location.hash !== "#studio") return;
-      const w = await api("studio_where").catch(() => null);
-      if (w && w.branch !== (state.sess.where || {}).branch) { state.sess.where = w; const o = $('#ss-where option[value="here"]'); if (o) o.textContent = `Here · ${w.branch}`; tag(); }
-      ssPoll = setTimeout(tick, 5000);
-    };
-    ssPoll = setTimeout(tick, 5000);
-  }
-  // worktrees: new session there, merge back, merge all
-  $$("[data-wt-session]", root).forEach(b => b.onclick = () => { state.ssStartIn = b.dataset.wtSession; location.hash = "#studio"; });
-  if (state.ssStartIn && wsel) { const o = $(`#ss-where option[value="wt:${CSS.escape(state.ssStartIn)}"]`, root); if (o) { wsel.value = o.value; wsel.onchange(); } state.ssStartIn = null; }
-  const merge = async (body, btn, label) => {
-    let r = await go(body.into ? "wt_merge_all" : "wt_merge", body, btn, "Merging…");
-    if (r.ok && r.needs_merge_commit) {
-      if (!confirm(r.why + "\n\nThis creates a merge commit on the base branch.")) { route({ soft: true }); return; }
-      r = await go(body.into ? "wt_merge_all" : "wt_merge", Object.assign({ merge_commit: true }, body), btn, "Merging…");
-    }
-    if (r.ok) { const done = r.done || [r]; alert(done.length ? done.map(x => `${x.name}: ${x.commits ? `${x.commits} commit${x.commits === 1 ? "" : "s"} into ${x.into} (${x.how})` : "nothing to merge"}${x.removed ? ", removed" : ""}`).join("\n") : "Nothing to merge."); }
-    route({ soft: true });
-  };
-  $$("[data-wt-merge]", root).forEach(b => b.onclick = () => {
-    const row = b.closest("[data-wt]"), name = row.dataset.wt, rm = b.hasAttribute("data-remove");
-    if (!confirm(rm ? `${b.textContent} ${name}?\n\nOnly committed work is merged. The worktree folder and its branch (once merged) are removed.` : `Merge ${name} into its base branch?\n\nOnly committed work is merged.`)) return;
-    merge({ name, remove: rm }, b);
-  });
-  $$("[data-wt-all]", root).forEach(b => b.onclick = () => { if (confirm(`Merge every LFG worktree forked from ${b.dataset.wtAll} into it, then remove them?\n\nIt stops at the first one that can't merge (uncommitted changes or conflicts).`)) merge({ into: b.dataset.wtAll }, b); });
-  if (!d || d.available === false) return;
-  // one session: answers, follow-ups, stop, end, rename, live updates
-  const conv = $("#ss-conv", root), head = $("#ss-head", root);
-  const wireConv = () => {
+  btn.onclick = () => file.click();
+  file.onchange = () => { add(file.files); file.value = ""; };
+  let depth = 0;
+  const hasFiles = e => Array.from((e.dataTransfer || {}).types || []).includes("Files");
+  comp.addEventListener("dragenter", e => { if (!hasFiles(e)) return; e.preventDefault(); depth++; comp.classList.add("drop"); });
+  comp.addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
+  comp.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; comp.classList.remove("drop"); } });
+  comp.addEventListener("drop", e => { if (!hasFiles(e)) return; e.preventDefault(); depth = 0; comp.classList.remove("drop"); add(e.dataTransfer.files); });
+  ta.addEventListener("paste", e => { const fs = Array.from((e.clipboardData || {}).files || []); if (fs.length) { e.preventDefault(); add(fs); } });
+  return { att, paint, add, attached: () => att.filter(a => a.path).map(a => ({ path: a.path, type: a.type || "" })), busy: () => att.some(a => !a.path), clear: () => { att.length = 0; paint(); } };
+}
+async function ssGo(what, body, btn, busy) { const was = btn && btn.textContent; if (btn) { btn.disabled = true; if (busy) btn.textContent = busy; } const r = await save(what, Object.assign({ repo: state.repo }, body)); if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = was; } alert(String(r.why || "That didn't work.").replace(/`/g, "")); } return r;  }
+/* The wiring of a session's conversation (permission prompts, Claude's questions, plans, Stop, follow-ups, copy, fork,
+   rewind, images), shared by Studio and the chat on a review's page. `o`: conv (its element), S ({id}), d (the session,
+   kept current by the caller), go (a button's save), refresh, follow(text) (a suggested next message), rewound(),
+   chat (the review page, where a chip jumps to its finding). Returns what to call after each redraw of conv. */
+function ssConvWirer(o) {
+  const { conv, S, d, go } = o, refresh = () => o.refresh();
+  const wire = () => {
+    $$("[data-chat-goto]", conv).forEach(a => a.onclick = e => { e.preventDefault(); const [pr, id] = JSON.parse(a.dataset.chatGoto); if (o.goto) o.goto(id); else location.hash = "#prs/" + pr.replace("#", "/"); });
     $$(".ss-ask", conv).forEach(card => $$("[data-decide]", card).forEach(b => b.onclick = async () => { const r = await go("sess_decide", { id: S.id, request: card.dataset.req, decision: b.dataset.decide }, b); if (r.ok) refresh(); }));
     $$(".ss-ask-q", conv).forEach(card => {  // questions: pick, type, send
       const rid = card.dataset.req, picked = (state.ssAns = state.ssAns || {})[rid] = state.ssAns[rid] || {};
@@ -6058,7 +5988,7 @@ function wireStudio(root) {
       };
     });
     const stop = $("[data-ss-interrupt]", conv); if (stop) stop.onclick = () => go("sess_interrupt", { id: S.id }, stop, "Stopping…");
-    $$("[data-follow]", conv).forEach(b => b.onclick = () => { ta.value = b.dataset.follow; send.click(); });
+    $$("[data-follow]", conv).forEach(b => b.onclick = () => o.follow(b.dataset.follow));
     $$("[data-ss-copy]", conv).forEach(b => b.onclick = async () => { await navigator.clipboard.writeText(ssItemText(d.items[+b.dataset.ssCopy])); const t = b.innerHTML; b.textContent = "Copied"; setTimeout(() => { b.innerHTML = t; }, 1200); });
     $$("[data-fork]", conv).forEach(b => b.onclick = () => {
       const it = d.items[+b.dataset.fork];
@@ -6067,7 +5997,7 @@ function wireStudio(root) {
     });
     $$("[data-rw]", conv).forEach(b => b.onclick = () => ssRewind(b));
     $$(".ss-img", conv).forEach(b => b.onclick = () => b.classList.toggle("big"));
-    ssImages(conv);
+    ssImages(conv, S.id);
   };
   // Rewind: like Claude Code's, to before one of your messages: the conversation, the code, or both
   const ssRewind = async b => {
@@ -6089,9 +6019,103 @@ function wireStudio(root) {
       const r = await go("sess_rewind", { id: S.id, message: u, what }, x, "Rewinding…");
       if (!r.ok) return;
       if (r.prefill) state.ssPrefill = r.prefill;
-      loadNavSessions(); route({ soft: true });
+      o.rewound();
     });
   };
+  return wire;
+}
+function wireStudio(root) {
+  clearTimeout(ssPoll);
+  if ($(".ssc", root)) return wireSessChanges(root);
+  ssFit(root);
+  const S = state.sess || {}, d = S.d;
+  const go = ssGo;
+  // the list: filter and search
+  $$("[data-ss-filter]", root).forEach(b => b.onclick = () => { state.ssFilter = b.dataset.ssFilter; route({ soft: true }); });
+  const find = $("#ss-find", root);
+  if (find) find.oninput = () => { const q = find.value.trim().toLowerCase(); $$(".ss-row", root).forEach(a => { a.hidden = !!q && !q.split(/\s+/).every(w => a.dataset.title.includes(w)); }); };
+  // the composer
+  const ta = $("#ss-text", root), send = $("#ss-send", root), ac = $("#ss-ac", root);
+  $$("[data-seg]", root).forEach(seg => $$("button", seg).forEach(b => b.onclick = () => {
+    $$("button", seg).forEach(x => { x.classList.toggle("on", x === b); x.setAttribute("aria-checked", x === b); });
+    localStorage.setItem("lfg.ss." + seg.dataset.seg, b.dataset.v);
+    if (seg.dataset.seg === "mode" && S.id && d && ssLive(d.state)) go("sess_mode", { id: S.id, mode: b.dataset.v });
+  }));
+  const segVal = k => { const b = $(`[data-seg="${k}"] button.on`, root); return b ? b.dataset.v : undefined; };
+  if (ta) {
+    ssAutocomplete(ta, ac);
+    ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && ac.hidden) { e.preventDefault(); send.click(); } });
+    ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 280) + "px"; });
+    if (state.ssPrefill) { ta.value = state.ssPrefill; state.ssPrefill = ""; ta.dispatchEvent(new Event("input")); state.ssFresh = true; }
+    if (!S.id || ssLive(d && d.state) || state.ssFresh) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    state.ssFresh = false;
+  }
+  // attachments: the paperclip, drag and drop onto the composer, or a pasted screenshot
+  const comp = $("#ss-comp", root), A = comp && ta ? ssAttach({ comp, ta, box: $("#ss-att", root), file: $("#ss-file", root), btn: $("#ss-attach", root) }) : null;
+  const att = A ? A.att : [], paintAtt = () => A && A.paint(), attached = () => A ? A.attached() : [];
+  $$("[data-sug]", root).forEach(b => b.onclick = () => { const x = S.sug.suggestions[+b.dataset.sug]; ta.value = x.prompt; ta.dispatchEvent(new Event("input")); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); });
+  const clearComposer = () => { ta.value = ""; ta.style.height = "auto"; att.length = 0; paintAtt(); };
+  if (send) send.onclick = async () => {
+    const text = ta.value.trim(), files = attached();
+    if (att.some(a => !a.path)) return;  // still uploading
+    if (!text && !files.length) return ta.focus();
+    const fork = S.id && state.ssFork && state.ssFork.sid === S.id ? state.ssFork : null;
+    if (fork) {
+      const r = await go("sess_fork", { id: S.id, at: fork.at || "", text, attachments: files }, send, "Forking…");
+      if (r.ok) { state.ssFork = null; clearComposer(); loadNavSessions(); location.hash = "#studio/" + r.id; }
+      return;
+    }
+    if (!S.id) {
+      const where = ssWhereValue(root);
+      if (where.kind === "new" && !where.branch) { const n = $("#ss-wt-name", root); n.focus(); n.placeholder = "Name the new branch"; n.classList.add("need"); return; }
+      const r = await go("sess_start", { text, mode: segVal("mode"), where, attachments: files }, send, where.kind === "here" || where.kind === "worktree" ? "Starting…" : "Making the worktree…");
+      if (r.ok) { clearComposer(); loadNavSessions(); location.hash = "#studio/" + r.id; }
+      return;
+    }
+    if (!ssLive(d.state)) { const r = await go("sess_resume", { id: S.id }, send, "Starting…"); if (!r.ok) return; }
+    const r = await go("sess_say", { id: S.id, text, attachments: files }, send, "Sending…");
+    if (r.ok) { clearComposer(); send.disabled = false; send.textContent = "Send"; refresh(); }
+  };
+  const fx = $("[data-fork-x]", root); if (fx) fx.onclick = () => { state.ssFork = null; route({ soft: true }); };
+  const wsel = $("#ss-where", root);
+  const tag = () => { const [b, wt] = ssTarget(root), t = $("#ss-branch", root), w = $("#ss-wt-tag", root); if (t) t.textContent = b; if (w) { w.hidden = !wt; w.innerHTML = wt ? `${icon("folder")}${esc(wt)}` : ""; } };
+  if (wsel) {
+    const show = () => { $(".ss-newwt", root).hidden = wsel.value !== "new"; tag(); };
+    wsel.onchange = () => { show(); if (wsel.value === "new") $("#ss-wt-name", root).focus(); };
+    $("#ss-wt-name", root).oninput = tag; $("#ss-wt-base", root).onchange = tag;
+    show();
+  }
+  if (!S.id && $("#ss-branch", root)) {  // the checked-out branch can change under us: keep it current
+    const tick = async () => {
+      if (location.hash !== "#studio") return;
+      const w = await api("studio_where").catch(() => null);
+      if (w && w.branch !== (state.sess.where || {}).branch) { state.sess.where = w; const o = $('#ss-where option[value="here"]'); if (o) o.textContent = `Here · ${w.branch}`; tag(); }
+      ssPoll = setTimeout(tick, 5000);
+    };
+    ssPoll = setTimeout(tick, 5000);
+  }
+  // worktrees: new session there, merge back, merge all
+  $$("[data-wt-session]", root).forEach(b => b.onclick = () => { state.ssStartIn = b.dataset.wtSession; location.hash = "#studio"; });
+  if (state.ssStartIn && wsel) { const o = $(`#ss-where option[value="wt:${CSS.escape(state.ssStartIn)}"]`, root); if (o) { wsel.value = o.value; wsel.onchange(); } state.ssStartIn = null; }
+  const merge = async (body, btn, label) => {
+    let r = await go(body.into ? "wt_merge_all" : "wt_merge", body, btn, "Merging…");
+    if (r.ok && r.needs_merge_commit) {
+      if (!confirm(r.why + "\n\nThis creates a merge commit on the base branch.")) { route({ soft: true }); return; }
+      r = await go(body.into ? "wt_merge_all" : "wt_merge", Object.assign({ merge_commit: true }, body), btn, "Merging…");
+    }
+    if (r.ok) { const done = r.done || [r]; alert(done.length ? done.map(x => `${x.name}: ${x.commits ? `${x.commits} commit${x.commits === 1 ? "" : "s"} into ${x.into} (${x.how})` : "nothing to merge"}${x.removed ? ", removed" : ""}`).join("\n") : "Nothing to merge."); }
+    route({ soft: true });
+  };
+  $$("[data-wt-merge]", root).forEach(b => b.onclick = () => {
+    const row = b.closest("[data-wt]"), name = row.dataset.wt, rm = b.hasAttribute("data-remove");
+    if (!confirm(rm ? `${b.textContent} ${name}?\n\nOnly committed work is merged. The worktree folder and its branch (once merged) are removed.` : `Merge ${name} into its base branch?\n\nOnly committed work is merged.`)) return;
+    merge({ name, remove: rm }, b);
+  });
+  $$("[data-wt-all]", root).forEach(b => b.onclick = () => { if (confirm(`Merge every LFG worktree forked from ${b.dataset.wtAll} into it, then remove them?\n\nIt stops at the first one that can't merge (uncommitted changes or conflicts).`)) merge({ into: b.dataset.wtAll }, b); });
+  if (!d || d.available === false) return;
+  // one session: answers, follow-ups, stop, end, rename, live updates
+  const conv = $("#ss-conv", root), head = $("#ss-head", root);
+  const wireConv = ssConvWirer({ conv, S, d, go, refresh: () => refresh(), follow: t => { ta.value = t; send.click(); }, rewound: () => { loadNavSessions(); route({ soft: true }); } });
   const wireHead = () => {
     const end = $("[data-ss-end]", head); if (end) end.onclick = async () => { if (confirm("End this session? Claude Code stops; you can continue the session later.")) { await go("sess_end", { id: S.id }, end); loadNavSessions(); route({ soft: true }); } };
     const rename = async () => { const t = prompt("Name this session", d.title); if (t && t.trim()) { await go("sess_rename", { id: S.id, title: t }); loadNavSessions(); route({ soft: true }); } };

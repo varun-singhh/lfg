@@ -33,7 +33,7 @@ Not counted: Homebrew, Python 3.9+ (from Xcode's command-line tools) and Claude 
 | Worktrees (Studio sessions in a worktree, PR reviews) | Next to the repo: `<repo>.worktrees/` | One checkout each: the repo's size without `.git` (30–60 MB here) | When you remove or merge them (Studio → All sessions, Reviews, or `lfg worktree`) |
 | Runs, reviews, notes, sessions index | `~/.lfg/runs`, `reviews`, `repos`, `sessions` | A few MB | Settings → Disk space offers runs on merged or deleted branches |
 | Files and images you drop into Studio | `~/.lfg/uploads` | Whatever you attach | When you delete them |
-| Files and images you drop into a PR review chat | `~/.lfg/tmp/chat` | Whatever you attach | When you delete them |
+| Files and images dropped into a PR review chat before it moved into Studio | `~/.lfg/tmp/chat` | Whatever was attached | When you delete them |
 | Security lookups (`/lfg:secure`) | `~/.lfg/secintel/cache` | Grows with use (236 MB after a few weeks here) | Not cleaned up yet (see below) |
 
 ## Optional packs

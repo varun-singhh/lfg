@@ -1270,6 +1270,11 @@ a.stk-i:hover { background: var(--hover); }
 .msg-at { font-size: 11px; color: var(--faint); margin-top: 3px; }
 .msg-changes { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
 .msg-changes a.chip { text-decoration: none; cursor: pointer; }
+.ss-ai .msg-changes { grid-column: 2; margin-top: 0; }  /* under the reply, beside its avatar column */
+.pr-talk .ss-conv { padding: 14px; }
+.pr-talk .chat-more { margin: 0; }
+.pr-talk .rv-ctx { margin-left: 6px; }
+.pr-talk .chat-old { margin: 0; padding: 6px 14px; }
 .chip.c-red { color: var(--red-tx); background: var(--red-bg); }
 .bubble.typing { display: inline-flex; gap: 4px; padding: 12px 14px; }
 .bubble.typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite ease-in-out; }
