@@ -4516,6 +4516,102 @@ class ReviewTest(unittest.TestCase):
         self.assertNotIn("Bash(lfg review remember *)", R.run_tools()[0])  # an unattended review never saves for you
         self.assertIn("Bash(lfg review remember *)", R.run_tools()[1])
 
+    def three(self):
+        self.setUp()
+        self.saved(self.finding(title="Empty input breaks it"),
+                   self.finding(title="Import order", severity="nitpick", line=9),
+                   self.finding(title="Magic number", line=20))
+
+    def test_passing_on_a_finding_reaches_this_pr_this_repo_or_every_repo(self):
+        self.three()
+        self.assertEqual(R.pass_on("o/r", 7, "1.1", "pr"), {"finding": "1.1", "scope": "pr"})  # as dropping always did
+        self.assertEqual(R.load("o/r", 7)["passes"][0]["findings"][0]["status"], "drop")
+        self.assertEqual(R.passes_list(), [])  # nothing outlives the PR
+        mine = R.pass_on("o/r", 7, "1.2", "repo", note="we sort imports with a formatter")
+        self.assertEqual((mine["scope"], mine["repo"], mine["title"], mine["severity"], mine["pr"], mine["note"]),
+                         ("repo", "o/r", "Import order", "nitpick", "o/r#7", "we sort imports with a formatter"))
+        every = R.pass_on("o/r", 7, "1.3", "all")
+        f = R.load("o/r", 7)["passes"][0]["findings"]
+        self.assertEqual([(x["status"], (x.get("passed_on") or {}).get("scope")) for x in f],
+                         [("drop", None), ("drop", "repo"), ("drop", "all")])
+        again = R.pass_on("o/r", 7, "1.2", "repo")  # the same thing twice is one entry
+        self.assertEqual(again["id"], mine["id"])
+        self.assertEqual(sorted(x["scope"] for x in R.passes_list()), ["all", "repo"])
+        # every repo's applies anywhere; this repo's only here, whatever the capitals
+        self.assertEqual([x["id"] for x in R.passes_list("x/y")], [every["id"]])
+        self.assertEqual(sorted(x["scope"] for x in R.passes_list("O/R")), ["all", "repo"])
+        with self.assertRaises(R.ReviewError):
+            R.pass_on("o/r", 7, "1.1", "forever")
+
+    def test_what_you_passed_on_follows_you_to_other_prs_and_never_reaches_fresh_eyes(self):
+        self.three()
+        R.pass_on("o/r", 7, "1.2", "repo")
+        R.pass_on("o/r", 7, "1.3", "all")
+        files = {"files": [{"path": "app.py"}]}
+        ctx = {}
+        for repo, fresh in (("o/r", False), ("x/y", False), ("o/r", True)):
+            with mock.patch.object(R, "pr_meta", return_value=self.META), \
+                    mock.patch.object(R, "me", return_value="x"), \
+                    mock.patch.object(R, "gh_json", return_value=files), \
+                    mock.patch.object(R, "agents_md", return_value=[]), \
+                    mock.patch.object(R, "fresh_eyes", return_value=fresh):
+                ctx[(repo, fresh)] = R.context(repo, 8)["settled"]["passed"]  # another PR, never reviewed
+        self.assertEqual([x["title"] for x in ctx[("o/r", False)]], ["Magic number", "Import order"])
+        self.assertEqual([x["title"] for x in ctx[("x/y", False)]], ["Magic number"])
+        self.assertEqual(ctx[("o/r", True)], [])  # Fresh eyes never sees your Fix/Pass choices
+        severities = {x["severity"] for x in ctx[("o/r", False)]}
+        self.assertEqual(severities, {"nitpick", "major"})  # what lets a review tell "worse" from "the same"
+        skill = " ".join(C.read_text(os.path.join(C.PLUGIN_ROOT, "skills", "review", "SKILL.md")).split())
+        for word in ("`passed`", "clearly worse", "Fresh eyes"):
+            self.assertIn(word, skill)
+        self.assertIn("Bash(lfg review pass *)", R.run_tools()[1])  # an unattended review never decides for you
+
+    def test_a_pass_can_be_taken_back_and_a_posted_comment_cant_be_passed_on(self):
+        self.three()
+        e = R.pass_on("o/r", 7, "1.1", "repo")
+        self.assertEqual(R.pass_remove(e["id"]), {"removed": e["id"]})
+        f = R.load("o/r", 7)["passes"][0]["findings"][0]
+        self.assertEqual((f["status"], "passed_on" in f), ("drop", False))  # still dropped here, no longer for good
+        self.assertEqual(R.passes_list(), [])
+        with self.assertRaises(R.ReviewError):
+            R.pass_remove(e["id"])
+        rec = R.load("o/r", 7)
+        rec["passes"][0]["findings"][1]["comment_id"] = 5
+        R.store(rec)
+        with self.assertRaisesRegex(R.ReviewError, "already posted"):
+            R.pass_on("o/r", 7, "1.2", "all")
+        self.assertEqual(R.passes_list(), [])
+
+    def test_the_reviews_page_lists_what_is_passed_on(self):
+        self.three()
+        R.pass_on("o/r", 7, "1.2", "repo")
+        R.pass_on("o/r", 7, "1.3", "all")
+        with mock.patch.object(R, "queue", return_value=[]), mock.patch.object(R, "gh_status", return_value={}), \
+                mock.patch.object(R, "github_names", return_value={"x/y"}):
+            page = R.dashboard(only="/somewhere/else")
+            every = R.dashboard()
+        self.assertEqual([x["scope"] for x in page["passed"]], ["all"])  # this repo's own are for the repo picked
+        self.assertEqual(sorted(x["scope"] for x in every["passed"]), ["all", "repo"])
+
+    def test_a_session_can_pass_on_and_list_and_remove_from_the_command_line(self):
+        import contextlib
+        from lfgcore import cli
+        self.three()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cli.main(["review", "pass", "o/r#7", "1.1", "--scope", "repo", "--note", "fine",
+                                       "--json"]), 0)
+        pid = json.loads(buf.getvalue())["id"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cli.main(["review", "passes", "o/r#7", "--json"]), 0)
+        self.assertEqual([x["id"] for x in json.loads(buf.getvalue())], [pid])
+        with self.assertRaises(SystemExit):  # the reach is always named
+            cli.main(["review", "pass", "o/r#7", "1.2"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["review", "passes", "--remove", pid]), 0)
+        self.assertEqual(R.passes_list(), [])
+
     def test_older_reviews_get_an_estimated_verdict_and_a_score_history(self):
         f = lambda sev, st="keep": {"severity": sev, "status": st}  # noqa: E731
         self.assertEqual(R.verdict_of({"findings": [f("major")]}), "not")

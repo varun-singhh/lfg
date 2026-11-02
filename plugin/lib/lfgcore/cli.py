@@ -940,6 +940,15 @@ def _review(R, a):
                                                 x["posted"] else "draft", x["title"] or "")) for x in rs]
                or (None if rs else print("no reviews saved")))
         return 0
+    if a.action == "passes":
+        if a.remove:
+            C.emit(R.pass_remove(a.remove), a.json, lambda o: print("removed %s" % o["removed"]))
+            return 0
+        rows = R.passes_list(R.parse_pr(a.pr)[0] if a.pr else None)
+        C.emit(rows, a.json, lambda rs: [print("%-10s %-5s %-30s %s" % (x["id"], x["scope"], x["repo"] if x["scope"] ==
+                                                "repo" else "every repo", x["title"])) for x in rs]
+               or (None if rs else print("nothing is passed on for good")))
+        return 0
     if not a.pr:
         C.die("usage: lfg review %s <pr>" % a.action, 2)
     repo, number = R.parse_pr(a.pr)
@@ -948,6 +957,14 @@ def _review(R, a):
             C.die("usage: lfg review remember <pr> <id> --to dev-graph|second-brain [--note TEXT]", 2)
         o = R.remember_finding(repo, number, a.ids[0], a.to, note=a.note)
         C.emit(o, a.json, lambda x: print("saved %s to %s as %s" % (x["finding"], x["to"], x["slug"])))
+    elif a.action == "pass":
+        if len(a.ids) != 1 or not a.scope:
+            C.die("usage: lfg review pass <pr> <id> --scope pr|repo|all [--note TEXT]", 2)
+        o = R.pass_on(repo, number, a.ids[0], a.scope, note=a.note)
+        C.emit(o, a.json, lambda x: print("%s dropped%s" % (x["finding"], "" if x["scope"] == "pr" else
+                                                            ", and not flagged again in %s (%s)" % (
+                                                                "this repo" if x["scope"] == "repo" else "any repo",
+                                                                x["id"]))))
     elif a.action == "context":
         _print(R.context(repo, number))
     elif a.action == "save":
@@ -1632,10 +1649,10 @@ def main(argv=None):
     fb.add_argument("finding")
     fb.add_argument("verdict", choices=["accept", "reject"])
     fb.add_argument("--note")
-    rv = sp.add_parser("review", help="PR reviews: context, save, show, list, mark, threads, remember; "
+    rv = sp.add_parser("review", help="PR reviews: context, save, show, list, mark, threads, remember, pass; "
                                       "post and run are yours")
     rv.add_argument("action", choices=["context", "save", "show", "list", "mark", "post", "threads", "others", "run",
-                                       "sessions", "import", "fix", "remember"])
+                                       "sessions", "import", "fix", "remember", "pass", "passes"])
     rv.add_argument("pr", nargs="?", help="PR number (repo from this checkout), owner/repo#12 or a PR URL")
     rv.add_argument("ids", nargs="*", help="mark: finding ids, e.g. 1.2 1.4")
     st = rv.add_mutually_exclusive_group()
@@ -1643,7 +1660,10 @@ def main(argv=None):
         st.add_argument("--" + s_, dest="status", action="store_const", const=s_)
     rv.add_argument("--to", choices=["dev-graph", "second-brain"],
                     help="remember: where to save what the finding's discussion settled (always your choice)")
-    rv.add_argument("--note", help="remember: the conclusion in your words")
+    rv.add_argument("--scope", choices=["pr", "repo", "all"],
+                    help="pass: don't flag this again on this PR only, on every PR in the repo, or in every repo")
+    rv.add_argument("--note", help="remember: the conclusion in your words; pass: why you passed on it")
+    rv.add_argument("--remove", metavar="ID", help="passes: take that pass off the list (ids: `lfg review passes`)")
     rv.add_argument("--body", help="mark: new comment text; post: text above the inline comments")
     rv.add_argument("--body-file")
     rv.add_argument("--file", help="save: findings JSON (default: stdin); import: the session or log to import")

@@ -978,8 +978,8 @@ RUN_DENY = GH_WRITE_DENY + [
     "Bash(gh issue edit*)", "Bash(gh issue close*)", "Bash(git push*)", "Bash(git commit*)", "Bash(git merge*)",
     "Bash(git rebase*)", "Bash(git reset*)", "Bash(git checkout*)", "Bash(git switch*)", "Bash(git stash*)",
     "Bash(git restore*)", "Bash(git clean*)", "Bash(git tag*)", "Bash(git branch -*)",
-    # what to remember is your call, never an unattended review's
-    "Bash(lfg review remember *)",
+    # what to remember and what to leave alone is your call, never an unattended review's
+    "Bash(lfg review remember *)", "Bash(lfg review pass *)", "Bash(lfg review passes*--remove*)",
     "Edit", "Write", "NotebookEdit"]
 # Fresh eyes: nothing that shows earlier reviews or what anyone else said on the PR
 FRESH_DENY = ["Read(~/.lfg/reviews/**)", "Grep(~/.lfg/reviews/**)", "Bash(gh pr view *comments*)",
@@ -1759,6 +1759,72 @@ def remember_finding(repo, number, fid, to, note=None):
 
 # ---------------------------------------------------------------- what you already decided: read by every review
 
+def _passes_path():
+    return os.path.join(reviews_dir(), "passes.json")
+
+
+def _norm(text):
+    return re.sub(r"\W+", " ", str(text or "")).strip().lower()
+
+
+def passes_list(repo=None):
+    """Findings you passed on for good, newest first: every one, or those that apply to `repo` (its own, and every
+    repo's)."""
+    rows = (C.read_json(_passes_path(), {}) or {}).get("passes") or []
+    if repo:
+        rows = [x for x in rows if x.get("scope") == "all" or str(x.get("repo")).lower() == repo.lower()]
+    return sorted(rows, key=lambda x: x.get("at") or "", reverse=True)
+
+
+def pass_on(repo, number, fid, scope, note=None):
+    """Pass on a finding: drop it, and say how far "don't flag this again" reaches. `pr`: this PR only (a dropped
+    finding is already never raised again here unless it got worse). `repo`: every PR in this repo. `all`: every repo.
+    The last two are kept in ~/.lfg/reviews/passes.json, shown on the Reviews page and given to every later review of
+    the repo (`lfg review context`, `settled.passed`), which raises one again only if it is clearly worse."""
+    if scope not in SCOPES:
+        raise ReviewError("scope is one of %s" % ", ".join(SCOPES))
+    rec = need(repo, number)
+    f = find(rec, fid)
+    if f["status"] != "drop":
+        mark(repo, number, [fid], status="drop")  # refuses a comment that is already on GitHub
+        rec = need(repo, number)
+        f = find(rec, fid)
+    if scope == "pr":
+        return {"finding": fid, "scope": "pr"}
+    title = (f.get("title") or f.get("issue") or "").strip()
+    same = [x for x in passes_list() if x["scope"] == scope and _norm(x["title"]) == _norm(title)
+            and (scope == "all" or x["repo"].lower() == repo.lower())]
+    if same:
+        entry = same[0]
+    else:
+        entry = {"id": "ps-" + hashlib.sha1(("%s%s%s%f" % (repo, fid, title, time.time())).encode()).hexdigest()[:8],
+                 "scope": scope, "repo": repo, "title": _text(title, "title", 200),
+                 "issue": _text(f.get("issue"), "issue", 1000), "severity": f.get("severity"),
+                 "file": f.get("file") or "", "line": f.get("line"),
+                 "pr": ref(repo, number), "finding": fid, "note": _text(str(note or "").strip(), "note", 1000),
+                 "at": C.now_iso()}
+        C.ensure_dir(reviews_dir())
+        C.write_json(_passes_path(), {"passes": [entry] + passes_list()})
+    f["passed_on"] = {"id": entry["id"], "scope": scope, "at": entry["at"]}
+    store(rec)
+    return dict(entry, finding=fid)
+
+
+def pass_remove(pid):
+    """Take a finding off the list of things reviews leave alone. The finding it came from stays dropped."""
+    rows = passes_list()
+    if not any(x["id"] == pid for x in rows):
+        raise ReviewError("no such pass: %s" % pid)
+    C.write_json(_passes_path(), {"passes": [x for x in rows if x["id"] != pid]})
+    for rec in all_records():  # the finding it came from stops saying it was passed on for good
+        hit = [f for f in findings(rec) if (f.get("passed_on") or {}).get("id") == pid]
+        for f in hit:
+            f.pop("passed_on", None)
+        if hit:
+            store(rec)
+    return {"removed": pid}
+
+
 MEMORY_CAP = 40  # decisions and notes handed to a review, newest first
 MEMORY_TEXT = 1500
 
@@ -1775,9 +1841,10 @@ def _saved_rows(graph, node, name_field, text_field, branch=None):
 
 def memory(repo):
     """What you already decided about this repo's code, for a review to treat as settled: decisions saved from earlier
-    reviews (this repo's dev-graph) and personal notes saved from them (second-brain: yours, in every repo; each says
-    which PR it came from). A graph that can't be read is named in `unavailable`, never skipped silently."""
-    out = {"decisions": [], "notes": [], "unavailable": []}
+    reviews (this repo's dev-graph), personal notes saved from them (second-brain: yours, in every repo; each says
+    which PR it came from) and the findings you passed on for good. A graph that can't be read is named in
+    `unavailable`, never skipped silently."""
+    out = {"decisions": [], "notes": [], "passed": [] if fresh_eyes() else passes_list(repo), "unavailable": []}
     from . import setup as SU
     if not SU.pack_on("knowledge"):
         return out  # nothing can have been saved
@@ -2758,5 +2825,6 @@ def dashboard(fresh=False, only=None):
     # a ticket's PRs in the repos not picked top left: its group shows all of them
     shown = {x.get("ticket") for x in q + mine + out} - {"", None}
     more = [dict(x, passes=0, job=job(x["repo"], x["number"])) for x in others if x["ticket"] in shown]
-    return {"ticket_more": more, "queue": q, "queue_why": qwhy, "mine": mine, "mine_why": mwhy,
+    kept = [x for x in passes_list() if not names or x["scope"] == "all" or x["repo"].lower() in names]
+    return {"passed": kept, "ticket_more": more, "queue": q, "queue_why": qwhy, "mine": mine, "mine_why": mwhy,
             "reviews": out, "no_remote": bool(only) and not names}
