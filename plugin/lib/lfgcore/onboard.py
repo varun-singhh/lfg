@@ -13,7 +13,8 @@ from . import common as C
 from . import settings as S
 
 FEATURES = {  # id -> what it is and the dashboard pages it adds (page keys are app.js NAV keys)
-    "coding": {"name": "Building and fixing code", "description": "Plan, build, fix and ship changes with /lfg:lfg.",
+    "coding": {"name": "Building and fixing code",
+               "description": "Plan, build, fix and ship changes with /lfg:lfg. Name sessions with /rename.",
                "skills": ["lfg", "build", "fix", "spike", "explain5", "suggest-tests"], "pages": ["insights"]},
     "reviews": {"name": "Code reviews", "description": "Review pull requests and AI chats before they merge.",
                 "skills": ["review-coach"], "pages": ["prs", "insights"]},

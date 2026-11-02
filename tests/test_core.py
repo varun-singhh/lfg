@@ -2520,6 +2520,7 @@ class ClaudeSessionsTest(unittest.TestCase):
             self.assertEqual(live.rewind("u1", "both"), {"code": True, "chat": True, "prefill": "the old prompt"})
             self.assertEqual(live.context()["percent"], 18)
             self.assertEqual(live.context()["parts"], [{"name": "Messages", "tokens": 5000}])
+            self.assertEqual((live.context()["free"], live.context()["reserved"]), (160000, 0))
             with self.assertRaises(CS.Invalid):
                 live.rewind("u1", "everything")
             sent = [json.loads(x) for x in C.read_text(args).splitlines()]
@@ -5876,6 +5877,101 @@ console.log(JSON.stringify({before, strip, after: openTabs().map(t => t.pr), has
         self.assertEqual((out["after"], out["hash"]), (["o/r#8"], "prs/o/r/8"))  # closing the open one moves on
         self.assertIn("prTabOpen(pr, ", js)
         self.assertIn("${prTabStrip()}${head(rec.title || pr", js)
+
+    def test_earlier_findings_on_a_re_review_are_grouped_by_where_they_stand(self):
+        """Run the grouping in node: the review's call, moved on by "Is it fixed?", unknown states kept."""
+        node = C.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        with open(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js")) as f:
+            js = f.read()
+        block = js[js.index("const PRIOR_GROUPS"):js.index("const SINCE = ")]
+        script = """
+%s
+const by = { "1.2": { id: "1.2", check: { state: "partly" } }, "1.3": { id: "1.3", check: { state: "fixed" } },
+  "1.4": { id: "1.4", fixed: { commit: "abc" } }, "1.5": { id: "1.5", check: { state: "partly" } } };
+const row = (id, state) => ({ id, state });
+const g = priorGroups([row("1.1", "open"), row("1.2", "ignored"), row("1.3", "open"), row("1.4", "replied"),
+  row("1.5", "fixed"), row("1.6", "withdrawn"), row("1.7", "open"), row("1.8", "odd-state")], by);
+console.log(JSON.stringify(g.map(x => [x.key, x.heading, x.items.map(i => i.id)])));
+console.log(JSON.stringify(priorGroups([], {})));
+""" % block
+        out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout.splitlines()
+        groups, none = out
+        self.assertEqual(json.loads(groups), [
+            ["open", "Still open", ["1.1", "1.7"]], ["partly", "Partly fixed", ["1.2"]],
+            ["fixed", "Fixed", ["1.3", "1.4", "1.5"]], ["withdrawn", "Not applicable", ["1.6"]],
+            ["odd-state", "odd-state", ["1.8"]]])
+        self.assertEqual(none, "[]")
+        self.assertIn("priorGroups(p.prior, byId)", js)
+
+    def test_rename_is_taught_in_the_tutorial_and_the_page_tours(self):
+        here = os.path.dirname(R.__file__)
+        js = C.read_text(os.path.join(here, "ui_assets", "app.js"))
+        tours = js[js.index("const PAGE_TOURS"):js.index("Object.keys(PAGE_TOURS)")]
+        self.assertIn("/rename</code>", tours[tours.index("  studio:"):tours.index("  todos:")])
+        self.assertIn("/rename</code>", tours[tours.index("  sessions:"):tours.index("  todos:")])
+        intro = C.read_text(os.path.join(here, "ui_assets", "intro", "03-everyday-commands.md"))
+        self.assertIn("`/rename <name>`", intro)
+        self.assertIn("/rename", C.read_text(os.path.join(here, "onboard.py")))
+
+    def test_context_grid_has_100_cells_and_warns_past_100k_tokens(self):
+        node = C.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        js = C.read_text(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js"))
+        block = js[js.index("const SS_CTX_LONG"):js.index("/* Claude's questions (AskUserQuestion)")]
+        script = """
+const esc = s => String(s), dot = t => "";
+%s
+const key = k => typeof k === "number" ? "part" + k : k;
+const count = cells => cells.reduce((m, k) => (m[key(k)] = (m[key(k)] || 0) + 1, m), {});
+const P = (name, tokens) => ({ name, tokens });
+const small = { percent: 18, used: 36000, max: 200000, parts: [P("Messages", 30000), P("Tools", 6000)],
+  free: 130000, reserved: 33000 };
+const tiny = { percent: 1, used: 400, max: 200000, parts: [P("Prompt", 400)], free: 199600, reserved: 0 };
+const big = { percent: 61, used: 122000, max: 200000, parts: [P("Messages", 120000), P("Tools", 2000)],
+  free: 40000, reserved: 38000 };
+console.log(JSON.stringify([count(ssCtxCells(small)), count(ssCtxCells(tiny)), ssCtxCells(big).length]));
+const warns = c => [ssCtxHtml(c).includes("sends all of it again"), ssCtxHtml(c).includes("ctx-warn")];
+console.log(JSON.stringify([...warns(small), ...warns(big)]));
+console.log(ssCtxHtml({ percent: null }) === "");
+""" % block
+        lines = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout.splitlines()
+        small, tiny, big_len = json.loads(lines[0])
+        self.assertEqual((small["part0"], small["part1"], small["reserved"], small["free"]), (15, 3, 17, 65))
+        self.assertEqual((tiny["part0"], tiny["free"]), (1, 99))  # a small part still shows
+        self.assertEqual(big_len, 100)
+        self.assertEqual(json.loads(lines[1]), [False, False, True, True])  # warns only past 100k tokens
+        self.assertEqual(lines[2], "true")
+
+    def test_sessions_page_can_show_only_starred_sessions(self):
+        node = C.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        js = C.read_text(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js"))
+        block = js[js.index("/* \"Starred only\" on the Sessions page"):js.index("PAGES.sessions = async")]
+        script = """
+const store = {}, localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } };
+%s
+const all = [{ id: "a", name: "alpha", starred: true }, { id: "b", name: "beta" },
+  { id: "c", name: "gamma", starred: true }];
+const hit = q => s => !q || s.name.includes(q);
+const ids = (l, q, on) => sessShown(l, hit(q), on).map(s => s.id).join("");
+const out = { off: sessStarredOn(), all: ids(all, "", false), only: ids(all, "", true), search: ids(all, "gam", true),
+  count: sessStarredCount(all), none: sessEmptyText([{ id: "b" }], "", true, "/p"),
+  miss: sessEmptyText(all, "zzz", true, "/p"), plain: sessEmptyText([], "", false, "/p") };
+localStorage.setItem(SESS_STARRED_KEY, "1"); out.on = sessStarredOn();
+localStorage.setItem(SESS_STARRED_KEY, ""); out.back = sessStarredOn();
+console.log(JSON.stringify(out));
+""" % block
+        out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual((out["all"], out["only"], out["search"], out["count"]), ("abc", "ac", "c", 2))
+        self.assertEqual((out["off"], out["on"], out["back"]), (False, True, False))  # remembered in localStorage
+        self.assertEqual(out["none"], ["No starred sessions yet: star one to keep it here", ""])
+        self.assertEqual(out["miss"][0], "No sessions match")  # starred ones exist, the search found none
+        self.assertEqual(out["plain"][0], "No sessions match")
+        self.assertIn("sessShown(d.sessions, hit, starredOnly)", js)
 
     def test_dead_running_job_reads_as_failed(self):
         C.write_json(R.job_path("o/r", 9), {"status": "running", "pid": 999999999})

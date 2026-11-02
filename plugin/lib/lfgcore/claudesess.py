@@ -699,7 +699,11 @@ class Live:
         return {"percent": r.get("percentage"), "used": r.get("totalTokens"), "max": r.get("maxTokens"),
                 "auto_compact_at": r.get("autoCompactThreshold") if r.get("isAutoCompactEnabled") else None,
                 "parts": [{"name": c.get("name"), "tokens": c.get("tokens")} for c in r.get("categories") or []
-                          if c.get("kind") == "used" and c.get("tokens")]}
+                          if c.get("kind") == "used" and c.get("tokens")],
+                # what is left, and what Claude Code keeps back for compacting: the rest of the window in the grid
+                "free": sum(c.get("tokens") or 0 for c in r.get("categories") or [] if c.get("kind") == "free"),
+                "reserved": sum(c.get("tokens") or 0 for c in r.get("categories") or []
+                                if c.get("kind") not in ("used", "free"))}
 
     def set_mode(self, mode):
         if mode not in MODES:

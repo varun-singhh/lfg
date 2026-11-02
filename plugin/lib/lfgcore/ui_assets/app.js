@@ -1930,10 +1930,11 @@ const PAGE_TOURS = {
   studio: [
     { sel: "#nav", title: "Your dashboard", body: () => "Everything LFG does, by what you're doing: <b>Your work</b> (runs, todos, reviews, checks), <b>This project</b> (code, insights, docs) and <b>LFG</b> itself (usage, skills, settings)." },
     { sel: "#repo", title: "Pick a project", body: () => "Every page shows the project picked here, and the branch below it narrows runs and checks to one branch." },
-    { sel: "#ss-comp", title: "Studio", body: () => "Run Claude Code here: describe the task, <code>/</code> for skills, <code>@</code> for files, drop in screenshots. Sessions from your terminal and the desktop app show up too." },
+    { sel: "#ss-comp", title: "Studio", body: () => "Run Claude Code here: describe the task, <code>/</code> for skills, <code>@</code> for files, drop in screenshots. Sessions from your terminal and the desktop app show up too. In the terminal, <code>/rename</code> gives a session a readable name here." },
     { sel: "#bell", title: "Notifications", body: () => "When a check finishes, a run needs a decision or a review is ready, it shows up here." },
     { sel: "#tour-btn", title: "A tour on every page", body: () => "Press <b>Tour</b> on any page to see what it's for." },
   ],
+  sessions: [{ title: "Sessions", body: () => "Every Claude Code session on this computer, from the terminal, the desktop app or here. Star the ones to keep, and group them by project or PR." }, { title: "Give a session a name", body: () => "In Claude Code, type <code>/rename</code> and a name. This page then shows that name instead of the first thing you asked, so you can find the session later." }],
   todos: [{ sel: "[data-td-add]", title: "Add a todo", body: () => "Type and press Enter. It's tagged with the project you're in." }, { sel: ".td-st", title: "Status", body: () => "Click the coloured tag to move it along: to do, in progress, done." }, { sel: ".td-a", title: "Linear and notes", body: () => "Turn any todo into a Linear ticket, or add notes." }],
   runs: [{ title: "Runs", body: () => "Every request you give LFG becomes a run: brief, plan, build, checks, review and ship, with each stage's files." }, { sel: ".runs-bar", title: "Find a run", body: () => "Search by what it was for, its branch or its issue." }],
   review: [{ title: "Reviews", body: () => "Review pull requests and AI chats here. Open one to see the diff, the comments and a chat beside it." }, { sel: ".rv-top", title: "Start a review", body: () => "Pick a pull request or a chat. LFG reads the diff and its callers before it says anything." }, { title: "Talk to the diff", body: () => "In a review, click a line number to ask about that line, or <b>Discuss</b> on a comment to argue with it. Mark each comment <b>Will fix</b> or <b>Not now</b>." }],
@@ -2602,6 +2603,17 @@ async function sessionRules(sid) {
   };
   draw();
 }
+/* "Starred only" on the Sessions page: remembered like the page's other filters. */
+const SESS_STARRED_KEY = "lfg.sessions.starred";
+const sessStarredOn = () => localStorage.getItem(SESS_STARRED_KEY) === "1";
+const sessStarredCount = all => (all || []).filter(s => s.starred).length;
+/* the sessions to show: those matching the search, and only the starred ones when that filter is on */
+const sessShown = (all, hit, only) => (all || []).filter(s => hit(s) && (!only || s.starred));
+/* what the page says when nothing is shown: [title, body] */
+function sessEmptyText(all, q, only, projectsDir) {
+  if (only && !sessStarredCount(all)) return ["No starred sessions yet: star one to keep it here", ""];
+  return ["No sessions match", q ? "Try a ticket number, a branch or a repo name." : "No Claude Code sessions found in " + projectsDir];
+}
 /* Sessions: every Claude Code session on this machine, grouped repo → ticket/branch (or your folder). */
 PAGES.sessions = async () => {
   const loose = localStorage.getItem("lfg.sessions.loose") === "1";
@@ -2612,7 +2624,8 @@ PAGES.sessions = async () => {
   if ((sr.runs || []).some(j => ["running", "starting"].includes(j.status))) setTimeout(() => { if (location.hash.startsWith("#sessions")) softRoute(); }, 4000);
   const q = (state.sessionFind || "").toLowerCase();
   const hit = s => !q || [s.name, s.repo, s.worktree, s.branch, s.ticket, s.folder, s.first, s.cwd].join(" ").toLowerCase().includes(q);
-  const rows = d.sessions.filter(hit);
+  const starredOnly = sessStarredOn(), nStarred = sessStarredCount(d.sessions);
+  const rows = sessShown(d.sessions, hit, starredOnly);
   const byRepo = new Map();
   for (const s of rows) {
     // outside any repo: one heading, then the folder it was started in (~/code, ~/Downloads, ...)
@@ -2657,8 +2670,8 @@ PAGES.sessions = async () => {
   return `${head("Sessions", `Every Claude Code session on this machine, whichever folder you started it in. Copy a resume command and paste it in any terminal: it opens the right folder and picks the session back up.`)}
     ${tabs}
     ${lock}
-    <div class="table-tools"><input type="search" id="sess-find" placeholder="Search names, tickets, branches, repos…" value="${esc(state.sessionFind || "")}"><span class="count">${plural(rows.length, "session")}${q ? ` of ${d.sessions.length}` : ""}</span>${d.hidden_count ? `<label class="small"><input type="checkbox" id="sess-hidden" ${state.showHidden ? "checked" : ""}> Show ${plural(d.hidden_count, "hidden session")}</label>` : ""}</div>
-    ${rows.length ? groups.join("") : empty("No sessions match", q ? "Try a ticket number, a branch or a repo name." : "No Claude Code sessions found in " + esc(d.projects_dir))}`;
+    <div class="table-tools"><input type="search" id="sess-find" placeholder="Search names, tickets, branches, repos…" value="${esc(state.sessionFind || "")}"><button class="btn small sess-starred${starredOnly ? " on" : ""}" data-sess-starred aria-pressed="${starredOnly}" title="Show only the sessions you starred">★ Starred only <span class="n">${nStarred}</span></button><span class="count">${plural(rows.length, "session")}${q || starredOnly ? ` of ${d.sessions.length}` : ""}</span>${d.hidden_count ? `<label class="small"><input type="checkbox" id="sess-hidden" ${state.showHidden ? "checked" : ""}> Show ${plural(d.hidden_count, "hidden session")}</label>` : ""}</div>
+    ${rows.length ? groups.join("") : empty(...sessEmptyText(d.sessions, q, starredOnly, esc(d.projects_dir)))}`;
 };
 /* Skills run on a session from here: what's running, what each run said last, and what it used. */
 const RUN_ST = { starting: ["Starting", "on"], running: ["Running", "on"], done: ["Done", "ok"], failed: ["Failed", "bad"] };
@@ -2789,6 +2802,7 @@ function wireSessions(root) {
     if (v !== "loose") localStorage.setItem("lfg.allrepos.sessions", v === "all" ? "1" : "");
     route();
   });
+  $$("[data-sess-starred]", root).forEach(b => b.onclick = () => { localStorage.setItem(SESS_STARRED_KEY, sessStarredOn() ? "" : "1"); route(); });
   $$("[data-sess-skill]", root).forEach(b => b.onclick = () => { const [sid, name] = JSON.parse(b.dataset.sessSkill); sessionSkill(sid, name); });
   $$("[data-sess-changes]", root).forEach(b => b.onclick = async () => { const [sid, name] = JSON.parse(b.dataset.sessChanges); sessionChanges(sid, name, await isUnlocked()); });
   const work = $$("[data-sess-work]", root);
@@ -2858,6 +2872,7 @@ function wireSessions(root) {
     b.dataset.sessStar = JSON.stringify([id, !on]);
     const li = b.closest("li.sess"), list = li && li.parentNode;
     if (on && list) list.prepend(li);
+    const cnt = $(".sess-starred .n", root); if (cnt) cnt.textContent = sessStarredCount(state.sessions.sessions);
   });
   const hid = $("#sess-hidden", root);
   if (hid) hid.onchange = () => { state.showHidden = hid.checked; route(); };
@@ -3521,6 +3536,26 @@ const prRef = r => `${r.repo}#${r.number}`;
 const prHash = r => `#prs/${r.repo}/${r.number}`;
 const PRIOR = { fixed: ["Fixed", "ok"], replied: ["Answered, still open", "warn"], withdrawn: ["Withdrawn", ""],
   "resolved-unchanged": ["Resolved but not fixed", "bad"], ignored: ["Not addressed", "bad"], open: ["Still open", "warn"] };
+/* Earlier findings on a re-review, grouped by where each stands: the review's own call, moved on by what you have
+   checked since ("Is it fixed?" says fixed or partly). Order is how much attention each needs; a state this code
+   doesn't know gets a group of its own at the end. */
+const PRIOR_GROUPS = [["open", "Still open", "warn", "Still open"], ["ignored", "Not addressed", "bad", "Not addressed"],
+  ["resolved-unchanged", "Resolved but not fixed", "bad", "Resolved but not fixed"], ["replied", "Answered, still open", "warn", "Answered, still open"],
+  ["partly", "Partly fixed", "warn", "Partly fixed"], ["fixed", "Fixed", "ok", "Fixed"], ["withdrawn", "Withdrawn", "", "Not applicable"]];
+function priorGroupOf(x, f) {
+  if (x.state === "fixed" || x.state === "withdrawn" || !f) return x.state;
+  if ((f.fixed || {}).commit || (f.check || {}).state === "fixed") return "fixed";
+  return (f.check || {}).state === "partly" ? "partly" : x.state;
+}
+/* [{key, label, tone, heading, items: [prior row]}] for the groups that have rows */
+function priorGroups(prior, byId) {
+  const by = {};
+  (prior || []).forEach(x => (by[priorGroupOf(x, byId[x.id])] = by[priorGroupOf(x, byId[x.id])] || []).push(x));
+  const known = PRIOR_GROUPS.map(g => g[0]);
+  const rows = PRIOR_GROUPS.map(([key, label, tone, heading]) => ({ key, label, tone, heading, items: by[key] || [] }));
+  Object.keys(by).filter(k => !known.includes(k)).forEach(k => rows.push({ key: k, label: k, tone: "", heading: k, items: by[k] }));
+  return rows.filter(g => g.items.length);
+}
 const SINCE = { new: "in the new commits", missed: "missed last time" };
 const ORIGIN = { exposed: "existing bug this PR now reaches", "pre-existing": "was already there" };
 /* " together with owner/repo#n" (and the ticket) for a review that covers several PRs in one session */
@@ -4290,11 +4325,12 @@ async function prDetail(arg) {
   const passTabs = `<div class="tabs pr-passes" data-scroll-on>${passes.slice().reverse().map(x => `<button class="tab ${x.n === p.n ? "on" : ""}" data-pr-pass='${esc(JSON.stringify([pr, x.n]))}'>${esc(label(x))}<span class="n">${x.posted ? "posted" : ago(x.ts)}</span></button>`).join("")}</div>`;
   const own = !!(rec.author && d.gh && d.gh.me && rec.author === d.gh.me);  // GitHub takes only a comment on your own PR
   const passOf = Object.fromEntries(passes.flatMap(x => x.findings.map(f => [f.id, x.n])));
-  const prior = (p.prior || []).length ? section("Earlier comments", p.prior.map(x => {
-    const [t, tn] = PRIOR[x.state] || [x.state, ""], f = byId[x.id];
-    const from = passOf[x.id], head = `<div class="row prior-head">${dot(tn)}<b>${esc(t)}</b>${f && f.status === "drop" ? `<span class="tag" title="The review still sees it in the code; you decided not to act on it">${own ? "you passed on it" : "you dropped it"}</span>` : ""}<span class="grow"></span>${from && from !== p.n ? `<a href="#" class="small" data-pr-goto='${esc(JSON.stringify([pr, from, x.id]))}'>From review ${from} ↗</a>` : ""}${f ? copyBtns(earlierForPerson(x, f, pr, t), earlierForAgent(x, f, pr, t)) : ""}</div>${x.note ? `<p class="small">${txt(x.note)}</p>` : ""}`;
+  const priorItem = (x, g) => {
+    const f = byId[x.id], from = passOf[x.id], head = `<div class="row prior-head">${f && f.status === "drop" ? `<span class="tag" title="The review still sees it in the code; you decided not to act on it">${own ? "you passed on it" : "you dropped it"}</span>` : ""}<span class="grow"></span>${from && from !== p.n ? `<a href="#" class="small" data-pr-goto='${esc(JSON.stringify([pr, from, x.id]))}'>From review ${from} ↗</a>` : ""}${f ? copyBtns(earlierForPerson(x, f, pr, g.label), earlierForAgent(x, f, pr, g.label)) : ""}</div>${x.note ? `<p class="small">${txt(x.note)}</p>` : ""}`;
     return `<div class="prior-item">${head}${f ? prFinding(f, pr, unlocked, true, own) : ""}</div>`;
-  }).join(""), "what happened to each earlier finding; decide, discuss or fix them here") : "";
+  };
+  const priorBy = priorGroups(p.prior, byId);
+  const prior = priorBy.length ? section("Earlier comments", priorBy.map(g => `<div class="prior-group" data-prior-group="${esc(g.key)}"><h3 class="prior-group-h">${dot(g.tone)}${esc(g.heading)}<span class="n">${g.items.length}</span></h3>${g.items.map(x => priorItem(x, g)).join("")}</div>`).join(""), "where each earlier finding stands now; decide, discuss or fix them here") : "";
   const order = { blocker: 0, major: 1, minor: 2, nitpick: 3, note: 4 };
   const fs = [...p.findings].sort((a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5));
   const together = p.together || [];
@@ -5503,11 +5539,36 @@ async function ssImages(root) {  // images in messages come from the transcript,
     const img = new Image(); img.alt = "Image you sent"; img.src = state.ssImg[key]; b.append(img);
   }
 }
-/* how full the context window is (live sessions; from Claude Code, no API call) */
+/* How full the context window is, like /context: a pill in the header, and under it a grid of 100 cells, one per
+   percent of the window, coloured by what fills it. Once a session passes about 100k tokens it says so plainly,
+   because every new message resends all of it. */
+const SS_CTX_LONG = 100000;
+/* the 100 cells: [part index], "reserved" or "free"; every part that has tokens gets at least one cell */
+function ssCtxCells(c) {
+  const max = c.max || 0, n = v => max ? Math.round((v || 0) / max * 100) : 0;
+  const parts = (c.parts || []).map(p => Math.max(1, n(p.tokens)));
+  const res = c.reserved ? Math.max(1, n(c.reserved)) : 0;
+  let over = parts.reduce((a, b) => a + b, 0) + res - 100;
+  for (let i = parts.length - 1; over > 0 && i >= 0; i--) { const cut = Math.min(over, parts[i] - 1); parts[i] -= cut; over -= cut; }
+  const cells = [];
+  parts.forEach((k, i) => { for (let j = 0; j < k; j++) cells.push(i); });
+  const free = Math.max(0, 100 - cells.length - res);
+  for (let j = 0; j < free; j++) cells.push("free");
+  for (let j = 0; cells.length < 100; j++) cells.push("reserved");
+  return cells.slice(0, 100);
+}
+const ssTok = v => v >= 1000 ? `${Math.round(v / 100) / 10}k`.replace(".0k", "k") : String(v || 0);
 function ssCtxHtml(c) {
   if (!c || c.percent == null) return "";
-  const tip = [`${(c.used || 0).toLocaleString()} of ${(c.max || 0).toLocaleString()} tokens`, ...(c.parts || []).map(p => `${p.name}: ${p.tokens.toLocaleString()}`), c.auto_compact_at ? `Compacts by itself near ${c.auto_compact_at.toLocaleString()}` : "", "Compact it from the ⋯ menu"].filter(Boolean).join("\n");
-  return `<span class="ss-ctx${c.percent >= 70 ? " warn" : ""}" title="${esc(tip)}"><i style="--p:${Math.min(100, c.percent)}%"></i>${c.percent}% context</span>`;
+  const long = (c.used || 0) >= SS_CTX_LONG, parts = c.parts || [];
+  const cells = ssCtxCells(c).map(k => `<i class="ctx-c ${typeof k === "number" ? "c" + (k % 8) : k}"></i>`).join("");
+  const row = (cls, name, tok) => `<li><i class="ctx-c ${cls}"></i><span class="grow">${esc(name)}</span><span class="mono">${(tok || 0).toLocaleString()}</span><span class="muted small ctx-pc">${c.max ? Math.max(0.1, Math.round(tok / c.max * 1000) / 10) : 0}%</span></li>`;
+  const legend = parts.map((p, i) => row("c" + (i % 8), p.name, p.tokens)).join("") + (c.free ? row("free", "Free space", c.free) : "") + (c.reserved ? row("reserved", "Kept back for compacting", c.reserved) : "");
+  const warn = long ? `<div class="ctx-warn">${dot("warn")}<span><b>This session is long (${ssTok(c.used)} tokens).</b> Every new message sends all of it again, so replies get slower and cost more. Compact it from the ⋯ menu, or start a new session for something different.</span></div>` : "";
+  return `<details class="ss-ctx-box"><summary class="ss-ctx${long ? " long" : c.percent >= 70 ? " warn" : ""}" title="What fills this session's context window. Click for the breakdown."><i style="--p:${Math.min(100, c.percent)}%"></i>${c.percent}% context${long ? ` · long: ${ssTok(c.used)} tokens` : ""}</summary>
+    <div class="ctx-pop"><div class="ctx-h"><b>${(c.used || 0).toLocaleString()}</b> of ${(c.max || 0).toLocaleString()} tokens used${c.auto_compact_at ? `<span class="muted small"> · compacts by itself near ${c.auto_compact_at.toLocaleString()}</span>` : ""}</div>${warn}
+      <div class="ctx-grid" role="img" aria-label="${c.percent}% of the context window is used">${cells}</div><ul class="ctx-legend">${legend}</ul>
+      <div class="muted small">Each square is 1% of the window.</div></div></details>`;
 }
 /* Claude's questions (AskUserQuestion): pick an option per question (or several, for multi-select), or write your
    own answer; it goes back as Claude Code's own picker sends it. Picks survive the page redrawing. */
@@ -6058,7 +6119,7 @@ function wireStudio(root) {
     const c = await api("studio_context", { id: S.id }).catch(() => null);
     if (!c || c.percent == null) return;
     (state.ssCtx = state.ssCtx || {})[S.id] = c;
-    const a = $(".ss-head-a", head), old = $(".ss-ctx", a);
+    const a = $(".ss-head-a", head), old = $(".ss-ctx-box", a);
     if (old) old.outerHTML = ssCtxHtml(c); else a.insertAdjacentHTML("afterbegin", ssCtxHtml(c));
   };
   wireConv(); wireHead(); loadCtx();
