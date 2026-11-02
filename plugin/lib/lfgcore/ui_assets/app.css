@@ -2340,6 +2340,25 @@ body.rail .ns-n { position: absolute; top: 1px; right: 3px; min-width: 15px; hei
 .ss-ctx i { position: relative; width: 44px; height: 4px; border-radius: 2px; background: var(--soft-2); overflow: hidden; }
 .ss-ctx i::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: var(--p, 0%); background: var(--blue); border-radius: inherit; }
 .ss-ctx.warn i::after { background: var(--yellow); }
+.ss-ctx.long { color: var(--yellow-tx); font-weight: 600; }
+.ss-ctx.long i::after { background: var(--red); }
+.ss-ctx-box { position: relative; }
+.ss-ctx-box > summary { list-style: none; cursor: pointer; }
+.ss-ctx-box > summary::-webkit-details-marker { display: none; }
+.ctx-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: 340px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); box-shadow: 0 12px 32px -12px rgba(0, 0, 0, .35); display: grid; gap: 10px; font-size: 13px; }
+.ctx-warn { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 8px; background: var(--yellow-bg); color: var(--yellow-tx); }
+.ctx-warn .dot { margin-top: 5px; flex: none; }
+.ctx-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; }
+.ctx-c { display: block; aspect-ratio: 1; border-radius: 3px; background: var(--soft-2); }
+.ctx-c.c0 { background: #3b82f6; } .ctx-c.c1 { background: #8b5cf6; } .ctx-c.c2 { background: #f59e0b; } .ctx-c.c3 { background: #10b981; }
+.ctx-c.c4 { background: #ec4899; } .ctx-c.c5 { background: #14b8a6; } .ctx-c.c6 { background: #ef4444; } .ctx-c.c7 { background: #6366f1; }
+.ctx-c.free { background: var(--soft-2); }
+.ctx-c.reserved { background: repeating-linear-gradient(45deg, var(--soft-2), var(--soft-2) 2px, transparent 2px, transparent 4px); outline: 1px solid var(--line); outline-offset: -1px; }
+.ctx-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ctx-legend li { display: flex; align-items: center; gap: 8px; }
+.ctx-legend .ctx-c { width: 10px; flex: none; }
+.ctx-pc { width: 40px; text-align: right; }
 .ss-head-a { position: relative; }
 .ss-more .ico { width: 16px; height: 16px; }
 .ss-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 230px; padding: 5px; border: 1px solid var(--line); border-radius: var(--radius);

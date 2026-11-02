@@ -2520,6 +2520,7 @@ class ClaudeSessionsTest(unittest.TestCase):
             self.assertEqual(live.rewind("u1", "both"), {"code": True, "chat": True, "prefill": "the old prompt"})
             self.assertEqual(live.context()["percent"], 18)
             self.assertEqual(live.context()["parts"], [{"name": "Messages", "tokens": 5000}])
+            self.assertEqual((live.context()["free"], live.context()["reserved"]), (160000, 0))
             with self.assertRaises(CS.Invalid):
                 live.rewind("u1", "everything")
             sent = [json.loads(x) for x in C.read_text(args).splitlines()]
@@ -5913,6 +5914,36 @@ console.log(JSON.stringify(priorGroups([], {})));
         intro = C.read_text(os.path.join(here, "ui_assets", "intro", "03-everyday-commands.md"))
         self.assertIn("`/rename <name>`", intro)
         self.assertIn("/rename", C.read_text(os.path.join(here, "onboard.py")))
+
+    def test_context_grid_has_100_cells_and_warns_past_100k_tokens(self):
+        node = C.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        js = C.read_text(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js"))
+        block = js[js.index("const SS_CTX_LONG"):js.index("/* Claude's questions (AskUserQuestion)")]
+        script = """
+const esc = s => String(s), dot = t => "";
+%s
+const key = k => typeof k === "number" ? "part" + k : k;
+const count = cells => cells.reduce((m, k) => (m[key(k)] = (m[key(k)] || 0) + 1, m), {});
+const P = (name, tokens) => ({ name, tokens });
+const small = { percent: 18, used: 36000, max: 200000, parts: [P("Messages", 30000), P("Tools", 6000)],
+  free: 130000, reserved: 33000 };
+const tiny = { percent: 1, used: 400, max: 200000, parts: [P("Prompt", 400)], free: 199600, reserved: 0 };
+const big = { percent: 61, used: 122000, max: 200000, parts: [P("Messages", 120000), P("Tools", 2000)],
+  free: 40000, reserved: 38000 };
+console.log(JSON.stringify([count(ssCtxCells(small)), count(ssCtxCells(tiny)), ssCtxCells(big).length]));
+const warns = c => [ssCtxHtml(c).includes("sends all of it again"), ssCtxHtml(c).includes("ctx-warn")];
+console.log(JSON.stringify([...warns(small), ...warns(big)]));
+console.log(ssCtxHtml({ percent: null }) === "");
+""" % block
+        lines = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout.splitlines()
+        small, tiny, big_len = json.loads(lines[0])
+        self.assertEqual((small["part0"], small["part1"], small["reserved"], small["free"]), (15, 3, 17, 65))
+        self.assertEqual((tiny["part0"], tiny["free"]), (1, 99))  # a small part still shows
+        self.assertEqual(big_len, 100)
+        self.assertEqual(json.loads(lines[1]), [False, False, True, True])  # warns only past 100k tokens
+        self.assertEqual(lines[2], "true")
 
     def test_dead_running_job_reads_as_failed(self):
         C.write_json(R.job_path("o/r", 9), {"status": "running", "pid": 999999999})

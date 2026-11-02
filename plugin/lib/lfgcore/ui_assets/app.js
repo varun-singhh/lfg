@@ -5525,11 +5525,36 @@ async function ssImages(root) {  // images in messages come from the transcript,
     const img = new Image(); img.alt = "Image you sent"; img.src = state.ssImg[key]; b.append(img);
   }
 }
-/* how full the context window is (live sessions; from Claude Code, no API call) */
+/* How full the context window is, like /context: a pill in the header, and under it a grid of 100 cells, one per
+   percent of the window, coloured by what fills it. Once a session passes about 100k tokens it says so plainly,
+   because every new message resends all of it. */
+const SS_CTX_LONG = 100000;
+/* the 100 cells: [part index], "reserved" or "free"; every part that has tokens gets at least one cell */
+function ssCtxCells(c) {
+  const max = c.max || 0, n = v => max ? Math.round((v || 0) / max * 100) : 0;
+  const parts = (c.parts || []).map(p => Math.max(1, n(p.tokens)));
+  const res = c.reserved ? Math.max(1, n(c.reserved)) : 0;
+  let over = parts.reduce((a, b) => a + b, 0) + res - 100;
+  for (let i = parts.length - 1; over > 0 && i >= 0; i--) { const cut = Math.min(over, parts[i] - 1); parts[i] -= cut; over -= cut; }
+  const cells = [];
+  parts.forEach((k, i) => { for (let j = 0; j < k; j++) cells.push(i); });
+  const free = Math.max(0, 100 - cells.length - res);
+  for (let j = 0; j < free; j++) cells.push("free");
+  for (let j = 0; cells.length < 100; j++) cells.push("reserved");
+  return cells.slice(0, 100);
+}
+const ssTok = v => v >= 1000 ? `${Math.round(v / 100) / 10}k`.replace(".0k", "k") : String(v || 0);
 function ssCtxHtml(c) {
   if (!c || c.percent == null) return "";
-  const tip = [`${(c.used || 0).toLocaleString()} of ${(c.max || 0).toLocaleString()} tokens`, ...(c.parts || []).map(p => `${p.name}: ${p.tokens.toLocaleString()}`), c.auto_compact_at ? `Compacts by itself near ${c.auto_compact_at.toLocaleString()}` : "", "Compact it from the ⋯ menu"].filter(Boolean).join("\n");
-  return `<span class="ss-ctx${c.percent >= 70 ? " warn" : ""}" title="${esc(tip)}"><i style="--p:${Math.min(100, c.percent)}%"></i>${c.percent}% context</span>`;
+  const long = (c.used || 0) >= SS_CTX_LONG, parts = c.parts || [];
+  const cells = ssCtxCells(c).map(k => `<i class="ctx-c ${typeof k === "number" ? "c" + (k % 8) : k}"></i>`).join("");
+  const row = (cls, name, tok) => `<li><i class="ctx-c ${cls}"></i><span class="grow">${esc(name)}</span><span class="mono">${(tok || 0).toLocaleString()}</span><span class="muted small ctx-pc">${c.max ? Math.max(0.1, Math.round(tok / c.max * 1000) / 10) : 0}%</span></li>`;
+  const legend = parts.map((p, i) => row("c" + (i % 8), p.name, p.tokens)).join("") + (c.free ? row("free", "Free space", c.free) : "") + (c.reserved ? row("reserved", "Kept back for compacting", c.reserved) : "");
+  const warn = long ? `<div class="ctx-warn">${dot("warn")}<span><b>This session is long (${ssTok(c.used)} tokens).</b> Every new message sends all of it again, so replies get slower and cost more. Compact it from the ⋯ menu, or start a new session for something different.</span></div>` : "";
+  return `<details class="ss-ctx-box"><summary class="ss-ctx${long ? " long" : c.percent >= 70 ? " warn" : ""}" title="What fills this session's context window. Click for the breakdown."><i style="--p:${Math.min(100, c.percent)}%"></i>${c.percent}% context${long ? ` · long: ${ssTok(c.used)} tokens` : ""}</summary>
+    <div class="ctx-pop"><div class="ctx-h"><b>${(c.used || 0).toLocaleString()}</b> of ${(c.max || 0).toLocaleString()} tokens used${c.auto_compact_at ? `<span class="muted small"> · compacts by itself near ${c.auto_compact_at.toLocaleString()}</span>` : ""}</div>${warn}
+      <div class="ctx-grid" role="img" aria-label="${c.percent}% of the context window is used">${cells}</div><ul class="ctx-legend">${legend}</ul>
+      <div class="muted small">Each square is 1% of the window.</div></div></details>`;
 }
 /* Claude's questions (AskUserQuestion): pick an option per question (or several, for multi-select), or write your
    own answer; it goes back as Claude Code's own picker sends it. Picks survive the page redrawing. */
@@ -6080,7 +6105,7 @@ function wireStudio(root) {
     const c = await api("studio_context", { id: S.id }).catch(() => null);
     if (!c || c.percent == null) return;
     (state.ssCtx = state.ssCtx || {})[S.id] = c;
-    const a = $(".ss-head-a", head), old = $(".ss-ctx", a);
+    const a = $(".ss-head-a", head), old = $(".ss-ctx-box", a);
     if (old) old.outerHTML = ssCtxHtml(c); else a.insertAdjacentHTML("afterbegin", ssCtxHtml(c));
   };
   wireConv(); wireHead(); loadCtx();
