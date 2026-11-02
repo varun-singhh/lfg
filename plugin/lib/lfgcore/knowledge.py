@@ -173,9 +173,10 @@ def _slug(prefix, title):
     return "%s-%s-%s" % (prefix, base, hashlib.sha1(("%s%f" % (title, _t.time())).encode()).hexdigest()[:5])
 
 
-def add(kind, title, text, repo="", feature="", topic=""):
+def add(kind, title, text, repo="", feature="", topic="", root=None):
     """Save a decision or lesson to dev-graph, or a note to second-brain, from the dashboard (you typed it). Repo,
-    feature and topic go into LFG's tags."""
+    feature and topic go into LFG's tags. With `root` (a checkout of the repo) a decision or lesson goes to that
+    checkout's own dev-graph branch, the one its sessions read and `lfg knowledge sync` shares; without it, to main."""
     from . import omnigraph as OG
     title, text = re.sub(r"\s+", " ", str(title or "")).strip()[:200], str(text or "").strip()[:8000]
     if not title or not text:
@@ -184,19 +185,24 @@ def add(kind, title, text, repo="", feature="", topic=""):
     if _secret_kinds(title + "\n" + text):
         raise ValueError("that looks like it contains a secret; not saved")
     today, now = C.now_iso()[:10], C.now_iso()
+    branch = None
+    if root and kind in ("decision", "learning"):
+        from . import teamknowledge as K
+        K.ensure_locked(root)  # the branch exists before the first write
+        branch = K.branch_for(root)
     if kind == "decision":
         slug = _slug("dec", title)
         OG.mutate("dev-graph", "query a($slug: String, $title: String, $decision: String, $at: Date) { insert Decision "
                   "{ slug: $slug, title: $title, decision: $decision, status: \"accepted\", createdAt: $at, "
                   "createdBy: \"lfg-dashboard\" } }", "a",
-                  {"slug": slug, "title": title, "decision": text, "at": today})
+                  {"slug": slug, "title": title, "decision": text, "at": today}, branch=branch)
     elif kind == "learning":
         slug = _slug("lrn", title)
         lk = topic if topic in ("incident_review", "retro", "gotcha", "hindsight") else "gotcha"
         OG.mutate("dev-graph", "query a($slug: String, $title: String, $body: String, $kind: String, $at: Date) "
                   "{ insert Learning { slug: $slug, title: $title, body: $body, learningKind: $kind, "
                   "createdAt: $at, createdBy: \"lfg-dashboard\" } }", "a",
-                  {"slug": slug, "title": title, "body": text, "kind": lk, "at": today})
+                  {"slug": slug, "title": title, "body": text, "kind": lk, "at": today}, branch=branch)
     elif kind == "note":
         slug = _slug("nt", title)
         OG.mutate("second-brain", "query a($slug: String, $name: String, $content: String, $now: DateTime) { insert "

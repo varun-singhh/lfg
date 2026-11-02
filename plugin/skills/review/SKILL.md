@@ -36,6 +36,15 @@ preflight: graphs
    resolve against its own folder, then its parent folders. Name any `missing_sources` to the user.
 4. **Repo rules.** Read every file in `agents_md` with the `read_agents_md` command (the PR's version, not main's).
    They outrank the sources.
+   **Settled by the user.** `settled` in the context is what they already decided, across PRs: `passed` (findings
+   they passed on for good, in this repo or every repo, each with its `title`, `issue` and `severity`; none on Fresh
+   eyes, which never sees their Fix/Pass choices), `decisions` (saved from earlier reviews' discussions and answers, in
+   this repo's dev-graph) and `notes` (saved to their second-brain: personal, each names the PR it came from, so apply
+   those that fit this repo). Read them before filing anything.
+   Never file a finding one of them covers, in other words or at another line. Raise it only if in this PR it is
+   clearly worse than when it was settled (higher severity, wider reach, a new way to hit it) and say in `body` what is worse;
+   a decision saying something *is* a real problem means keep flagging it. A name in `unavailable` is a graph that
+   couldn't be read: say so in the summary.
 5. **Read the change.** `gh pr view <n> -R <repo> --json body,files` and `gh pr diff <n> -R <repo>`. Read the code
    around each hunk at `head_sha`: from a worktree (`git fetch origin pull/<n>/head:review/pr-<n>` then
    `lfg worktree new review/pr-<n>`) when the repo is local, else `gh api repos/<repo>/contents/<path>?ref=<sha>`.
@@ -51,9 +60,10 @@ preflight: graphs
      `open`. `file_changed` and `outdated` are hints only; the code decides. Do the same for each row in
      `threads.unposted` (kept or never decided, and never posted; `fixed_in` is the commit LFG's Fix made):
      `fixed`, `ignored` or `open`, with no thread to read. Both go in `prior`.
-   - **Settled.** `threads.settled` lists findings the user dropped. They decided; never raise one again in any pass,
-     in other words or at another line. Only if later commits made that exact problem worse, file it with
-     `since: "new"` and say in `body` what changed since it was dropped.
+   - **Settled.** `threads.settled` lists findings the user dropped on this PR, and step 4's `settled` what they
+     decided before. They decided; never raise one again in any pass, in other words or at another line. Only if later
+     commits made that exact problem worse, file it with `since: "new"` and say in `body` what changed since it was
+     dropped.
    - **New commits.** Review `last_reviewed_sha...head_sha` only (`gh api repos/<repo>/compare/<a>...<b>`).
      Findings get `since: "new"`.
    - **Missed.** One more pass over the whole PR for what earlier passes missed. Findings get `since: "missed"`.
@@ -78,7 +88,7 @@ preflight: graphs
    with `why` it matters. Don't ask what the code can answer. `lfg review context` lists in `answered` every
    question the user already answered about this PR, from any earlier review: take each answer as a fact, never ask
    it again (in other words either), and let it settle the findings it bears on. Fresh eyes too: answers aren't an
-   earlier review's opinion. Also check dev-graph Decisions for this repo before asking; a saved one is an answer.
+   earlier review's opinion. Also check `settled.decisions` and `settled.notes` before asking; a saved one is an answer.
 10. **Save.** Write the JSON below to a scratch file and `lfg review save <pr> --file <path> [--ticket <ID>]`. Fix
    and re-run on a validation error.
 

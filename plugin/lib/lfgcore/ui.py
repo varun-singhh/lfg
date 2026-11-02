@@ -613,6 +613,8 @@ def review_action(what, body):
             return R.set_sources(body.get("sources"))
         if what == "review_model":
             return S.save_config({"review.model": str(body.get("model") or "")})
+        if what == "review_unpass":
+            return R.pass_remove(str(body.get("id") or ""))
         repo, number = R.parse_pr(str(body.get("pr") or ""))
         if what == "review_mark":
             ids = body.get("ids") or []
@@ -627,6 +629,12 @@ def review_action(what, body):
             return R.check_fixed(repo, number, str(body.get("id") or ""))
         if what == "review_remember":
             return R.remember(repo, number, body.get("pass"), str(body.get("id") or ""), str(body.get("to") or ""))
+        if what == "review_remember_finding":
+            return R.remember_finding(repo, number, str(body.get("id") or ""), str(body.get("to") or ""),
+                                      note=body.get("note"))
+        if what == "review_pass":
+            return R.pass_on(repo, number, str(body.get("id") or ""), str(body.get("scope") or ""),
+                             note=body.get("note"))
         if what == "review_run":
             together = body.get("with") or []
             if not isinstance(together, list):

@@ -3632,6 +3632,7 @@ PAGES.prs = async arg => {
     ${section("Waiting on you", d.queue_why ? unavailable({ why: d.queue_why }, "Couldn't ask GitHub") : `<div class="box">${table(d.queue, qcols, { ...qopts, emptyTitle: "Nothing waiting", emptyBody: "No open PRs ask for your review." })}</div>`, "open PRs where GitHub lists you as a reviewer")}
     ${section("Your open PRs", d.mine_why ? unavailable({ why: d.mine_why }, "Couldn't ask GitHub") : `<div class="box">${table(d.mine, qcols, { ...qopts, emptyTitle: "No open PRs", emptyBody: "You have no open pull requests here." })}</div>`, "review your own work before others do; on your own PR you can only comment. Open one to link it to a session or a session group")}
     ${section("Your reviews", `${doneToggle}<div class="box">${table(shownReviews, rcols, { onRow: x => (location.hash = prHash(x)), sort: "updated", emptyTitle: done && !showDone ? "No open PRs reviewed" : "No reviews yet", emptyBody: done && !showDone ? "Every PR you reviewed here is merged or closed. Tick the box above to see them." : "Press Review above, or run <code>/lfg:review &lt;PR&gt;</code> in Claude Code." })}</div>`)}
+    ${passedSection(d, unlocked)}
     ${methodSection(d.method, unlocked)}`;
 };
 /* A model's name as people say it: claude-opus-5-5 is Opus 5.5. */
@@ -3797,6 +3798,38 @@ function methodGroups(sources) {
   });
   return groups;
 }
+/* Findings you told reviews not to flag again, in this repo or in every repo. Every review reads these first. */
+const PASS_SCOPE = { repo: ["Every PR in this repo", "A review of any PR in that repo leaves it alone.", "for every PR in this repo"], all: ["Every repo", "A review of any PR in any repo leaves it alone.", "for every repo"] };
+const passedTag = x => x.scope === "all" ? `<span class="tag warn" title="${PASS_SCOPE.all[1]}">Every repo</span>` : `<span class="tag" title="${PASS_SCOPE.repo[1]}">Every PR in ${esc(x.repo)}</span>`;
+function passedSection(d, unlocked) {
+  const rows = d.passed || [];
+  const line = x => { const [r, n] = String(x.pr).split("#"); return `<li class="fx-i"><div class="grow">${passedTag(x)} <b>${esc(x.title)}</b> <span class="tag">${esc(x.severity || "")}</span>${x.issue ? `<div class="muted small">${esc(x.issue)}</div>` : ""}
+      <div class="muted small">From <a href="#prs/${esc(r)}/${esc(n)}">${esc(x.pr)}</a> · ${ago(x.at)}${x.note ? ` · ${esc(x.note)}` : ""}</div></div>
+      <button class="btn small" data-pass-rm="${esc(x.id)}" ${unlocked ? "" : "disabled"} title="Let reviews flag this again">Remove</button></li>`; };
+  return section("Passed on for good", `<p class="muted small">Findings you told reviews not to flag again. Every review reads these before it files anything, and raises one again only if it is clearly worse than when you passed on it. Remove one to let reviews flag it again.</p>
+    ${rows.length ? `<ul class="list items box">${rows.map(line).join("")}</ul>` : `<p class="muted small">Nothing yet. When you Drop or Pass on a finding, you choose how far "don't flag this again" reaches.</p>`}`, rows.length ? plural(rows.length, "finding") : "");
+}
+const ownCard = card => /^Pass$/.test((($('[data-pr-mark*="drop"]', card) || {}).textContent || "").trim());  // your own PR says Pass, not Drop
+/* After dropping a finding: how far "don't flag this again" reaches. This PR only is what dropping always did. */
+function offerPass(pr, id, title, own) {
+  const repo = String(pr).split("#")[0];
+  const row = (scope, label, why, primary) => `<div class="row" style="gap:10px;align-items:flex-start;margin-top:8px"><button class="btn${primary ? " primary" : ""}" data-pass-scope="${scope}" style="flex:none;min-width:190px">${label}</button><span class="muted small">${why}</span></div>`;
+  openDrawer("Don't flag this again?", `<div class="readable"><p><b>${txt(title)}</b></p>
+    <p class="muted small">You ${own ? "passed on" : "dropped"} this finding. How far should that reach? Whatever you pick, a finding that gets worse is still raised.</p>
+    ${row("pr", "Only on this PR", "Later reviews of this PR leave it alone. This is what dropping always did.")}
+    ${row("repo", `Every PR in ${esc(repo)}`, PASS_SCOPE.repo[1], true)}
+    ${row("all", "Every repo", PASS_SCOPE.all[1])}
+    <textarea class="editor small mt" data-pass-note rows="2" placeholder="Why? Optional, shown next to it in the list"></textarea>
+    <span class="save-msg" data-pass-msg></span></div>`);
+  $$("#drawer-body [data-pass-scope]").forEach(b => b.onclick = async () => {
+    $$("#drawer-body [data-pass-scope]").forEach(x => (x.disabled = true));
+    const d = await save("review_pass", { pr, id, scope: b.dataset.passScope, note: $("#drawer-body [data-pass-note]").value });
+    if (!d.ok) { $$("#drawer-body [data-pass-scope]").forEach(x => (x.disabled = false)); return saidMsg($("#drawer-body [data-pass-msg]"), d); }
+    closeDrawer();
+    if (b.dataset.passScope !== "pr") prefToast(`Reviews won't flag this again in ${b.dataset.passScope === "all" ? "any repo" : repo}. You can undo it under Passed on for good.`);
+    softRoute();
+  });
+}
 function methodSection(m, unlocked) {
   if (!m) return "";
   const gs = methodGroups(m.sources);
@@ -3956,6 +3989,7 @@ function prFinding(f, pr, unlocked, live, own) {
     + (f.echoes || []).map(e => `<a class="tag warn" ${e.url ? `href="${esc(e.url)}" target="_blank" rel="noopener noreferrer"` : ""} title="${esc((e.near ? "Commented within a few lines of this: " : "") + (e.said || ""))}">Also raised by ${e.bot ? "" : "@"}${esc(e.who)}${e.url ? " ↗" : ""}</a>`).join("")
     + (f.repeats || []).map(r => `<span class="tag warn" title="This Fresh eyes review didn't see earlier reviews; review ${r.pass} raised this as ${esc(r.id)}${r.status === "drop" ? " and you dropped it" : r.status === "keep" ? " and you kept it" : ""}${r.posted ? ", and it was posted" : ""}">Also in review ${r.pass} (${esc(r.id)}${r.status === "drop" ? ", dropped" : ""})</span>`).join("")
     + (f.status === "drop" && f.dropped_by === "claude" ? `<span class="tag" title="You said it wasn't needed and Claude agreed after checking the code">Claude agreed: not needed</span>` : "")
+    + (f.passed_on ? `<span class="tag" title="You told reviews not to flag this again: ${esc(PASS_SCOPE[f.passed_on.scope][1])} Remove it on the PR reviews page, under Passed on for good.">Passed on ${esc(PASS_SCOPE[f.passed_on.scope][2])}</span>` : "")
     + ((f.fixed || {}).commit ? `<span class="tag ok">Fixed in ${esc(f.fixed.commit.slice(0, 8))}</span>` : "")
     + (f.raised_by ? `<a class="tag" ${f.raised_by.url ? `href="${esc(f.raised_by.url)}" target="_blank" rel="noopener noreferrer"` : ""}>From ${f.raised_by.bot ? "" : "@"}${esc(f.raised_by.who)}${f.raised_by.url ? " ↗" : ""}</a>${WORTH[f.worth] ? `<span class="tag ${WORTH[f.worth][1]}">${WORTH[f.worth][0]}</span>` : ""}` : "");
   const posted = f.comment_url ? `<a class="small" href="${esc(f.comment_url)}" target="_blank" rel="noopener noreferrer">Posted ↗</a>` : "";
@@ -3980,7 +4014,7 @@ function prFinding(f, pr, unlocked, live, own) {
     ${f.check ? checkLine(f.check) : ""}
     ${f.raised_by && own && f.status === "drop" ? replyBox(f, pr, unlocked) : ""}
     ${chat.length ? `<button class="pr-discussed" data-pr-discuss='${ref}' title="Open this conversation in the chat"><span class="pr-discussed-n">${plural(chat.length, "message")}</span><span class="pr-discussed-last">${esc(chat[chat.length - 1].a.replace(/```[\s\S]*?```/g, "").replace(/[*_`#>]/g, "").trim().slice(0, 140))}</span><span class="pr-discussed-go">Open ↗</span></button>` : ""}
-    <div class="row mt">${posted || `${own ? `${btn("keep", "Fix")}${btn("drop", "Pass")}` : `${btn("keep", "Keep")}${btn("drop", "Drop")}<button class="btn small" data-pr-edit="${esc(f.id)}" ${can ? "" : "disabled"}>Edit comment</button>`}`}<button class="btn small" data-pr-discuss='${ref}' title="Talk this finding through with Claude: push back, ask why, or say it isn't needed">Discuss</button>${f.status !== "drop" && !(f.fixed || {}).commit ? `<button class="btn small" data-pr-check='${ref}' ${unlocked ? "" : "disabled"} title="Look at the commits since this review and say whether this one finding is fixed, without a whole re-review">${f.check ? "Check again" : "Is it fixed?"}</button>` : ""}<span class="grow"></span>${copyBtns(findingForPerson(f, pr), findingForAgent(f, pr))}</div></div>`;
+    <div class="row mt">${posted || `${own ? `${btn("keep", "Fix")}${btn("drop", "Pass")}` : `${btn("keep", "Keep")}${btn("drop", "Drop")}<button class="btn small" data-pr-edit="${esc(f.id)}" ${can ? "" : "disabled"}>Edit comment</button>`}`}<button class="btn small" data-pr-discuss='${ref}' title="Talk this finding through with Claude: push back, ask why, or say it isn't needed">Discuss</button>${f.status === "drop" && !f.passed_on && !f.comment_id ? `<button class="btn small" data-pr-passoffer='${ref}' ${unlocked ? "" : "disabled"} title="Tell reviews not to flag this again: on every PR in this repo, or in every repo">Don't flag again…</button>` : ""}${f.status !== "drop" && !(f.fixed || {}).commit ? `<button class="btn small" data-pr-check='${ref}' ${unlocked ? "" : "disabled"} title="Look at the commits since this review and say whether this one finding is fixed, without a whole re-review">${f.check ? "Check again" : "Is it fixed?"}</button>` : ""}<span class="grow"></span>${copyBtns(findingForPerson(f, pr), findingForAgent(f, pr))}</div></div>`;
 }
 /* The last "Is it fixed?" answer for a finding. */
 const CHECKED = { fixed: ["Fixed", "ok"], partly: ["Partly fixed", "warn"], not: ["Not fixed yet", "bad"] };
@@ -4105,6 +4139,18 @@ function rememberRow(pr, n, q, unlocked) {
   return `<div class="pr-remember"><div class="row"><span class="muted small">Worth keeping?</span>${b("dev-graph", "Remember for this repo", "Saved as a decision in this repo's dev-graph: every session and review in this repo can find it")}${b("second-brain", "Remember for me", "Saved as a note in your second-brain: yours, in every repo")}</div>
     <div class="small muted remember-help"><span><b>For this repo:</b> a decision in this repo's dev-graph. Every session and review here can find it; it's on the Knowledge page.</span><span><b>For me:</b> a note in your second-brain. Only yours, in every repo.</span></div></div>`;
 }
+/* Save what a finding's discussion settled: asked every time where it goes. Later reviews read it as settled. */
+function findingSaveRow(pr, f, unlocked) {
+  if (!(f.chat || []).length) return "";
+  const done = f.saved || [], has = to => done.some(x => x.to === to);
+  const said = done.map(x => `${dot("ok")}Saved to ${x.to === "dev-graph" ? "this repo's dev-graph, as a decision" : "your second-brain, as a note"} ${ago(x.at)}`).join(" · ");
+  const decided = f.status !== "pending";
+  const b = (to, label, title) => has(to) ? "" : `<button class="btn small" data-pr-savefinding='${esc(JSON.stringify([pr, f.id, to]))}' title="${title}" ${unlocked && decided ? "" : "disabled"}>${label}</button>`;
+  const buttons = b("dev-graph", "Save for this repo", "Saved as a decision in this repo's dev-graph: later reviews and sessions in this repo read it as settled") + b("second-brain", "Save for me", "Saved as a note in your second-brain: yours, in every repo, and later reviews read it as settled");
+  return `<div class="pr-remember chat-save"><div class="row"><span class="muted small">Settled for next time?</span>${buttons}<span class="save-msg"></span></div>
+    ${decided ? "" : `<div class="small muted">Choose Keep or Drop on the finding first: the decision is what gets saved.</div>`}
+    ${said ? `<div class="small muted">${said}</div>` : ""}</div>`;
+}
 /* The chat, beside the review: about the whole review, or about one finding (Discuss). Side panel, wide, or hidden
    behind a button; your choice is remembered. Ask, push back, or say a finding isn't needed: the review changes to
    match what the conversation settles. */
@@ -4128,6 +4174,7 @@ function talkPane(pr, p, unlocked, byId) {
       <button class="icon-btn" data-chat-mode="hidden" title="Hide the chat">${icon("M18 6 6 18M6 6l12 12")}</button></div>
     <div class="chat-about"><button class="chip ${f ? "" : "on"}" data-chat-about='${esc(JSON.stringify([pr, ""]))}'>Whole review${count ? ` · ${count}` : ""}</button>${f ? `<span class="chip on" title="${esc(f.title || f.issue || "")}">${esc(f.id)} · ${esc((f.title || f.issue || "").slice(0, 40))}${(f.title || f.issue || "").length > 40 ? "…" : ""}<a href="#" data-chat-about='${esc(JSON.stringify([pr, ""]))}' aria-label="Back to the whole review">×</a></span>` : ""}</div>
     <div class="pr-thread">${toSess ? `<details class="chat-hist" open data-chat-hist="${esc(toSess.id)}"><summary>Earlier in <b>${esc(toSess.title.slice(0, 60))}</b></summary><div class="loading-inline">Loading the session…</div></details>` : ""}${turns.length ? turns.map(x => chatTurn(x, pr)).join("") : `<div class="chat-empty">${esc(hint)}</div>`}</div>
+    ${f ? findingSaveRow(pr, f, unlocked) : ""}
     <div class="pr-compose big"><div class="ss-att" data-chat-atts hidden></div><textarea data-grow rows="3" data-pr-chat placeholder="${f ? `Say something about ${esc(f.id)}…` : "Ask, push back, or ask for a change. Start with / for a command or skill."}" ${unlocked ? "" : "disabled"}></textarea>
       <div class="pr-compose-bar"><button type="button" class="icon-btn ss-clip" data-chat-attach title="Attach files or images. You can also drop them here or paste them." ${unlocked ? "" : "disabled"}>${icon("clip")}</button><input type="file" data-chat-file multiple hidden><span class="muted small grow">Enter to send · Shift+Enter for a new line · drop, paste or attach any file${waiting ? " · more messages queue up" : ""}</span><button class="btn small primary" data-pr-chatgo ${unlocked ? "" : "disabled"}>${waiting ? "Queue" : "Send"}</button></div></div></aside>`;
 }
@@ -4644,6 +4691,13 @@ function wirePrs(root) {
     if (!d.ok) { b.disabled = false; b.textContent = "Try again"; return alertMsg(b, d); }
     softRoute();
   });
+  $$("[data-pr-savefinding]", root).forEach(b => b.onclick = async () => {
+    const [pr, id, to] = JSON.parse(b.dataset.prSavefinding);
+    b.disabled = true; const label = b.textContent; b.textContent = "Saving…";
+    const d = await save("review_remember_finding", { pr, id, to });
+    if (!d.ok) { b.disabled = false; b.textContent = label; return saidMsg($(".save-msg", b.closest(".chat-save")), d); }
+    softRoute();
+  });
   $$("[data-pr-reply]", root).forEach(b => b.onclick = async () => {
     const [pr, id] = JSON.parse(b.dataset.prReply), box = b.closest(".pr-reply");
     b.disabled = true; b.textContent = "Posting…";
@@ -4688,8 +4742,20 @@ function wirePrs(root) {
     const [pr, id, status] = JSON.parse(b.dataset.prMark);
     if (b.classList.contains("primary")) return;  // already this status: nothing to save
     b.disabled = true;
+    const card = b.closest(".pr-finding"), title = ($(".title", card) || {}).textContent || id, own = ownCard(card);
     const d = await save("review_mark", { pr, ids: [id], status });
     if (!d.ok) { b.disabled = false; b.title = d.why || ""; alertMsg(b, d); return; }
+    if (status === "drop") offerPass(pr, id, title, own);  // how far "don't flag this again" reaches
+    softRoute();
+  });
+  $$("[data-pr-passoffer]", root).forEach(b => b.onclick = () => {
+    const [pr, id] = JSON.parse(b.dataset.prPassoffer), card = b.closest(".pr-finding");
+    offerPass(pr, id, ($(".title", card) || {}).textContent || id, ownCard(card));
+  });
+  $$("[data-pass-rm]", root).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const d = await save("review_unpass", { id: b.dataset.passRm });
+    if (!d.ok) { b.disabled = false; return alertMsg(b, d); }
     softRoute();
   });
   // finding ids repeat across PRs on one page (1.1 on each), so look inside the finding's own card

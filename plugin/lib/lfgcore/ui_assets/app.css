@@ -1311,6 +1311,7 @@ a.stk-i:hover { background: var(--hover); }
 .pr-question .pr-ask { font-weight: 500; }
 .pr-chat-thread { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .pr-remember { margin-top: 8px; gap: 6px; }
+.pr-talk .chat-save { margin: 0; padding: 8px 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
 
 /* Can it merge: the verdict and the score, big, at the top of a review */
 .verdict-hero { display: flex; align-items: center; gap: 16px; padding: 14px 16px; margin: -4px -4px 14px; border-radius: 10px; }
