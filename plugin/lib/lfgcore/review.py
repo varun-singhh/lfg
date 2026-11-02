@@ -832,7 +832,7 @@ def context(repo, number):
             "agents_md": agents_md(repo, meta["head_sha"], files),
             "read_agents_md": "gh api repos/%s/contents/<path>?ref=%s -H 'Accept: application/vnd.github.raw'"
                               % (repo, meta["head_sha"]),
-            "changed_files": len(files), "answered": answered(repo, number)}
+            "changed_files": len(files), "answered": answered(repo, number), "settled": memory(repo)}
 
 
 def answered(repo, number):
@@ -978,6 +978,8 @@ RUN_DENY = GH_WRITE_DENY + [
     "Bash(gh issue edit*)", "Bash(gh issue close*)", "Bash(git push*)", "Bash(git commit*)", "Bash(git merge*)",
     "Bash(git rebase*)", "Bash(git reset*)", "Bash(git checkout*)", "Bash(git switch*)", "Bash(git stash*)",
     "Bash(git restore*)", "Bash(git clean*)", "Bash(git tag*)", "Bash(git branch -*)",
+    # what to remember is your call, never an unattended review's
+    "Bash(lfg review remember *)",
     "Edit", "Write", "NotebookEdit"]
 # Fresh eyes: nothing that shows earlier reviews or what anyone else said on the PR
 FRESH_DENY = ["Read(~/.lfg/reviews/**)", "Grep(~/.lfg/reviews/**)", "Bash(gh pr view *comments*)",
@@ -1663,27 +1665,132 @@ def scores(rec):
             if p.get("score") is not None]
 
 
+SAVED_PREFIX = "Review: "  # every decision or note saved from a review starts like this, so later reviews find them
+SAVE_TARGETS = ("dev-graph", "second-brain")
+SCOPES = ("pr", "repo", "all")  # where "don't flag this again" holds: this PR, every PR in the repo, every repo
+
+
+def _save_knowledge(repo, to, title, text):
+    """Save one thing from a review. dev-graph: a decision on this repo's own branch, where its sessions and
+    `lfg review context` read it. second-brain: a personal note. Raises ReviewError with something sayable."""
+    from . import knowledge as KN
+    if to not in SAVE_TARGETS:
+        raise ReviewError("save to dev-graph or second-brain")
+    root = local_checkout(repo) if to == "dev-graph" else None
+    if to == "dev-graph" and not root:
+        raise ReviewError("%s isn't checked out on this machine, so it has no dev-graph here; save it to your "
+                          "second-brain instead" % repo)
+    try:
+        return KN.add("decision" if to == "dev-graph" else "note", SAVED_PREFIX + title, text,
+                      repo=repo.split("/")[-1] if to == "dev-graph" else "", root=root)
+    except Exception as e:  # the graph may be down: say so on the page, the text itself is safe
+        raise ReviewError("couldn't save to %s: %s" % (to, str(e)[:200])) from None
+
+
 def remember(repo, number, n, qid, to):
     """Keep your answer to a review's question: a decision in this repo's dev-graph, or a note in your second-brain,
     so later sessions and reviews know it."""
-    from . import knowledge as KN
-    if to not in ("dev-graph", "second-brain"):
-        raise ReviewError("save to dev-graph or second-brain")
     rec = need(repo, number)
     p = next((x for x in rec["passes"] if x["n"] == int(n or 0)), None)
     qq = next((x for x in (p or {}).get("questions") or [] if x["id"] == qid), None)
     if not qq or not qq.get("answer"):
         raise ReviewError("answer the question first")
     text = "%s\n\nAnswer: %s\n\n(From the review of %s.)" % (qq["ask"], qq["answer"], ref(repo, number))
-    try:
-        out = KN.add("decision" if to == "dev-graph" else "note", qq["ask"][:200], text,
-                     repo=repo.split("/")[-1] if to == "dev-graph" else "")
-    except Exception as e:  # the graph may be down: say so on the page, the answer itself is safe
-        raise ReviewError("couldn't save to %s: %s" % (to, str(e)[:200])) from None
+    out = _save_knowledge(repo, to, qq["ask"][:200], text)
     rec = need(repo, number)
     p = next(x for x in rec["passes"] if x["n"] == int(n))
     next(x for x in p["questions"] if x["id"] == qid)["saved"] = {"to": to, "slug": out["slug"], "at": C.now_iso()}
     store(rec)
+    return out
+
+
+MAX_SAVED_TURNS = 6  # the last turns of a discussion that go into what is saved
+
+
+def _one_line(text, limit):
+    text = re.sub(r"```[\s\S]*?```", " ", str(text or ""))  # the change block Claude ends a reply with
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _conclusion(f, note):
+    note = str(note or "").strip()
+    if note:
+        return note
+    if f["status"] == "drop":
+        return "Not a problem here. Reviews should not flag it again, unless it has become worse."
+    if f["status"] == "keep":
+        return "A real problem. Reviews should keep flagging it."
+    return ""
+
+
+def remember_finding(repo, number, fid, to, note=None):
+    """Save what a finding's discussion settled, asked every time where it goes: a decision in this repo's dev-graph
+    ("for this repo") or a note in your second-brain ("for me"). Later reviews read it as settled (`lfg review
+    context`, `settled`). `note` is your own words for the conclusion; without it the finding's decision is the
+    conclusion (dropped: not a problem here; kept: a real problem). The finding keeps where it was saved."""
+    if to not in SAVE_TARGETS:
+        raise ReviewError("save to dev-graph or second-brain")
+    rec = need(repo, number)
+    f = find(rec, fid)
+    if any(s.get("to") == to for s in f.get("saved") or []):
+        raise ReviewError("%s is already saved to %s" % (fid, to))
+    conclusion, said = _conclusion(f, note), f.get("chat") or []
+    if not conclusion:
+        raise ReviewError("decide %s first (Keep or Drop), or say what was settled" % fid)
+    if not said and not str(note or "").strip():
+        raise ReviewError("discuss %s first, or say what was settled" % fid)
+    talk = "\n".join("- Lee: %s\n  Claude: %s" % (_one_line(x.get("q"), 400), _one_line(x.get("a"), 700))
+                     for x in said[-MAX_SAVED_TURNS:])
+    where = "%s%s" % (f["file"], ":%s" % f["line"] if f.get("line") else "") if f.get("file") else "the PR as a whole"
+    title = (f.get("title") or f.get("issue") or "a finding").strip()
+    text = "\n".join(x for x in [
+        "Finding %s of the review of %s: %s" % (fid, ref(repo, number), title),
+        "Where: %s (%s)" % (where, f.get("severity")), "Problem raised: %s" % _one_line(f.get("issue"), 600),
+        "\nDecision: %s" % conclusion, "\nDiscussion:\n%s" % talk if talk else "",
+        "\n(Saved from the review of %s.)" % ref(repo, number)] if x)
+    out = _save_knowledge(repo, to, title[:190], text)
+    rec = need(repo, number)  # read again: the graph took a moment and the page may have saved meanwhile
+    f = find(rec, fid)
+    f["saved"] = (f.get("saved") or []) + [{"to": to, "slug": out["slug"], "at": C.now_iso()}]
+    store(rec)
+    return {"finding": fid, "to": to, "slug": out["slug"]}
+
+
+# ---------------------------------------------------------------- what you already decided: read by every review
+
+MEMORY_CAP = 40  # decisions and notes handed to a review, newest first
+MEMORY_TEXT = 1500
+
+
+def _saved_rows(graph, node, name_field, text_field, branch=None):
+    from . import omnigraph as OG
+    q = ("query l() { match { $x: %s } return { $x.slug, $x.%s, $x.%s, $x.createdAt } "
+         "order { $x.createdAt desc } limit 500 }" % (node, name_field, text_field))
+    rows = [r for r in OG.read(graph, q, "l", branch=branch) if str(r.get(name_field) or "").startswith(SAVED_PREFIX)]
+    return [{"slug": r["slug"], "title": r[name_field][len(SAVED_PREFIX):],
+             "text": str(r.get(text_field) or "")[:MEMORY_TEXT], "at": str(r.get("createdAt") or "")[:10]}
+            for r in rows[:MEMORY_CAP]]
+
+
+def memory(repo):
+    """What you already decided about this repo's code, for a review to treat as settled: decisions saved from earlier
+    reviews (this repo's dev-graph) and personal notes saved from them (second-brain: yours, in every repo; each says
+    which PR it came from). A graph that can't be read is named in `unavailable`, never skipped silently."""
+    out = {"decisions": [], "notes": [], "unavailable": []}
+    from . import setup as SU
+    if not SU.pack_on("knowledge"):
+        return out  # nothing can have been saved
+    from . import teamknowledge as K
+    root = local_checkout(repo)
+    for key, graph, args in (("decisions", "dev-graph", ("Decision", "title", "decision")),
+                             ("notes", "second-brain", ("Note", "name", "content"))):
+        if key == "decisions" and not root:
+            continue
+        try:
+            out[key] = _saved_rows(graph, *args, branch=K.branch_for(root) if key == "decisions" else None)
+        except Exception as e:  # noqa: BLE001 - a graph that is down must not stop the review
+            out["unavailable"].append("%s: %s" % (graph, str(e)[:160]))
     return out
 
 
@@ -2651,5 +2758,5 @@ def dashboard(fresh=False, only=None):
     # a ticket's PRs in the repos not picked top left: its group shows all of them
     shown = {x.get("ticket") for x in q + mine + out} - {"", None}
     more = [dict(x, passes=0, job=job(x["repo"], x["number"])) for x in others if x["ticket"] in shown]
-    return {"ticket_more": more, "queue": q, "queue_why": qwhy, "mine": mine, "mine_why": mwhy, "reviews": out,
-            "no_remote": bool(only) and not names}
+    return {"ticket_more": more, "queue": q, "queue_why": qwhy, "mine": mine, "mine_why": mwhy,
+            "reviews": out, "no_remote": bool(only) and not names}

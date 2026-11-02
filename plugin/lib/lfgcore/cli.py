@@ -943,7 +943,12 @@ def _review(R, a):
     if not a.pr:
         C.die("usage: lfg review %s <pr>" % a.action, 2)
     repo, number = R.parse_pr(a.pr)
-    if a.action == "context":
+    if a.action == "remember":
+        if len(a.ids) != 1 or not a.to:
+            C.die("usage: lfg review remember <pr> <id> --to dev-graph|second-brain [--note TEXT]", 2)
+        o = R.remember_finding(repo, number, a.ids[0], a.to, note=a.note)
+        C.emit(o, a.json, lambda x: print("saved %s to %s as %s" % (x["finding"], x["to"], x["slug"])))
+    elif a.action == "context":
         _print(R.context(repo, number))
     elif a.action == "save":
         raw = C.read_text(a.file) if a.file else sys.stdin.read()
@@ -1627,14 +1632,18 @@ def main(argv=None):
     fb.add_argument("finding")
     fb.add_argument("verdict", choices=["accept", "reject"])
     fb.add_argument("--note")
-    rv = sp.add_parser("review", help="PR reviews: context, save, show, list, mark, threads; post and run are yours")
+    rv = sp.add_parser("review", help="PR reviews: context, save, show, list, mark, threads, remember; "
+                                      "post and run are yours")
     rv.add_argument("action", choices=["context", "save", "show", "list", "mark", "post", "threads", "others", "run",
-                                       "sessions", "import", "fix"])
+                                       "sessions", "import", "fix", "remember"])
     rv.add_argument("pr", nargs="?", help="PR number (repo from this checkout), owner/repo#12 or a PR URL")
     rv.add_argument("ids", nargs="*", help="mark: finding ids, e.g. 1.2 1.4")
     st = rv.add_mutually_exclusive_group()
     for s_ in ("keep", "drop", "pending"):
         st.add_argument("--" + s_, dest="status", action="store_const", const=s_)
+    rv.add_argument("--to", choices=["dev-graph", "second-brain"],
+                    help="remember: where to save what the finding's discussion settled (always your choice)")
+    rv.add_argument("--note", help="remember: the conclusion in your words")
     rv.add_argument("--body", help="mark: new comment text; post: text above the inline comments")
     rv.add_argument("--body-file")
     rv.add_argument("--file", help="save: findings JSON (default: stdin); import: the session or log to import")

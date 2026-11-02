@@ -4375,14 +4375,146 @@ class ReviewTest(unittest.TestCase):
         with self.assertRaises(R.ReviewError):
             R.answer("o/r", 7, 1, "q9", "x")
         added = []
-        with mock.patch("lfgcore.knowledge.add", side_effect=lambda *a, **k: added.append((a, k)) or {"slug": "dec-x"}):
+        with mock.patch("lfgcore.knowledge.add",
+                        side_effect=lambda *a, **k: added.append((a, k)) or {"slug": "dec-x"}), \
+                mock.patch.object(R, "local_checkout", return_value="/work/r"):
             R.remember("o/r", 7, 1, "q1", "dev-graph")
         self.assertEqual(added[0][0][0], "decision")
         self.assertIn("Answer: yes, by the mobile app", added[0][0][2])
         self.assertEqual(added[0][1]["repo"], "r")
+        self.assertEqual(added[0][1]["root"], "/work/r")  # on this repo's own dev-graph branch, where its sessions read
         self.assertEqual(R.load("o/r", 7)["passes"][0]["questions"][0]["saved"]["to"], "dev-graph")
         with self.assertRaises(R.ReviewError):
             R.remember("o/r", 7, 1, "q1", "somewhere")
+
+    def discussed(self, status="drop"):
+        """A saved review whose finding 1.1 was talked through with Claude and then decided."""
+        self.setUp()  # a fresh record every time
+        self.saved()
+        rec = R.load("o/r", 7)
+        f = rec["passes"][0]["findings"][0]
+        f["chat"] = [{"q": "is this reachable?", "a": "No: the caller checks first.\n\n```json\n{}\n```",
+                      "at": "2026-11-02T10:00:00Z", "changed": []}]
+        f["status"] = status
+        R.store(rec)
+
+    def save_finding(self, to, checkout="/work/r", note=None, add=None):
+        calls = []
+
+        def fake(*a, **k):
+            calls.append((a, k))
+            if add:
+                raise add
+            return {"slug": "dec-1" if a[0] == "decision" else "nt-1"}
+        with mock.patch("lfgcore.knowledge.add", side_effect=fake), \
+                mock.patch.object(R, "local_checkout", return_value=checkout):
+            try:
+                return R.remember_finding("o/r", 7, "1.1", to, note=note), calls
+            except R.ReviewError as e:
+                return e, calls
+
+    def test_a_findings_discussion_is_saved_where_you_choose_every_time(self):
+        self.discussed()
+        out, calls = self.save_finding("dev-graph")
+        self.assertEqual(out, {"finding": "1.1", "to": "dev-graph", "slug": "dec-1"})
+        (kind, title, text), kw = calls[0][0], calls[0][1]
+        self.assertEqual((kind, kw["root"], kw["repo"]), ("decision", "/work/r", "r"))
+        self.assertTrue(title.startswith("Review: "))  # how a later review finds it
+        for want in ("Finding 1.1 of the review of o/r#7", "Where: app.py:3 (major)",
+                     "Decision: Not a problem here", "Lee: is this reachable?", "Claude: No: the caller checks first."):
+            self.assertIn(want, text)
+        self.assertNotIn("```", text)  # the change block Claude ends a reply with isn't a decision
+        self.assertEqual([x["to"] for x in R.load("o/r", 7)["passes"][0]["findings"][0]["saved"]], ["dev-graph"])
+        again, _ = self.save_finding("dev-graph")  # once per place; the other place is still open
+        self.assertIsInstance(again, R.ReviewError)
+        out, calls = self.save_finding("second-brain")
+        self.assertEqual((calls[0][0][0], calls[0][1]["root"], calls[0][1]["repo"]), ("note", None, ""))
+        self.assertEqual([x["to"] for x in R.load("o/r", 7)["passes"][0]["findings"][0]["saved"]],
+                         ["dev-graph", "second-brain"])
+        self.assertIsInstance(self.save_finding("somewhere")[0], R.ReviewError)
+
+    def test_saving_a_discussion_says_what_is_missing_instead_of_saving_nothing_useful(self):
+        self.discussed(status="pending")
+        err, calls = self.save_finding("dev-graph")
+        self.assertIn("decide 1.1 first", str(err))  # no decision and no words of your own
+        out, calls = self.save_finding("dev-graph", note="Fine: the caller always validates it.")
+        self.assertIn("Decision: Fine: the caller always validates it.", calls[0][0][2])
+        self.discussed(status="keep")
+        self.assertIn("A real problem", self.save_finding("dev-graph")[1][0][0][2])  # a kept finding is a decision too
+        rec = R.load("o/r", 7)
+        rec["passes"][0]["findings"][0].pop("chat")
+        rec["passes"][0]["findings"][0].pop("saved", None)
+        R.store(rec)
+        self.assertIn("discuss 1.1 first", str(self.save_finding("dev-graph")[0]))
+        # a repo that isn't checked out here has no dev-graph; the second-brain still works and nothing is half-saved
+        self.discussed()
+        err, calls = self.save_finding("dev-graph", checkout=None)
+        self.assertIn("second-brain", str(err))
+        self.assertFalse(calls)
+        err, _ = self.save_finding("dev-graph", add=ValueError("that looks like it contains a secret"))
+        self.assertIn("couldn't save to dev-graph", str(err))
+        self.assertNotIn("saved", R.load("o/r", 7)["passes"][0]["findings"][0])
+
+    def test_a_session_can_save_a_findings_discussion_from_the_command_line(self):
+        from lfgcore import cli
+        self.discussed()
+        with mock.patch("lfgcore.knowledge.add", return_value={"slug": "nt-1"}), \
+                mock.patch.object(R, "local_checkout", return_value="/work/r"):
+            self.assertEqual(cli.main(["review", "remember", "o/r#7", "1.1", "--to", "second-brain", "--json"]), 0)
+            with self.assertRaises(SystemExit):  # the place is always named, never defaulted
+                cli.main(["review", "remember", "o/r#7", "1.1"])
+        self.assertEqual(R.load("o/r", 7)["passes"][0]["findings"][0]["saved"][0]["slug"], "nt-1")
+
+    def test_a_decision_goes_to_the_repo_branch_not_main(self):
+        from lfgcore import knowledge as KN
+        wrote = []
+        with mock.patch("lfgcore.omnigraph.mutate", side_effect=lambda *a, **k: wrote.append((a, k))), \
+                mock.patch("lfgcore.teamknowledge.ensure_locked") as ensure, \
+                mock.patch("lfgcore.teamknowledge.branch_for", return_value="repo/r-1234"):
+            KN.add("decision", "Review: x", "Decision: fine.", root="/work/r")
+            KN.add("decision", "Review: y", "Decision: fine.")
+            KN.add("note", "Review: z", "personal", root="/work/r")
+        self.assertEqual([k.get("branch") for _, k in wrote], ["repo/r-1234", None, None])
+        ensure.assert_called_once_with("/work/r")  # the branch exists before the first write; a note never needs it
+
+    def test_a_review_is_given_what_you_already_decided(self):
+        rows = {"dev-graph": [{"slug": "dec-a", "title": "Review: Empty input", "decision": "Fine: validated upstream.",
+                               "createdAt": "2026-10-30"},
+                              {"slug": "dec-b", "title": "We use Postgres", "decision": "unrelated",
+                               "createdAt": "2026-10-31"}],
+                "second-brain": [{"slug": "nt-a", "name": "Review: Import order", "content": "Never flag import order.",
+                                  "createdAt": "2026-10-29"}]}
+        read = []
+
+        def og_read(graph, q, name, params=None, branch=None):
+            read.append((graph, branch))
+            return rows[graph]
+        with mock.patch("lfgcore.setup.pack_on", return_value=True), \
+                mock.patch.object(R, "local_checkout", return_value="/work/r"), \
+                mock.patch("lfgcore.teamknowledge.branch_for", return_value="repo/r-1234"), \
+                mock.patch("lfgcore.omnigraph.read", side_effect=og_read):
+            got = R.memory("o/r")
+        self.assertEqual(got["decisions"], [{"slug": "dec-a", "title": "Empty input",
+                                              "text": "Fine: validated upstream.", "at": "2026-10-30"}])
+        self.assertEqual([(n["title"], n["text"]) for n in got["notes"]],
+                         [("Import order", "Never flag import order.")])
+        self.assertEqual(read, [("dev-graph", "repo/r-1234"), ("second-brain", None)])  # the repo's branch, your brain
+        self.assertEqual(got["unavailable"], [])
+        with mock.patch("lfgcore.setup.pack_on", return_value=True), \
+                mock.patch.object(R, "local_checkout", return_value="/work/r"), \
+                mock.patch("lfgcore.teamknowledge.branch_for", return_value="repo/r-1234"), \
+                mock.patch("lfgcore.omnigraph.read", side_effect=OSError("connection refused")):
+            down = R.memory("o/r")  # a graph that is down never stops a review, and is named
+        self.assertEqual((down["decisions"], down["notes"]), ([], []))
+        self.assertEqual([x.split(":")[0] for x in down["unavailable"]], ["dev-graph", "second-brain"])
+        with mock.patch("lfgcore.setup.pack_on", return_value=False), \
+                mock.patch("lfgcore.omnigraph.read", side_effect=AssertionError("no graphs without the pack")):
+            self.assertEqual(R.memory("o/r")["unavailable"], [])
+        skill = C.read_text(os.path.join(C.PLUGIN_ROOT, "skills", "review", "SKILL.md"))
+        for word in ("`settled`", "`decisions`", "`notes`", "`unavailable`", "clearly worse"):
+            self.assertIn(word, " ".join(skill.split()))
+        self.assertNotIn("Bash(lfg review remember *)", R.run_tools()[0])  # an unattended review never saves for you
+        self.assertIn("Bash(lfg review remember *)", R.run_tools()[1])
 
     def test_older_reviews_get_an_estimated_verdict_and_a_score_history(self):
         f = lambda sev, st="keep": {"severity": sev, "status": st}  # noqa: E731
@@ -5159,6 +5291,7 @@ class ReviewTest(unittest.TestCase):
                 got = R.context("o/r", 7)
             self.assertEqual(got["answered"], [{"ask": "Is the old endpoint still called?",
                                                 "answer": "No, removed in 2026-09."}], fresh)
+            self.assertEqual(got["settled"]["unavailable"], [])  # the Knowledge pack is off in tests: nothing to read
         skill = C.read_text(os.path.join(C.PLUGIN_ROOT, "skills", "review", "SKILL.md"))
         self.assertIn("`answered`", skill)
 

@@ -4105,6 +4105,18 @@ function rememberRow(pr, n, q, unlocked) {
   return `<div class="pr-remember"><div class="row"><span class="muted small">Worth keeping?</span>${b("dev-graph", "Remember for this repo", "Saved as a decision in this repo's dev-graph: every session and review in this repo can find it")}${b("second-brain", "Remember for me", "Saved as a note in your second-brain: yours, in every repo")}</div>
     <div class="small muted remember-help"><span><b>For this repo:</b> a decision in this repo's dev-graph. Every session and review here can find it; it's on the Knowledge page.</span><span><b>For me:</b> a note in your second-brain. Only yours, in every repo.</span></div></div>`;
 }
+/* Save what a finding's discussion settled: asked every time where it goes. Later reviews read it as settled. */
+function findingSaveRow(pr, f, unlocked) {
+  if (!(f.chat || []).length) return "";
+  const done = f.saved || [], has = to => done.some(x => x.to === to);
+  const said = done.map(x => `${dot("ok")}Saved to ${x.to === "dev-graph" ? "this repo's dev-graph, as a decision" : "your second-brain, as a note"} ${ago(x.at)}`).join(" · ");
+  const decided = f.status !== "pending";
+  const b = (to, label, title) => has(to) ? "" : `<button class="btn small" data-pr-savefinding='${esc(JSON.stringify([pr, f.id, to]))}' title="${title}" ${unlocked && decided ? "" : "disabled"}>${label}</button>`;
+  const buttons = b("dev-graph", "Save for this repo", "Saved as a decision in this repo's dev-graph: later reviews and sessions in this repo read it as settled") + b("second-brain", "Save for me", "Saved as a note in your second-brain: yours, in every repo, and later reviews read it as settled");
+  return `<div class="pr-remember chat-save"><div class="row"><span class="muted small">Settled for next time?</span>${buttons}<span class="save-msg"></span></div>
+    ${decided ? "" : `<div class="small muted">Choose Keep or Drop on the finding first: the decision is what gets saved.</div>`}
+    ${said ? `<div class="small muted">${said}</div>` : ""}</div>`;
+}
 /* The chat, beside the review: about the whole review, or about one finding (Discuss). Side panel, wide, or hidden
    behind a button; your choice is remembered. Ask, push back, or say a finding isn't needed: the review changes to
    match what the conversation settles. */
@@ -4128,6 +4140,7 @@ function talkPane(pr, p, unlocked, byId) {
       <button class="icon-btn" data-chat-mode="hidden" title="Hide the chat">${icon("M18 6 6 18M6 6l12 12")}</button></div>
     <div class="chat-about"><button class="chip ${f ? "" : "on"}" data-chat-about='${esc(JSON.stringify([pr, ""]))}'>Whole review${count ? ` · ${count}` : ""}</button>${f ? `<span class="chip on" title="${esc(f.title || f.issue || "")}">${esc(f.id)} · ${esc((f.title || f.issue || "").slice(0, 40))}${(f.title || f.issue || "").length > 40 ? "…" : ""}<a href="#" data-chat-about='${esc(JSON.stringify([pr, ""]))}' aria-label="Back to the whole review">×</a></span>` : ""}</div>
     <div class="pr-thread">${toSess ? `<details class="chat-hist" open data-chat-hist="${esc(toSess.id)}"><summary>Earlier in <b>${esc(toSess.title.slice(0, 60))}</b></summary><div class="loading-inline">Loading the session…</div></details>` : ""}${turns.length ? turns.map(x => chatTurn(x, pr)).join("") : `<div class="chat-empty">${esc(hint)}</div>`}</div>
+    ${f ? findingSaveRow(pr, f, unlocked) : ""}
     <div class="pr-compose big"><div class="ss-att" data-chat-atts hidden></div><textarea data-grow rows="3" data-pr-chat placeholder="${f ? `Say something about ${esc(f.id)}…` : "Ask, push back, or ask for a change. Start with / for a command or skill."}" ${unlocked ? "" : "disabled"}></textarea>
       <div class="pr-compose-bar"><button type="button" class="icon-btn ss-clip" data-chat-attach title="Attach files or images. You can also drop them here or paste them." ${unlocked ? "" : "disabled"}>${icon("clip")}</button><input type="file" data-chat-file multiple hidden><span class="muted small grow">Enter to send · Shift+Enter for a new line · drop, paste or attach any file${waiting ? " · more messages queue up" : ""}</span><button class="btn small primary" data-pr-chatgo ${unlocked ? "" : "disabled"}>${waiting ? "Queue" : "Send"}</button></div></div></aside>`;
 }
@@ -4642,6 +4655,13 @@ function wirePrs(root) {
     b.disabled = true; b.textContent = "Saving…";
     const d = await save("review_remember", { pr, pass: n, id, to });
     if (!d.ok) { b.disabled = false; b.textContent = "Try again"; return alertMsg(b, d); }
+    softRoute();
+  });
+  $$("[data-pr-savefinding]", root).forEach(b => b.onclick = async () => {
+    const [pr, id, to] = JSON.parse(b.dataset.prSavefinding);
+    b.disabled = true; const label = b.textContent; b.textContent = "Saving…";
+    const d = await save("review_remember_finding", { pr, id, to });
+    if (!d.ok) { b.disabled = false; b.textContent = label; return saidMsg($(".save-msg", b.closest(".chat-save")), d); }
     softRoute();
   });
   $$("[data-pr-reply]", root).forEach(b => b.onclick = async () => {
