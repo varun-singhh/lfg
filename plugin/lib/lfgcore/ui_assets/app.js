@@ -2603,6 +2603,17 @@ async function sessionRules(sid) {
   };
   draw();
 }
+/* "Starred only" on the Sessions page: remembered like the page's other filters. */
+const SESS_STARRED_KEY = "lfg.sessions.starred";
+const sessStarredOn = () => localStorage.getItem(SESS_STARRED_KEY) === "1";
+const sessStarredCount = all => (all || []).filter(s => s.starred).length;
+/* the sessions to show: those matching the search, and only the starred ones when that filter is on */
+const sessShown = (all, hit, only) => (all || []).filter(s => hit(s) && (!only || s.starred));
+/* what the page says when nothing is shown: [title, body] */
+function sessEmptyText(all, q, only, projectsDir) {
+  if (only && !sessStarredCount(all)) return ["No starred sessions yet: star one to keep it here", ""];
+  return ["No sessions match", q ? "Try a ticket number, a branch or a repo name." : "No Claude Code sessions found in " + projectsDir];
+}
 /* Sessions: every Claude Code session on this machine, grouped repo → ticket/branch (or your folder). */
 PAGES.sessions = async () => {
   const loose = localStorage.getItem("lfg.sessions.loose") === "1";
@@ -2613,7 +2624,8 @@ PAGES.sessions = async () => {
   if ((sr.runs || []).some(j => ["running", "starting"].includes(j.status))) setTimeout(() => { if (location.hash.startsWith("#sessions")) softRoute(); }, 4000);
   const q = (state.sessionFind || "").toLowerCase();
   const hit = s => !q || [s.name, s.repo, s.worktree, s.branch, s.ticket, s.folder, s.first, s.cwd].join(" ").toLowerCase().includes(q);
-  const rows = d.sessions.filter(hit);
+  const starredOnly = sessStarredOn(), nStarred = sessStarredCount(d.sessions);
+  const rows = sessShown(d.sessions, hit, starredOnly);
   const byRepo = new Map();
   for (const s of rows) {
     // outside any repo: one heading, then the folder it was started in (~/code, ~/Downloads, ...)
@@ -2658,8 +2670,8 @@ PAGES.sessions = async () => {
   return `${head("Sessions", `Every Claude Code session on this machine, whichever folder you started it in. Copy a resume command and paste it in any terminal: it opens the right folder and picks the session back up.`)}
     ${tabs}
     ${lock}
-    <div class="table-tools"><input type="search" id="sess-find" placeholder="Search names, tickets, branches, repos…" value="${esc(state.sessionFind || "")}"><span class="count">${plural(rows.length, "session")}${q ? ` of ${d.sessions.length}` : ""}</span>${d.hidden_count ? `<label class="small"><input type="checkbox" id="sess-hidden" ${state.showHidden ? "checked" : ""}> Show ${plural(d.hidden_count, "hidden session")}</label>` : ""}</div>
-    ${rows.length ? groups.join("") : empty("No sessions match", q ? "Try a ticket number, a branch or a repo name." : "No Claude Code sessions found in " + esc(d.projects_dir))}`;
+    <div class="table-tools"><input type="search" id="sess-find" placeholder="Search names, tickets, branches, repos…" value="${esc(state.sessionFind || "")}"><button class="btn small sess-starred${starredOnly ? " on" : ""}" data-sess-starred aria-pressed="${starredOnly}" title="Show only the sessions you starred">★ Starred only <span class="n">${nStarred}</span></button><span class="count">${plural(rows.length, "session")}${q || starredOnly ? ` of ${d.sessions.length}` : ""}</span>${d.hidden_count ? `<label class="small"><input type="checkbox" id="sess-hidden" ${state.showHidden ? "checked" : ""}> Show ${plural(d.hidden_count, "hidden session")}</label>` : ""}</div>
+    ${rows.length ? groups.join("") : empty(...sessEmptyText(d.sessions, q, starredOnly, esc(d.projects_dir)))}`;
 };
 /* Skills run on a session from here: what's running, what each run said last, and what it used. */
 const RUN_ST = { starting: ["Starting", "on"], running: ["Running", "on"], done: ["Done", "ok"], failed: ["Failed", "bad"] };
@@ -2790,6 +2802,7 @@ function wireSessions(root) {
     if (v !== "loose") localStorage.setItem("lfg.allrepos.sessions", v === "all" ? "1" : "");
     route();
   });
+  $$("[data-sess-starred]", root).forEach(b => b.onclick = () => { localStorage.setItem(SESS_STARRED_KEY, sessStarredOn() ? "" : "1"); route(); });
   $$("[data-sess-skill]", root).forEach(b => b.onclick = () => { const [sid, name] = JSON.parse(b.dataset.sessSkill); sessionSkill(sid, name); });
   $$("[data-sess-changes]", root).forEach(b => b.onclick = async () => { const [sid, name] = JSON.parse(b.dataset.sessChanges); sessionChanges(sid, name, await isUnlocked()); });
   const work = $$("[data-sess-work]", root);
@@ -2859,6 +2872,7 @@ function wireSessions(root) {
     b.dataset.sessStar = JSON.stringify([id, !on]);
     const li = b.closest("li.sess"), list = li && li.parentNode;
     if (on && list) list.prepend(li);
+    const cnt = $(".sess-starred .n", root); if (cnt) cnt.textContent = sessStarredCount(state.sessions.sessions);
   });
   const hid = $("#sess-hidden", root);
   if (hid) hid.onchange = () => { state.showHidden = hid.checked; route(); };

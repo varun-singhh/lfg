@@ -251,6 +251,8 @@ a.now:hover { border-color: color-mix(in srgb, var(--blue) 40%, var(--line)); bo
 .table-tools { padding: 8px 0 10px; display: flex; gap: 10px; align-items: center; }
 .box > .table-tools { border-bottom: 0; }
 .table-tools input { flex: 1; max-width: 300px; }
+.sess-starred.on { background: var(--yellow-bg); border-color: var(--yellow); color: var(--yellow-tx); }
+.sess-starred .n { margin-left: 4px; font-variant-numeric: tabular-nums; opacity: .8; }
 .table-tools input[type="search"] { max-width: 340px; min-width: 260px; }
 .table-tools .count { color: var(--muted); font-size: 13px; white-space: nowrap; }
 /* a filter's name sits beside its dropdown, so every control in the row lines up with the search box */

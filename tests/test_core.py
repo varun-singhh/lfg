@@ -5945,6 +5945,34 @@ console.log(ssCtxHtml({ percent: null }) === "");
         self.assertEqual(json.loads(lines[1]), [False, False, True, True])  # warns only past 100k tokens
         self.assertEqual(lines[2], "true")
 
+    def test_sessions_page_can_show_only_starred_sessions(self):
+        node = C.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        js = C.read_text(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js"))
+        block = js[js.index("/* \"Starred only\" on the Sessions page"):js.index("PAGES.sessions = async")]
+        script = """
+const store = {}, localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } };
+%s
+const all = [{ id: "a", name: "alpha", starred: true }, { id: "b", name: "beta" },
+  { id: "c", name: "gamma", starred: true }];
+const hit = q => s => !q || s.name.includes(q);
+const ids = (l, q, on) => sessShown(l, hit(q), on).map(s => s.id).join("");
+const out = { off: sessStarredOn(), all: ids(all, "", false), only: ids(all, "", true), search: ids(all, "gam", true),
+  count: sessStarredCount(all), none: sessEmptyText([{ id: "b" }], "", true, "/p"),
+  miss: sessEmptyText(all, "zzz", true, "/p"), plain: sessEmptyText([], "", false, "/p") };
+localStorage.setItem(SESS_STARRED_KEY, "1"); out.on = sessStarredOn();
+localStorage.setItem(SESS_STARRED_KEY, ""); out.back = sessStarredOn();
+console.log(JSON.stringify(out));
+""" % block
+        out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual((out["all"], out["only"], out["search"], out["count"]), ("abc", "ac", "c", 2))
+        self.assertEqual((out["off"], out["on"], out["back"]), (False, True, False))  # remembered in localStorage
+        self.assertEqual(out["none"], ["No starred sessions yet: star one to keep it here", ""])
+        self.assertEqual(out["miss"][0], "No sessions match")  # starred ones exist, the search found none
+        self.assertEqual(out["plain"][0], "No sessions match")
+        self.assertIn("sessShown(d.sessions, hit, starredOnly)", js)
+
     def test_dead_running_job_reads_as_failed(self):
         C.write_json(R.job_path("o/r", 9), {"status": "running", "pid": 999999999})
         self.assertEqual(R.job("o/r", 9)["status"], "failed")
