@@ -5904,6 +5904,16 @@ console.log(JSON.stringify(priorGroups([], {})));
         self.assertEqual(none, "[]")
         self.assertIn("priorGroups(p.prior, byId)", js)
 
+    def test_rename_is_taught_in_the_tutorial_and_the_page_tours(self):
+        here = os.path.dirname(R.__file__)
+        js = C.read_text(os.path.join(here, "ui_assets", "app.js"))
+        tours = js[js.index("const PAGE_TOURS"):js.index("Object.keys(PAGE_TOURS)")]
+        self.assertIn("/rename</code>", tours[tours.index("  studio:"):tours.index("  todos:")])
+        self.assertIn("/rename</code>", tours[tours.index("  sessions:"):tours.index("  todos:")])
+        intro = C.read_text(os.path.join(here, "ui_assets", "intro", "03-everyday-commands.md"))
+        self.assertIn("`/rename <name>`", intro)
+        self.assertIn("/rename", C.read_text(os.path.join(here, "onboard.py")))
+
     def test_dead_running_job_reads_as_failed(self):
         C.write_json(R.job_path("o/r", 9), {"status": "running", "pid": 999999999})
         self.assertEqual(R.job("o/r", 9)["status"], "failed")

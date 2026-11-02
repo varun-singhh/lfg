@@ -12,6 +12,7 @@
 | `/lfg:review-coach` | A senior review of the current change |
 | `/lfg:secure` | Dependency, secret and code security checks |
 | `/lfg:note <thing to remember>` | Save a decision or lesson |
+| `/rename <name>` | Give the session a readable name; the Sessions page and sidebar show it |
 
 ## In the terminal
 
