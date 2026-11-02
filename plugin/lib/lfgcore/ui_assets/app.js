@@ -3521,6 +3521,26 @@ const prRef = r => `${r.repo}#${r.number}`;
 const prHash = r => `#prs/${r.repo}/${r.number}`;
 const PRIOR = { fixed: ["Fixed", "ok"], replied: ["Answered, still open", "warn"], withdrawn: ["Withdrawn", ""],
   "resolved-unchanged": ["Resolved but not fixed", "bad"], ignored: ["Not addressed", "bad"], open: ["Still open", "warn"] };
+/* Earlier findings on a re-review, grouped by where each stands: the review's own call, moved on by what you have
+   checked since ("Is it fixed?" says fixed or partly). Order is how much attention each needs; a state this code
+   doesn't know gets a group of its own at the end. */
+const PRIOR_GROUPS = [["open", "Still open", "warn", "Still open"], ["ignored", "Not addressed", "bad", "Not addressed"],
+  ["resolved-unchanged", "Resolved but not fixed", "bad", "Resolved but not fixed"], ["replied", "Answered, still open", "warn", "Answered, still open"],
+  ["partly", "Partly fixed", "warn", "Partly fixed"], ["fixed", "Fixed", "ok", "Fixed"], ["withdrawn", "Withdrawn", "", "Not applicable"]];
+function priorGroupOf(x, f) {
+  if (x.state === "fixed" || x.state === "withdrawn" || !f) return x.state;
+  if ((f.fixed || {}).commit || (f.check || {}).state === "fixed") return "fixed";
+  return (f.check || {}).state === "partly" ? "partly" : x.state;
+}
+/* [{key, label, tone, heading, items: [prior row]}] for the groups that have rows */
+function priorGroups(prior, byId) {
+  const by = {};
+  (prior || []).forEach(x => (by[priorGroupOf(x, byId[x.id])] = by[priorGroupOf(x, byId[x.id])] || []).push(x));
+  const known = PRIOR_GROUPS.map(g => g[0]);
+  const rows = PRIOR_GROUPS.map(([key, label, tone, heading]) => ({ key, label, tone, heading, items: by[key] || [] }));
+  Object.keys(by).filter(k => !known.includes(k)).forEach(k => rows.push({ key: k, label: k, tone: "", heading: k, items: by[k] }));
+  return rows.filter(g => g.items.length);
+}
 const SINCE = { new: "in the new commits", missed: "missed last time" };
 const ORIGIN = { exposed: "existing bug this PR now reaches", "pre-existing": "was already there" };
 /* " together with owner/repo#n" (and the ticket) for a review that covers several PRs in one session */
@@ -4290,11 +4310,12 @@ async function prDetail(arg) {
   const passTabs = `<div class="tabs pr-passes" data-scroll-on>${passes.slice().reverse().map(x => `<button class="tab ${x.n === p.n ? "on" : ""}" data-pr-pass='${esc(JSON.stringify([pr, x.n]))}'>${esc(label(x))}<span class="n">${x.posted ? "posted" : ago(x.ts)}</span></button>`).join("")}</div>`;
   const own = !!(rec.author && d.gh && d.gh.me && rec.author === d.gh.me);  // GitHub takes only a comment on your own PR
   const passOf = Object.fromEntries(passes.flatMap(x => x.findings.map(f => [f.id, x.n])));
-  const prior = (p.prior || []).length ? section("Earlier comments", p.prior.map(x => {
-    const [t, tn] = PRIOR[x.state] || [x.state, ""], f = byId[x.id];
-    const from = passOf[x.id], head = `<div class="row prior-head">${dot(tn)}<b>${esc(t)}</b>${f && f.status === "drop" ? `<span class="tag" title="The review still sees it in the code; you decided not to act on it">${own ? "you passed on it" : "you dropped it"}</span>` : ""}<span class="grow"></span>${from && from !== p.n ? `<a href="#" class="small" data-pr-goto='${esc(JSON.stringify([pr, from, x.id]))}'>From review ${from} ↗</a>` : ""}${f ? copyBtns(earlierForPerson(x, f, pr, t), earlierForAgent(x, f, pr, t)) : ""}</div>${x.note ? `<p class="small">${txt(x.note)}</p>` : ""}`;
+  const priorItem = (x, g) => {
+    const f = byId[x.id], from = passOf[x.id], head = `<div class="row prior-head">${f && f.status === "drop" ? `<span class="tag" title="The review still sees it in the code; you decided not to act on it">${own ? "you passed on it" : "you dropped it"}</span>` : ""}<span class="grow"></span>${from && from !== p.n ? `<a href="#" class="small" data-pr-goto='${esc(JSON.stringify([pr, from, x.id]))}'>From review ${from} ↗</a>` : ""}${f ? copyBtns(earlierForPerson(x, f, pr, g.label), earlierForAgent(x, f, pr, g.label)) : ""}</div>${x.note ? `<p class="small">${txt(x.note)}</p>` : ""}`;
     return `<div class="prior-item">${head}${f ? prFinding(f, pr, unlocked, true, own) : ""}</div>`;
-  }).join(""), "what happened to each earlier finding; decide, discuss or fix them here") : "";
+  };
+  const priorBy = priorGroups(p.prior, byId);
+  const prior = priorBy.length ? section("Earlier comments", priorBy.map(g => `<div class="prior-group" data-prior-group="${esc(g.key)}"><h3 class="prior-group-h">${dot(g.tone)}${esc(g.heading)}<span class="n">${g.items.length}</span></h3>${g.items.map(x => priorItem(x, g)).join("")}</div>`).join(""), "where each earlier finding stands now; decide, discuss or fix them here") : "";
   const order = { blocker: 0, major: 1, minor: 2, nitpick: 3, note: 4 };
   const fs = [...p.findings].sort((a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5));
   const together = p.together || [];

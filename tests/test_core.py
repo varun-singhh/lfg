@@ -5877,6 +5877,33 @@ console.log(JSON.stringify({before, strip, after: openTabs().map(t => t.pr), has
         self.assertIn("prTabOpen(pr, ", js)
         self.assertIn("${prTabStrip()}${head(rec.title || pr", js)
 
+    def test_earlier_findings_on_a_re_review_are_grouped_by_where_they_stand(self):
+        """Run the grouping in node: the review's call, moved on by "Is it fixed?", unknown states kept."""
+        node = C.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        with open(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js")) as f:
+            js = f.read()
+        block = js[js.index("const PRIOR_GROUPS"):js.index("const SINCE = ")]
+        script = """
+%s
+const by = { "1.2": { id: "1.2", check: { state: "partly" } }, "1.3": { id: "1.3", check: { state: "fixed" } },
+  "1.4": { id: "1.4", fixed: { commit: "abc" } }, "1.5": { id: "1.5", check: { state: "partly" } } };
+const row = (id, state) => ({ id, state });
+const g = priorGroups([row("1.1", "open"), row("1.2", "ignored"), row("1.3", "open"), row("1.4", "replied"),
+  row("1.5", "fixed"), row("1.6", "withdrawn"), row("1.7", "open"), row("1.8", "odd-state")], by);
+console.log(JSON.stringify(g.map(x => [x.key, x.heading, x.items.map(i => i.id)])));
+console.log(JSON.stringify(priorGroups([], {})));
+""" % block
+        out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout.splitlines()
+        groups, none = out
+        self.assertEqual(json.loads(groups), [
+            ["open", "Still open", ["1.1", "1.7"]], ["partly", "Partly fixed", ["1.2"]],
+            ["fixed", "Fixed", ["1.3", "1.4", "1.5"]], ["withdrawn", "Not applicable", ["1.6"]],
+            ["odd-state", "odd-state", ["1.8"]]])
+        self.assertEqual(none, "[]")
+        self.assertIn("priorGroups(p.prior, byId)", js)
+
     def test_dead_running_job_reads_as_failed(self):
         C.write_json(R.job_path("o/r", 9), {"status": "running", "pid": 999999999})
         self.assertEqual(R.job("o/r", 9)["status"], "failed")

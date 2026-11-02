@@ -1343,6 +1343,9 @@ a.stk-i:hover { background: var(--hover); }
 .flash { outline: 2px solid var(--blue); outline-offset: 4px; border-radius: 6px; transition: outline-color .6s; }
 .pr-pass-body, .pr-fixbar { scroll-margin-top: 60px; }  /* a notice scrolls here: land below the top bar */
 .prior-item { margin-bottom: 14px; }
+.prior-group { margin-bottom: 18px; }
+.prior-group-h { display: flex; align-items: center; gap: 8px; font-size: 14px; margin: 0 0 8px; }
+.prior-group-h .n { color: var(--text-2); font-weight: 400; font-size: 12px; }
 .prior-item .prior-head { margin-bottom: 6px; gap: 8px; }
 .prior-item p.small { margin: 0 0 6px; color: var(--text-2); }
 .pr-finding { scroll-margin-top: 60px; }
