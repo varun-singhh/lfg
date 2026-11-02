@@ -2377,6 +2377,7 @@ class ClaudeSessionsTest(unittest.TestCase):
         CS, sent = self.CS, []
         live = CS.Live.__new__(CS.Live)  # no process: just the answering logic
         live.pending, live.allowed, live.queued, live.state, live.error = {}, set(), [], "needs-you", None
+        live._qmeta, live._turns, live.review = [], __import__("collections").deque(), None
         live._write = lambda obj: sent.append(obj) or True
         rule = [{"type": "addRules", "rules": [{"toolName": "mcp__graph__overview"}], "behavior": "allow",
                  "destination": "localSettings"}]
@@ -4322,36 +4323,238 @@ class ReviewTest(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": text}), "")
         return run
 
-    def test_talking_to_the_review_changes_it_and_says_what_changed(self):
+    # ---- the chat on a review's page: Studio's chat, bound to the review (reviewchat.py)
+
+    class FakeLive:
+        """A running session as the chat sees it: what it was told, and how."""
+        def __init__(self, sid="f" * 36, title="Review chat"):
+            self.sid, self.title, self.said = sid, title, []
+
+        def say(self, text, attachments=None, turn=None):
+            self.said.append((text, attachments, turn))
+            return "sent"
+
+    def chat_env(self, own=None, studio=()):
+        """The review chat with Claude Code stubbed out: records which sessions it resumed, forked or created."""
+        from lfgcore import claudesess as CS
+        calls, lives = [], {}
+
+        def live(sid):
+            return lives.setdefault(sid, self.FakeLive(sid))
+        patches = [
+            mock.patch.object(CS, "resume", side_effect=lambda rid, root, sid, review=None: calls.append(
+                ("resume", sid, review)) or {"id": sid}),
+            mock.patch.object(CS, "fork_open", side_effect=lambda rid, root, sid, at=None, review=None: calls.append(
+                ("fork", sid, review)) or "c" * 36),
+            mock.patch.object(CS, "create", side_effect=lambda rid, root, title, review=None: calls.append(
+                ("create", title, review)) or "n" * 36),
+            mock.patch.object(CS, "live", side_effect=live),
+            mock.patch.object(CS, "transcript", return_value="/t.jsonl"),
+            mock.patch.object(CS, "_index", return_value={s: {"lfg": True} for s in studio}),
+            mock.patch.object(R, "local_checkout", return_value=self.tmp_dir())]
+        for x in patches:
+            x.start()
+            self.addCleanup(x.stop)
+        if own:
+            rec = R.load("o/r", 7)
+            rec["passes"][0]["run"] = {"session_id": own, "cwd": self.tmp_dir()}
+            R.store(rec)
+        return calls, live
+
+    def test_a_message_goes_to_the_reviews_own_session_wrapped_in_the_review(self):
+        from lfgcore import reviewchat as RC
+        self.saved(self.finding(), self.finding(line=9))
+        own = "a" * 36
+        calls, live = self.chat_env(own=own)
+        out = RC.say("r1", "/w", "o/r", 7, 1, "1.2 is handled in the caller")
+        self.assertEqual((out["session"], out["status"]), (own, "sent"))
+        self.assertEqual(calls, [("resume", own, {"pr": "o/r#7", "n": 1})])  # bound to the review, not forked
+        text, _att, turn = live(own).said[0]
+        self.assertTrue(text.startswith("1.2 is handled in the caller\n\n<lfg-review pass=\"1\">"))
+        self.assertIn('"id": "1.1"', text)  # Claude sees the review as it stands
+        self.assertIn("```json", text)  # and how to say what changed
+        self.assertEqual((turn["edits"], turn["q"], turn["fid"]), (True, "1.2 is handled in the caller", ""))
+
+    def test_a_finding_chat_carries_the_finding_and_its_earlier_talk(self):
+        from lfgcore import reviewchat as RC
+        self.saved(self.finding(title="No retry on fetch"))
+        rec = R.load("o/r", 7)
+        rec["passes"][0]["findings"][0]["chat"] = [{"q": "why?", "a": "Because it can fail."}]
+        R.store(rec)
+        _calls, live = self.chat_env(own="a" * 36)
+        RC.say("r1", "/w", "o/r", 7, 1, "is it reachable?", fid="1.1")
+        text, _a, turn = live("a" * 36).said[0]
+        self.assertIn('finding="1.1"', text)
+        self.assertIn("1.1: No retry on fetch", text)
+        self.assertIn("Earlier, Lee: why?\nYou: Because it can fail.", text)
+        self.assertIn("drop it", text)  # agreeing it isn't needed drops it; disagreeing says why
+        self.assertEqual(turn["fid"], "1.1")
+        with self.assertRaises(R.ReviewError):
+            RC.say("r1", "/w", "o/r", 7, 1, "x", fid="9.9")
+        with self.assertRaises(R.ReviewError):
+            RC.say("r1", "/w", "o/r", 7, 1, "  ")
+
+    def test_a_reply_that_settles_something_changes_the_review_and_leaves_chips_by_message_id(self):
+        from lfgcore import claudesess as CS
+        from lfgcore import reviewchat as RC
         self.saved(self.finding(), self.finding(line=9))
         reply = ("You're right, the caller checks it.\n\n```json\n%s\n```" % json.dumps(
             {"changes": [{"id": "1.2", "status": "drop"}, {"id": "1.1", "severity": "minor", "body": "softer"},
                          {"id": "9.9", "body": "no such finding"}], "summary": "Fine to merge."}))
-        asked = []
-        with mock.patch.object(R.C, "which", return_value="/bin/claude"), \
-                mock.patch("subprocess.run", side_effect=self.claude_says(reply, asked)):
-            out = R.ask("o/r", 7, 1, "1.2 is handled in the caller")
-        self.assertEqual(out["a"], "You're right, the caller checks it.")  # the change block isn't shown
-        self.assertEqual(out["changed"], ["1.2: dropped", "1.1: comment, severity", "summary"])
+        live = self.FakeLive("a" * 36, "the review")
+        turn = {"pr": "o/r#7", "n": 1, "fid": "", "qid": "", "q": "1.2 is handled in the caller", "edits": True}
+        RC.finish(live, turn, "msg_1", reply)
         p = R.load("o/r", 7)["passes"][0]
         self.assertEqual((p["findings"][0]["severity"], p["findings"][0]["body"], p["findings"][1]["status"]),
                          ("minor", "softer", "drop"))
-        self.assertEqual((p["summary"], p["chat"][0]["changed"][0]), ("Fine to merge.", "1.2: dropped"))
-        self.assertIn('"id": "1.1"', asked[0][2])  # Claude sees the review as it stands
-        self.assertIn("--tools", asked[0])  # an imported review has no session: no tools
+        self.assertEqual(p["summary"], "Fine to merge.")
+        entry = p["chat"][0]
+        self.assertEqual((entry["q"], entry["a"], entry["changed"], entry["studio"]),
+                         ("1.2 is handled in the caller", "You're right, the caller checks it.",
+                          ["1.2: dropped", "1.1: comment, severity", "summary"], True))
+        chips = CS._index()["a" * 36]["chips"]["msg_1"]
+        self.assertEqual(chips, entry["changed"])
+        items = [{"k": "ai", "text": reply, "mid": "msg_1"}, {"k": "ai", "text": "Plain.", "mid": "msg_2"}]
+        shown = CS._review_items(items, {"msg_1": chips})
+        self.assertEqual((shown[0]["text"], shown[0]["changed"], shown[1]["text"]),
+                         ("You're right, the caller checks it.", chips, "Plain."))  # the block is for LFG, not you
 
-    def test_a_chat_from_the_dashboard_goes_straight_to_anthropic_past_headroom(self):
-        self.saved()
-        asked = []
-        with mock.patch.object(R.C, "which", return_value="/bin/claude"), \
-                mock.patch("subprocess.run", side_effect=self.claude_says("Fine.", asked)):
-            with mock.patch("lfgcore.headroom.routed", return_value=True):
-                R.ask("o/r", 7, 1, "i feel like i can merge this")
-            with mock.patch("lfgcore.headroom.routed", return_value=False):
-                R.ask("o/r", 7, 1, "and now?")
-        sent = asked[0][asked[0].index("--settings") + 1]
-        self.assertEqual(json.loads(sent)["env"]["ANTHROPIC_BASE_URL"], "https://api.anthropic.com")
-        self.assertNotIn("--settings", asked[1])  # no proxy in the way: nothing to skip
+    def test_another_session_answers_but_never_changes_the_review(self):
+        from lfgcore import reviewchat as RC
+        self.saved(self.finding())
+        reply = 'Because of the mobile app.\n\n```json\n{"changes": [{"id": "1.1", "status": "drop"}]}\n```'
+        live = self.FakeLive("b" * 36, "build ATO-1")
+        RC.finish(live, {"pr": "o/r#7", "n": 1, "fid": "1.1", "qid": "", "q": "why no retry?", "edits": False},
+                  "m1", reply)
+        f = R.load("o/r", 7)["passes"][0]["findings"][0]
+        self.assertEqual(f["status"], "pending")
+        self.assertEqual([(x["q"], x["changed"], x["session"]) for x in f["chat"]],
+                         [("why no retry?", [], "build ATO-1")])  # kept on the finding, which Save reads
+        self.assertNotIn("chat", R.load("o/r", 7)["passes"][0])
+
+    def test_a_terminal_session_is_copied_once_and_only_answers(self):
+        from lfgcore import reviewchat as RC
+        self.saved(self.finding())
+        built = "b" * 36  # not a Studio session: the terminal's
+        calls, live = self.chat_env(own="a" * 36)
+        self.assertEqual(RC.target("o/r", 7, 1, built), {"session": None, "to": built, "own": "a" * 36,
+                                                         "forked": False})  # not copied yet: nothing to show
+        out = RC.say("r1", "/w", "o/r", 7, 1, "why no retry?", sid=built)
+        self.assertEqual((out["session"], out["to"]), ("c" * 36, built))
+        self.assertEqual(calls[0][:2], ("fork", built))
+        text, _a, turn = live("c" * 36).said[0]
+        self.assertFalse(turn["edits"])
+        self.assertNotIn("```json", text)  # it isn't asked to change the review
+        self.assertEqual(R.load("o/r", 7)["session_forks"], {built: "c" * 36})
+        RC.say("r1", "/w", "o/r", 7, 1, "and the timeout?", sid=built)
+        self.assertEqual([c[:2] for c in calls], [("fork", built), ("resume", "c" * 36)])  # the copy carries on
+        self.assertEqual(RC.target("o/r", 7, 1, built)["session"], "c" * 36)
+
+    def test_a_studio_session_is_used_as_it_is(self):
+        from lfgcore import reviewchat as RC
+        self.saved(self.finding())
+        mine = "d" * 36
+        calls, _live = self.chat_env(own="a" * 36, studio=(mine,))
+        out = RC.say("r1", "/w", "o/r", 7, 1, "what did you change here?", sid=mine)
+        self.assertEqual((out["session"], calls), (mine, [("resume", mine, {"pr": "o/r#7", "n": 1})]))
+        self.assertNotIn("session_forks", R.load("o/r", 7))
+
+    def test_a_review_with_no_session_gets_a_chat_of_its_own(self):
+        from lfgcore import reviewchat as RC
+        self.saved(self.finding())
+        calls, live = self.chat_env()
+        self.assertEqual(RC.target("o/r", 7, 1)["session"], None)
+        out = RC.say("r1", "/w", "o/r", 7, 1, "why is this a blocker?")
+        self.assertEqual((out["session"], calls[0][0]), ("n" * 36, "create"))
+        self.assertTrue(live("n" * 36).said[0][2]["edits"])  # it is the review's chat: it can change the review
+        self.assertEqual(R.load("o/r", 7)["chat_session"], "n" * 36)
+        self.assertEqual(RC.target("o/r", 7, 1)["session"], "n" * 36)  # and the next visit opens on it
+
+    def test_an_answered_question_goes_to_the_chat_and_its_reply_lands_under_the_question(self):
+        from lfgcore import reviewchat as RC
+        with mock.patch.object(R, "pr_meta", return_value=self.META):
+            R.save("o/r", 7, {"summary": "s", "findings": [self.finding()],
+                              "questions": [{"ask": "is the old endpoint still used?", "why": "1.1 depends on it"}]})
+        self.assertEqual(R.load("o/r", 7)["passes"][0]["questions"][0]["id"], "q1")
+        _calls, live = self.chat_env(own="a" * 36)
+        RC.answer("r1", "/w", "o/r", 7, 1, "q1", "yes, by the mobile app")
+        text, _a, turn = live("a" * 36).said[0]
+        self.assertIn("My answer: yes, by the mobile app", text)
+        self.assertIn('question="q1"', text)
+        self.assertEqual(R.load("o/r", 7)["passes"][0]["questions"][0]["answer"], "yes, by the mobile app")
+        RC.finish(live("a" * 36), turn, "m1", "Then 1.1 stands.")
+        p = R.load("o/r", 7)["passes"][0]
+        self.assertEqual((p["questions"][0]["reply"], p["chat"][-1]["qid"]), ("Then 1.1 stands.", "q1"))
+        with self.assertRaises(R.ReviewError):
+            RC.answer("r1", "/w", "o/r", 7, 1, "q9", "x")
+        added = []
+        with mock.patch("lfgcore.knowledge.add",
+                        side_effect=lambda *a, **k: added.append((a, k)) or {"slug": "dec-x"}), \
+                mock.patch.object(R, "local_checkout", return_value="/work/r"):
+            R.remember("o/r", 7, 1, "q1", "dev-graph")
+        self.assertIn("Answer: yes, by the mobile app", added[0][0][2])
+        self.assertEqual(added[0][1]["root"], "/work/r")  # on this repo's own dev-graph branch, where its sessions read
+
+    def test_a_finding_discussed_in_the_chat_can_be_saved_and_passed_on(self):
+        # the Save choice and "don't flag this again" are the ones the review already had: the chat feeds them
+        from lfgcore import reviewchat as RC
+        self.saved(self.finding(title="No retry on fetch"))
+        RC.finish(self.FakeLive("a" * 36, "the review"), {"pr": "o/r#7", "n": 1, "fid": "1.1", "qid": "",
+                                                          "q": "it is handled in the caller", "edits": True},
+                  "m1", 'Agreed.\n\n```json\n{"changes": [{"id": "1.1", "status": "drop"}]}\n```')
+        f = R.load("o/r", 7)["passes"][0]["findings"][0]
+        self.assertEqual((f["status"], f["dropped_by"]), ("drop", "claude"))
+        added = []
+        with mock.patch("lfgcore.knowledge.add",
+                        side_effect=lambda *a, **k: added.append((a, k)) or {"slug": "dec-x"}), \
+                mock.patch.object(R, "local_checkout", return_value="/work/r"):
+            R.remember_finding("o/r", 7, "1.1", "dev-graph")
+        self.assertIn("it is handled in the caller", added[0][0][2])
+        self.assertEqual(R.pass_on("o/r", 7, "1.1", "repo")["scope"], "repo")
+
+    def test_a_turn_that_ends_in_the_session_updates_the_review_before_the_session_shows_idle(self):
+        import collections
+        from lfgcore import claudesess as CS
+        self.saved(self.finding())
+        reply = 'Agreed.\n\n```json\n{"changes": [{"id": "1.1", "status": "drop"}]}\n```'
+        events = [{"type": "assistant", "message": {"id": "msg_9", "content": [{"type": "text", "text": reply}]}},
+                  {"type": "assistant", "parent_tool_use_id": "t1",
+                   "message": {"id": "sub", "content": [{"type": "text", "text": "a subagent talking"}]}},
+                  {"type": "result", "total_cost_usd": 0.01}]
+
+        class Out:
+            def __iter__(self):
+                return iter(json.dumps(e).encode() for e in events)
+
+            def close(self):
+                pass
+        live = CS.Live.__new__(CS.Live)
+        live.proc = types.SimpleNamespace(stdout=Out(), wait=lambda timeout=None: 0)
+        live.log = types.SimpleNamespace(close=lambda: None)
+        live.sid, live.rid, live.root, live.title = "e" * 36, "r1", "/w", "the review"
+        live.state, live.pending, live.queued, live._qmeta, live._replies = "working", {}, [], [], {}
+        live.cost = live.error = None
+        live.review, live._last = {"pr": "o/r#7", "n": 1}, (None, "")
+        live._turns = collections.deque([{"pr": "o/r#7", "n": 1, "fid": "1.1", "qid": "", "q": "not needed",
+                                          "edits": True}])
+        seen = []
+        with mock.patch.object(CS.N, "add", side_effect=lambda *a, **k: seen.append(R.load("o/r", 7))):
+            live._read()
+        self.assertEqual(R.load("o/r", 7)["passes"][0]["findings"][0]["status"], "drop")
+        self.assertEqual(CS._index()["e" * 36]["chips"]["msg_9"], ["1.1: dropped"])
+        self.assertEqual(seen[0]["passes"][0]["findings"][0]["status"], "drop")  # applied before anyone is told
+        self.assertEqual(live.state, "ended")
+        self.assertIsNone(live.error)
+
+    def test_the_review_chat_routes_reach_the_chat(self):
+        self.saved(self.finding())
+        calls, live = self.chat_env(own="a" * 36)
+        with mock.patch.object(ui.dash, "repo_root", return_value="/w"):
+            out = ui.save("review_chat_say", {"repo": "r1", "pr": "o/r#7", "pass": 1, "finding": "1.1",
+                                              "text": "hello", "session": ""})
+        self.assertEqual((out["session"], live("a" * 36).said[0][2]["fid"]), ("a" * 36, "1.1"))
+        with self.assertRaises(ST.Invalid):  # the separate review chat is gone
+            ui.save("review_ask", {"pr": "o/r#7", "pass": 1, "question": "x"})
 
     def test_a_posted_comment_is_never_changed_by_talking(self):
         self.saved()
@@ -4359,34 +4562,6 @@ class ReviewTest(unittest.TestCase):
         rec["passes"][0]["findings"][0]["comment_id"] = 5
         R.store(rec)
         self.assertEqual(R.apply_changes("o/r", 7, 1, {"changes": [{"id": "1.1", "body": "new"}]}), [])
-
-    def test_an_answered_question_goes_to_the_conversation(self):
-        with mock.patch.object(R, "pr_meta", return_value=self.META):
-            R.save("o/r", 7, {"summary": "s", "findings": [self.finding()],
-                              "questions": [{"ask": "is the old endpoint still used?", "why": "1.1 depends on it"}]})
-        self.assertEqual(R.load("o/r", 7)["passes"][0]["questions"][0]["id"], "q1")
-        asked = []
-        with mock.patch.object(R.C, "which", return_value="/bin/claude"), \
-                mock.patch("subprocess.run", side_effect=self.claude_says("Then 1.1 stands.", asked)):
-            R.answer("o/r", 7, 1, "q1", "yes, by the mobile app")
-        p = R.load("o/r", 7)["passes"][0]
-        self.assertEqual(p["questions"][0]["answer"], "yes, by the mobile app")
-        self.assertIn("My answer: yes, by the mobile app", asked[0][2])
-        self.assertEqual(p["questions"][0]["reply"], "Then 1.1 stands.")  # Claude's reply shows under the question
-        with self.assertRaises(R.ReviewError):
-            R.answer("o/r", 7, 1, "q9", "x")
-        added = []
-        with mock.patch("lfgcore.knowledge.add",
-                        side_effect=lambda *a, **k: added.append((a, k)) or {"slug": "dec-x"}), \
-                mock.patch.object(R, "local_checkout", return_value="/work/r"):
-            R.remember("o/r", 7, 1, "q1", "dev-graph")
-        self.assertEqual(added[0][0][0], "decision")
-        self.assertIn("Answer: yes, by the mobile app", added[0][0][2])
-        self.assertEqual(added[0][1]["repo"], "r")
-        self.assertEqual(added[0][1]["root"], "/work/r")  # on this repo's own dev-graph branch, where its sessions read
-        self.assertEqual(R.load("o/r", 7)["passes"][0]["questions"][0]["saved"]["to"], "dev-graph")
-        with self.assertRaises(R.ReviewError):
-            R.remember("o/r", 7, 1, "q1", "somewhere")
 
     def discussed(self, status="drop"):
         """A saved review whose finding 1.1 was talked through with Claude and then decided."""
@@ -4656,14 +4831,6 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual([x["name"] for x in d["repos"]], ["o/api", "o/web"])
         self.assertEqual(d["overall"]["to_approval"], 1.5)
 
-    def test_answering_a_question_is_tagged_in_the_chat(self):
-        with mock.patch.object(R, "pr_meta", return_value=self.META):
-            R.save("o/r", 7, {"summary": "s", "findings": [], "questions": [{"ask": "still used?", "why": "w"}]})
-        with mock.patch.object(R.C, "which", return_value="/bin/claude"), \
-                mock.patch("subprocess.run", side_effect=self.claude_says("Fine.")):
-            R.answer("o/r", 7, 1, "q1", "no")
-        self.assertEqual(R.load("o/r", 7)["passes"][0]["chat"][-1]["qid"], "q1")
-
     def test_is_it_fixed_checks_one_finding_against_the_new_commits(self):
         self.saved()
         p = R.load("o/r", 7)["passes"][0]
@@ -4917,26 +5084,6 @@ class ReviewTest(unittest.TestCase):
             sn = R.snippet("o/r", 7, "1.1")
         self.assertEqual((sn["line"], sn["changed_since"], sn["head"]), (3, True, "a" * 40))
 
-    def test_discussing_a_finding_keeps_the_conversation_on_it(self):
-        self.saved()
-        asked = []
-
-        def claude(cmd, **kw):
-            asked.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": "Yes, `load` can return None."}), "")
-        with mock.patch.object(R.C, "which", return_value="/bin/claude"), \
-                mock.patch.object(R, "snippet", return_value=None), mock.patch("subprocess.run", side_effect=claude):
-            out = R.discuss("o/r", 7, "1.1", "is this reachable?")
-            R.discuss("o/r", 7, "1.1", "and the fix?")
-        self.assertEqual(out["a"], "Yes, `load` can return None.")
-        self.assertEqual([x["q"] for x in R.load("o/r", 7)["passes"][0]["findings"][0]["chat"]],
-                         ["is this reachable?", "and the fix?"])
-        self.assertIn("is this reachable?", asked[1][2])  # the second question sees the first
-        self.assertIn("This breaks on empty input.", asked[0][2])
-        self.assertIn("drop it", asked[0][2])  # agreeing it isn't needed drops it; disagreeing says why
-        with self.assertRaises(R.ReviewError):
-            R.discuss("o/r", 7, "1.1", " ")
-
     def test_fix_is_only_for_your_own_pr_once_every_finding_is_decided(self):
         self.saved(self.finding(), self.finding(line=9), author="me")
         with mock.patch.object(R, "me", return_value="me"):
@@ -5172,46 +5319,6 @@ class ReviewTest(unittest.TestCase):
         p = R.load("o/r", 7)["passes"][0]
         self.assertEqual((p["verdict_now"], p["score"], R.verdict_of(p)), ("almost", 96, "almost"))
 
-    def test_ask_a_session_forks_it_once_then_continues_the_fork(self):
-        with mock.patch.object(R, "pr_meta", return_value=self.META):
-            R.save("o/r", 7, {"summary": "s", "findings": []})
-        built = {"id": "b" * 36, "title": "build ATO-1", "cwd": self.tmp_dir()}
-        sent = []
-
-        def fake(cmd, **kw):
-            sent.append((cmd, kw.get("cwd")))
-            said = json.dumps({"result": "yes, on purpose", "session_id": "f" * 36})
-            return subprocess.CompletedProcess(cmd, 0, said, "")
-        with mock.patch.object(R, "sessions_for", return_value=[built]), \
-                mock.patch.object(C, "which", return_value="/bin/claude"), mock.patch("subprocess.run", fake):
-            self.assertEqual(R.ask_session("o/r", 7, built["id"], "why no retry?")["a"], "yes, on purpose")
-            R.ask_session("o/r", 7, built["id"], "and the timeout?", n=1)
-            with self.assertRaises(R.ReviewError):
-                R.ask_session("o/r", 7, "c" * 36, "x")  # not a session about this PR
-        (first, cwd), (second, _) = sent
-        self.assertEqual((first[first.index("--resume") + 1], "--fork-session" in first, cwd), (built["id"], True,
-                                                                                                built["cwd"]))
-        self.assertEqual((second[second.index("--resume") + 1], "--fork-session" in second), ("f" * 36, False))
-        self.assertNotIn("Edit", first[first.index("--allowedTools") + 1])
-        chat = R.load("o/r", 7)["passes"][0]["chat"]
-        self.assertEqual([(x["q"], x["session"]) for x in chat], [("and the timeout?", "build ATO-1")])
-
-    def test_ask_a_session_about_one_finding_keeps_it_on_the_finding(self):
-        with mock.patch.object(R, "pr_meta", return_value=self.META):
-            R.save("o/r", 7, {"summary": "s", "findings": [self.finding(title="No retry on fetch")]})
-        built = {"id": "b" * 36, "title": "build ATO-1", "cwd": self.tmp_dir()}
-        sent = []
-
-        def fake(cmd, **kw):
-            sent.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": "on purpose", "session_id": "f" * 36}), "")
-        with mock.patch.object(R, "sessions_for", return_value=[built]), \
-                mock.patch.object(C, "which", return_value="/bin/claude"), mock.patch("subprocess.run", fake):
-            R.ask_session("o/r", 7, built["id"], "why no retry?", n=1, fid="1.1")
-        self.assertIn("1.1: No retry on fetch", sent[0][sent[0].index("-p") + 1])
-        p = R.load("o/r", 7)["passes"][0]
-        self.assertEqual(([x["q"] for x in p["findings"][0]["chat"]], p.get("chat")), (["why no retry?"], None))
-
     def test_github_is_asked_once_and_a_page_never_waits_on_a_known_status(self):
         import threading
         R._STATUS.clear()
@@ -5344,9 +5451,11 @@ class ReviewTest(unittest.TestCase):
             self.assertEqual(H.pre_tool(dict(data, tool_input={"command": "psql -c 'select 1' && npm test"})), 0)
 
     def test_a_chat_file_opens_in_the_page_and_nothing_else_does(self):
-        import base64
-        csv = R.save_attachment(base64.b64encode(b"a,b\n1,2\n").decode(), "text/csv", "q.csv")["path"]
-        png = R.save_attachment(base64.b64encode(b"\x89PNG\r\n\x1a\nxx").decode(), "image/png", "s.png")["path"]
+        folder = C.ensure_dir(os.path.join(R.chat_files_dir(), "t1"))  # files from the chat before it became Studio's
+        csv, png = os.path.join(folder, "q.csv"), os.path.join(folder, "s.png")
+        C.write_text(csv, "a,b\n1,2\n")
+        with open(png, "wb") as fh:
+            fh.write(b"\x89PNG\r\n\x1a\nxx")
         got = R.attachment_preview(csv)
         self.assertEqual((got["kind"], got["name"], got["rows"]), ("table", "q.csv", [["a", "b"], ["1", "2"]]))
         got = R.attachment_preview(png)
@@ -5391,49 +5500,6 @@ class ReviewTest(unittest.TestCase):
             self.assertEqual(got["settled"]["unavailable"], [])  # the Knowledge pack is off in tests: nothing to read
         skill = C.read_text(os.path.join(C.PLUGIN_ROOT, "skills", "review", "SKILL.md"))
         self.assertIn("`answered`", skill)
-
-    def test_the_review_chat_takes_any_file_and_slash_commands(self):
-        import base64
-        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 20).decode()
-        img = R.save_attachment(png, "image/png", "shot.png")
-        path = img["path"]
-        self.assertTrue(path.startswith(R.chat_files_dir()) and os.path.isfile(path) and img["image"])
-        csv = R.save_attachment(base64.b64encode(b"a,b\n1,2\n").decode(), "text/csv", "../../Q3 numbers.csv")
-        self.assertEqual((csv["name"], csv["image"], os.path.dirname(os.path.dirname(csv["path"]))),
-                         ("Q3-numbers.csv", False, R.chat_files_dir()))  # any kind; the name can't leave the folder
-        again = R.save_attachment(base64.b64encode(b"x").decode(), "text/csv", "Q3 numbers.csv")["path"]
-        self.assertNotEqual(again, csv["path"])  # the same name twice keeps both
-        self.assertEqual(open(csv["path"]).read(), "a,b\n1,2\n")
-        self.assertTrue(R.save_attachment(base64.b64encode(b"PK\x03\x04").decode(), "", "notes.docx")["path"])
-        with self.assertRaises(R.ReviewError):
-            R.save_attachment(base64.b64encode(b"0" * (R.FILE_MAX + 1)).decode(), "text/plain", "big.txt")
-        with self.assertRaises(R.ReviewError):
-            R.save_attachment(base64.b64encode(b"0" * (R.IMAGE_MAX + 1)).decode(), "image/png", "big.png")
-        with self.assertRaises(R.ReviewError):
-            R.save_attachment("not base64!", "text/plain", "x.txt")
-        got = ui.save("chat_file", {"data": base64.b64encode(b"a,b").decode(), "type": "text/csv", "name": "x.csv"})
-        self.assertTrue(got["path"].startswith(R.chat_files_dir()))  # the dashboard's own route reaches it
-        with mock.patch.object(R, "pr_meta", return_value=self.META):
-            R.save("o/r", 7, {"summary": "s", "findings": [self.finding()]})
-        rec = R.load("o/r", 7)
-        rec["passes"][0]["run"] = {"session_id": "s" * 8, "cwd": self.tmp_dir()}
-        R.store(rec)
-        sent = []
-
-        def fake(cmd, **kw):
-            sent.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": "ok"}), "")
-        with mock.patch.object(C, "which", return_value="/bin/claude"), mock.patch("subprocess.run", fake):
-            R.ask("o/r", 7, 1, "what is this?\n[image: %s]\n[file: %s]\n[file: /etc/passwd]" % (path, csv["path"]))
-            R.ask("o/r", 7, 1, "/review-pr 7 look again")
-        prompt, tools = sent[0][2], sent[0][sent[0].index("--allowedTools") + 1]
-        self.assertIn("Open each attached file with the Read tool before answering: %s, %s" % (path, csv["path"]),
-                      prompt)
-        self.assertNotIn("/etc/passwd", prompt.split("before answering:")[1])  # only files saved by the chat
-        self.assertNotIn("Skill", tools)
-        self.assertTrue(sent[1][2].startswith("/review-pr 7 look again"))  # a command goes first, as typed
-        self.assertIn("Skill", sent[1][sent[1].index("--allowedTools") + 1].split(","))
-        self.assertEqual(sent[1][sent[1].index("--resume") + 1], "s" * 8)
 
     def test_a_re_review_follows_up_findings_you_never_decided_on(self):
         f = self.finding
@@ -5574,34 +5640,6 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual(R.mark_echoes("o/r", 7, said=[rabbit]), 0)  # never twice
         with self.assertRaises(R.ReviewError):
             R._clean_finding(self.finding(echoes=[{"url": "x"}]), 1)
-
-    def test_an_older_review_gets_its_session_from_the_job_log_and_can_be_asked_about(self):
-        sid = "11111111-2222-3333-4444-555555555555"
-        with mock.patch.object(R, "pr_meta", return_value=self.META):
-            R.save("o/r", 7, {"summary": "s", "findings": [self.finding()]})
-        log = os.path.join(self.tmp_dir(), "run.log")
-        with open(log, "w") as f:
-            f.write(json.dumps({"type": "system", "subtype": "init", "session_id": sid}))
-        C.write_json(R.job_path("o/r", 7), {"status": "done", "started": "2000-01-01T00:00:00", "cwd": "/w",
-                                             "log": log})
-        with mock.patch.object(R.C, "which", return_value="/bin/claude"), \
-                mock.patch("subprocess.run", side_effect=self.claude_says("From the review alone.")) as run:
-            R.ask("o/r", 7, 1, "why?")  # no session found yet: Claude answers from the review, with no tools
-        self.assertNotIn("--resume", run.call_args[0][0])
-        R.discard("o/r", 7, 1)
-        with mock.patch.object(R, "pr_meta", return_value=self.META):
-            R.save("o/r", 7, {"summary": "s", "findings": [self.finding()]})
-        p = R.backfill("o/r", 7)["passes"][-1]
-        self.assertEqual((p["run"]["session_id"], p["run"]["cwd"]), (sid, "/w"))
-        answer = subprocess.CompletedProcess([], 0, stdout=json.dumps({"result": "Because the caller passes None."}))
-        with mock.patch.object(R.C, "which", return_value="/bin/claude"), \
-                mock.patch("subprocess.run", return_value=answer) as run:
-            self.assertEqual(R.ask("o/r", 7, 1, "why is it a blocker?")["a"], "Because the caller passes None.")
-        cmd = run.call_args[0][0]
-        self.assertEqual(cmd[cmd.index("--resume") + 1], sid)
-        self.assertEqual(run.call_args[1]["cwd"], "/w")
-        self.assertNotIn("review save", cmd[cmd.index("--allowedTools") + 1])
-        self.assertEqual(R.load("o/r", 7)["passes"][-1]["chat"][0]["q"], "why is it a blocker?")
 
     def test_a_prs_linear_ticket_comes_from_its_branch_title_or_description(self):
         self.assertEqual(R.ticket_of("", "", "lee/ato-4223-queue-terraform-runs"), "ATO-4223")
