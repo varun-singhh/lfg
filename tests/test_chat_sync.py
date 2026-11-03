@@ -5,15 +5,20 @@ import sys
 import tempfile
 import unittest
 
-# LFG code reads LFG_HOME when it is first imported: point it at a temp folder before anything imports it,
-# whatever order the test files load in, so a test can never touch ~/.lfg
-os.environ["LFG_HOME"] = tempfile.mkdtemp(prefix="lfg-test-home-")
+# like the other test files: a temp LFG_HOME unless one is set (test_core sets its own, and must be the one LFG's
+# code sees, so a file that loads before it imports LFG lazily, inside the tests)
+os.environ.setdefault("LFG_HOME", tempfile.mkdtemp(prefix="lfg-test-home-"))
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "plugin", "lib"))
-from lfgcore import review as R  # noqa: E402
 
 ASSETS = os.path.join(ROOT, "plugin", "lib", "lfgcore", "ui_assets")
+
+
+def review():
+    """lfgcore.review, imported when a test runs: test_core has set LFG_HOME by then, whatever order files load in."""
+    from lfgcore import review as R
+    return R
 
 
 def read(name):
@@ -41,17 +46,17 @@ class SavedNoteTest(unittest.TestCase):
                             "findings": [{"id": "1.2", "saved": [{"to": "second-brain"}]}, {"id": "1.3"}]}]}
 
     def test_names_what_was_saved_and_where(self):
-        note = R.saved_note(self.rec())
+        note = review().saved_note(self.rec())
         self.assertIn('"Use X?": saved to this repo\'s dev-graph', note)
         self.assertIn("finding 1.2: saved to his second-brain", note)
         self.assertNotIn("Use Y?", note)
         self.assertNotIn("1.3", note)
 
     def test_nothing_saved_says_nothing(self):
-        self.assertEqual(R.saved_note({"passes": [{"questions": [], "findings": [{"id": "1.1"}]}]}), "")
+        self.assertEqual(review().saved_note({"passes": [{"questions": [], "findings": [{"id": "1.1"}]}]}), "")
 
     def test_the_chat_is_told_not_to_ask_about_saving(self):
-        for text in (R.ASK, R.ASK_SESSION):
+        for text in (review().ASK, review().ASK_SESSION):
             self.assertTrue(re.search(r"never ask whether to save", text), text[:60])
 
 
