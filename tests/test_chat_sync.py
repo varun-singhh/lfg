@@ -40,6 +40,20 @@ class ScrollTest(unittest.TestCase):
         self.assertNotRegex(restore, r"el\.scrollTop\s*=")
 
 
+class RedrawTest(unittest.TestCase):
+    def test_a_redraw_that_changes_nothing_is_skipped_and_opened_sections_stay_open(self):
+        js = read("app.js")
+        draw = js[js.index("const draw = () => {"):]
+        draw = draw[:draw.index("wired();")]
+        self.assertIn("if (html !== conv.dataset.html)", draw)
+        self.assertIn('$$("details[open]", conv)', draw)
+        self.assertIn("delete conv.dataset.html", draw)  # an empty chat forgets what it last drew
+
+    def test_copy_is_always_visible_under_a_reply_on_a_review_page(self):
+        css = read("app.css")
+        self.assertRegex(css, r"\.rv-conv \.ss-ai \.ss-msg-a\s*\{\s*opacity:\s*1;")
+
+
 class SavedNoteTest(unittest.TestCase):
     def rec(self):
         return {"passes": [{"questions": [{"ask": "Use X?", "saved": {"to": "dev-graph"}}, {"ask": "Use Y?"}],

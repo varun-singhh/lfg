@@ -4546,10 +4546,16 @@ function wireChatPane(root) {
     const d = rv.d, stick = !conv.dataset.drawn || atBottom();
     conv.dataset.drawn = "1";
     if (!d) {
+      delete conv.dataset.html;  // the next conversation always draws
       conv.innerHTML = `<div class="chat-empty">${esc(hint)}</div>`;
       if (rv.history) conv.innerHTML = `<details class="chat-hist" open><summary>Earlier in <b>${esc(rv.history.title)}</b></summary>${rv.history.html}</details>` + conv.innerHTML;
     } else {
-      conv.innerHTML = `${d.earlier ? `<p class="muted small chat-more">${plural(d.earlier, "earlier message")} not shown. <a href="#studio/${esc(d.id)}">Open the whole session in Studio</a></p>` : ""}${(d.items || []).length || ssLive(d.state) || (d.queued || []).length ? "" : `<div class="chat-empty">${esc(hint)}</div>`}${ssConv(d, true)}`;
+      const html = `${d.earlier ? `<p class="muted small chat-more">${plural(d.earlier, "earlier message")} not shown. <a href="#studio/${esc(d.id)}">Open the whole session in Studio</a></p>` : ""}${(d.items || []).length || ssLive(d.state) || (d.queued || []).length ? "" : `<div class="chat-empty">${esc(hint)}</div>`}${ssConv(d, true)}`;
+      if (html !== conv.dataset.html) {  // a redraw that would change nothing is skipped: no flash
+        const open = $$("details[open]", conv).map(x => (x.querySelector("summary") || {}).textContent);  // what you opened stays open
+        conv.innerHTML = html; conv.dataset.html = html;
+        $$("details", conv).forEach(x => { if (open.includes((x.querySelector("summary") || {}).textContent)) x.open = true; });
+      }
       wired();
     }
     if (stick) conv.scrollTop = conv.scrollHeight;
