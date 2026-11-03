@@ -1119,6 +1119,8 @@ a.stk-i:hover { background: var(--hover); }
 .ss-conv { display: flex; flex-direction: column; gap: 16px; overflow-y: auto; min-height: 0; padding: 6px 14px 14px 2px; scroll-behavior: smooth; }
 /* the PR page's chat is redrawn as a review runs: a redraw must land at the bottom at once, not scroll down from the top */
 .rv-conv { scroll-behavior: auto; }
+/* on a review page the Copy under each reply is always there: the answer (Fixed, Partly fixed, Not fixed) is what you copy */
+.rv-conv .ss-ai .ss-msg-a { opacity: 1; }
 .ss-me { display: flex; justify-content: flex-end; padding-left: 18%; }
 .ss-bub { background: var(--blue-bg); color: var(--blue-tx, var(--text)); padding: 10px 14px; border-radius: 16px 16px 4px 16px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.55; }
 .ss-bub.skill { display: inline-flex; gap: 6px; align-items: center; font-family: var(--mono); font-size: 13px; background: var(--ai-bg); color: var(--ai-tx); }
