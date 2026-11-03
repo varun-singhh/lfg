@@ -38,6 +38,20 @@ The project picker shows each repo's folder name. The branch picker marks the ch
 - **Deletes** (Disk space) stay inside `~/.lfg` or a known repo's graph folders.
 - **Reading the API** needs the `X-LFG: 1` header, and the Host must be 127.0.0.1 or localhost (guards against DNS rebinding).
 
+## Pages that update themselves
+
+A page watching something (a running review, checks, a scan, a Claude session) redraws every 1.2 to 15 seconds. A
+redraw changes only what changed, so what you opened, scrolled to, selected, typed or attached stays as it was, and a
+chat stays at its end only if you were at its end. For anyone changing `app.js`:
+
+- Redraw with `morph(el, html)` (or `softRoute()` for the whole page), never `el.innerHTML =` on a timer or poll.
+- Content script draws into an element (a table, a tab's body, the review chat) is marked `data-fill` in the HTML; an
+  element script adds (the Rewind box) is `data-local`; attributes script toggles go in `data-keep="hidden ..."`.
+- A `<details>`'s `open`, typed text and a style script set always stay. Tables, charts and logos are numbered from 1
+  each time a page draws, so a redraw finds the same ones (and keeps a table's sort and filter).
+- Wiring runs again on elements a redraw kept: use `el.onclick = ...`, or guard `addEventListener` with
+  `once(el, "what")`. Page timers go through `pageTimer(name, ms, fn)`, one pending per name.
+
 ## Code map
 
 The code map can be built, updated or rebuilt from scratch, and its docs refreshed, from the side menu, Home and Code. This uses `POST /api/save/graphs_build`, the same background job the hooks start. It needs no edit key, but it does need the same Origin, Host and header checks.
