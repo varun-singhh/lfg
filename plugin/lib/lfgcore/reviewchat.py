@@ -57,7 +57,9 @@ def _context(rec, p, fid, edits):
         about = R.FINDING_ABOUT % (fid, f.get("title") or f.get("issue") or "", f.get("file") or "the PR as a whole",
                                    f.get("line") or "-", f.get("issue") or "", f.get("fix") or "", f.get("body") or "",
                                    said) + "\n\n" + (R.FINDING_RULE if edits else "")
-    about = (about + "\n\n" if about else "") + "Lee's message is the text above this note."
+    saved = R.saved_note(rec)
+    about = (about + "\n\n" if about else "") + (saved + "\n\n" if saved else "") + \
+        "Lee's message is the text above this note."
     if edits:
         return R.ASK % (R._review_now(rec, p), about)
     return R.ASK_SESSION % (R.ref(rec["repo"], rec["number"]), about)

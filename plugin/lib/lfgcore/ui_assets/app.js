@@ -5194,7 +5194,7 @@ function uiRestore(view, snap) {
     if (snap.typed.has(k)) el.value = snap.typed.get(k);
     if (snap.focus && snap.focus.key === k) { el.focus({ preventScroll: true }); try { el.setSelectionRange(snap.focus.start, snap.focus.end); } catch (e) { /* not a text field */ } }
   });
-  keyed(view, ".pr-thread, .pr-activity ol, .pr-steps, .scroll").forEach(([k, el]) => { if (snap.scroll.has(k)) el.scrollTop = snap.scroll.get(k) === -1 ? el.scrollHeight : snap.scroll.get(k); });
+  keyed(view, ".pr-thread, .pr-activity ol, .pr-steps, .scroll").forEach(([k, el]) => { if (snap.scroll.has(k)) el.scrollTo({ top: snap.scroll.get(k) === -1 ? el.scrollHeight : snap.scroll.get(k), behavior: "instant" }); });  // never animate from the top after a redraw
 }
 /* Re-draw the current page in place: no loading placeholder, same scroll position, open sections stay open. For
    buttons that change one thing on the page (Keep, Save comment, Review); route() is for going to a page. */
