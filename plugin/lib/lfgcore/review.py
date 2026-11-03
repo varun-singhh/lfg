@@ -1393,7 +1393,10 @@ ASK = ("Lee is talking to you about the review you did, from the LFG dashboard. 
        "summary changes\", \"verdict\" (\"mergeable\", \"almost\" or \"not\") and \"verdict_why\" only if "
        "whether it can merge changes}. LFG applies it. The score is always 100 minus the points of what is still open "
        "(findings and questions that cost points), worked out by LFG: never give or promise a score, and never hold "
-       "points back for a problem; make it a finding. Never save, post or run anything that writes.\n\n"
+       "points back for a problem; make it a finding. "
+       "The page has its own buttons to save a decision (to this repo's dev-graph, or to Lee's second-brain): "
+       "never ask whether to save or remember something, and don't offer to. "
+       "Never save, post or run anything that writes.\n\n"
        "The review as it stands: %s\n\n%s")
 
 
@@ -1529,6 +1532,21 @@ def session_history(sid, limit=20):
         elif it.get("k") == "ai" and turns and it.get("text"):
             turns[-1]["a"] = (turns[-1]["a"] + "\n\n" + it["text"]).strip()
     return {"turns": turns[-limit:], "more": max(0, len(turns) - limit)}
+
+
+def saved_note(rec):
+    """What Lee already saved from this review with the page's buttons, so the chat doesn't ask about it again."""
+    where = {"dev-graph": "this repo's dev-graph, as a decision", "second-brain": "his second-brain, as a note"}
+    rows = []
+    for p in rec.get("passes") or []:
+        for q in p.get("questions") or []:
+            if q.get("saved"):
+                rows.append("your question \"%s\": saved to %s"
+                            % (_one_line(q.get("ask"), 120), where[q["saved"]["to"]]))
+        for f in p.get("findings") or []:
+            for s in f.get("saved") or []:
+                rows.append("finding %s: saved to %s" % (f["id"], where.get(s.get("to"), s.get("to"))))
+    return ("Already saved by Lee from this review (don't ask about these): " + "; ".join(rows) + ".") if rows else ""
 
 
 def _review_now(rec, p):
@@ -2425,7 +2443,9 @@ def _session_row(p, repo, number):
 
 ASK_SESSION = ("Lee is reviewing pull request %s from the LFG dashboard and asks you about it. You worked on this, so "
                "answer from what you know and from the code: a few plain sentences he could hand to the reviewer as "
-               "they are. Don't change any files, commit or push, and don't change the review.\n\n%s")
+               "they are. Don't change any files, commit or push, and don't change the review. "
+               "The page has its own buttons to save a decision (to this repo's dev-graph, or to Lee's second-brain): "
+               "never ask whether to save or remember something, and don't offer to.\n\n%s")
 
 
 CONVERT = ("Below is a code review someone did in a Claude Code session. Turn it into this JSON and reply with only "

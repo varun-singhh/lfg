@@ -5,6 +5,10 @@ import sys
 import tempfile
 import unittest
 
+# LFG code reads LFG_HOME when it is first imported: point it at a temp folder before anything imports it,
+# whatever order the test files load in, so a test can never touch ~/.lfg
+os.environ["LFG_HOME"] = tempfile.mkdtemp(prefix="lfg-test-home-")
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugin", "lib"))
 from lfgcore import guard, outside  # noqa: E402
 
