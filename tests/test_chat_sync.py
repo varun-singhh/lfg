@@ -21,6 +21,11 @@ def review():
     return R
 
 
+def json_str(s):
+    import json
+    return json.dumps(s)
+
+
 def read(name):
     with open(os.path.join(ASSETS, name), encoding="utf-8") as f:
         return f.read()
@@ -68,6 +73,7 @@ class CodeBlockCopyTest(unittest.TestCase):
     def test_every_code_block_has_its_own_copy(self):
         js = read("app.js")
         self.assertIn("i++; out += codeBlock(buf); continue;", js)
+        self.assertIn("const FENCE = /^\\s{0,3}(```|~~~)/;", js)
         b = self.block()
         self.assertIn('data-code-copy title="Copy this block"', b)
         self.assertIn('document.addEventListener("click"', b)  # one listener: works however the block was drawn
@@ -77,8 +83,53 @@ class CodeBlockCopyTest(unittest.TestCase):
         b = self.block()
         start = re.search(r"PASTE_START = (/.*?/i)", b).group(1)
         self.assertIn("PASTE START", start)
-        self.assertIn("body = lines.slice(s + 1, e)", b)  # the marker lines are left out of what shows and copies
+        self.assertIn("body: lines.slice(s + 1, e)", b)  # the marker lines are left out of what shows and copies
         self.assertIn("Paste into: ${esc(where)}", b)
+
+    def run_js(self, calls):
+        """Run the paste-block helpers and md() in node, each call's result one JSON line."""
+        import json
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        js = read("app.js")
+        b = js[js.index("function md(text, link)"):]
+        depth, end = 0, 0
+        for i in range(b.index("{"), len(b)):
+            depth += {"{": 1, "}": -1}.get(b[i], 0)
+            if b[i] == "}" and not depth:
+                end = i + 1
+                break
+        script = ("const document = { addEventListener() {} }, icon = () => '', esc = String, inline = s => s;\n"
+                  + self.block() + b[:end] + "\n"
+                  + "\n".join("console.log(JSON.stringify(%s));" % c for c in calls))
+        out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout
+        return [json.loads(x) for x in out.splitlines()]
+
+    MSG = "```\n--- PASTE START (Teams chat with your PM) ---\nQuick question.\n\nAre you OK?\n--- PASTE END ---\n```"
+
+    def test_a_messages_copy_leaves_out_the_markers_and_fences_of_paste_blocks(self):
+        # the Copy under a message: Claude's answer pasted into a Teams chat came out with the markers
+        whole, mixed, bare, unclosed = self.run_js([
+            "copyText(%s)" % json_str(self.MSG),
+            "copyText(%s)" % json_str("Send this:\n\n" + self.MSG + "\n\nAnd run:\n\n```\nls -la\n```"),
+            "copyText(%s)" % json_str("--- PASTE START ---\n/rename x\n--- PASTE END ---"),
+            "copyText(%s)" % json_str("--- PASTE START ---\nhi")])
+        self.assertEqual(whole, "Quick question.\n\nAre you OK?")
+        self.assertEqual(mixed, "Send this:\n\nQuick question.\n\nAre you OK?\n\nAnd run:\n\n```\nls -la\n```")
+        self.assertEqual(bare, "/rename x")
+        self.assertEqual(unclosed, "--- PASTE START ---\nhi")  # not a paste block: copied as written
+        self.assertIn('it.k === "ai" ? copyText(it.text)', read("app.js"))
+
+    def test_paste_blocks_show_without_markers_however_they_are_written(self):
+        body = "--- PASTE START (PM) ---\nhi\n--- PASTE END ---"
+        for html in self.run_js(["md(%s)" % json_str(v) for v in (
+                "```\n" + body + "\n```", "```text\n" + body + "\n```", "  ```\n" + body + "\n  ```",
+                "~~~\n" + body + "\n~~~", body, "Here:\n\n" + body)]):
+            self.assertIn('<div class="code-h">Paste into: PM</div><pre><code>hi</code></pre>', html)
+            self.assertNotIn("PASTE", html)
 
 
 class SavedNoteTest(unittest.TestCase):

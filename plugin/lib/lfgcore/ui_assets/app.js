@@ -368,11 +368,32 @@ function inline(s, link) {
    something to paste, which keeps it exact in a terminal) shows only what goes in, under a "Paste into" line naming
    where; Copy takes only what goes in. */
 const PASTE_START = /^\s*-{2,}\s*PASTE START\s*(?:\((.*)\))?\s*-{2,}\s*$/i, PASTE_END = /^\s*-{2,}\s*PASTE END\s*-{2,}\s*$/i;
-function codeBlock(lines) {
-  let where = null, body = lines;
+function pasteParts(lines) {  // {where, body} when the lines are one paste block, else null
   const s = lines.findIndex(x => x.trim()), e = lines.length - 1 - [...lines].reverse().findIndex(x => x.trim());
   const m = s >= 0 && PASTE_START.exec(lines[s]);
-  if (m && e > s && PASTE_END.test(lines[e])) { where = m[1] || ""; body = lines.slice(s + 1, e); }
+  return m && e > s && PASTE_END.test(lines[e]) ? { where: m[1] || "", body: lines.slice(s + 1, e) } : null;
+}
+const FENCE = /^\s{0,3}(```|~~~)/;
+/* What a message's Copy takes: the text as written, but each paste block (fenced or not) as only what goes in */
+function copyText(text) {
+  const L = String(text || "").replace(/\r/g, "").split("\n"), out = [];
+  for (let i = 0; i < L.length; i++) {
+    const f = FENCE.exec(L[i]);
+    if (f) {
+      let j = i + 1; while (j < L.length && !L[j].trimStart().startsWith(f[1])) j++;
+      const p = pasteParts(L.slice(i + 1, j));
+      out.push(...(p ? p.body : L.slice(i, j + 1))); i = j; continue;
+    }
+    if (PASTE_START.test(L[i])) {
+      let j = i + 1; while (j < L.length && !PASTE_END.test(L[j])) j++;
+      if (j < L.length) { out.push(...L.slice(i + 1, j)); i = j; continue; }
+    }
+    out.push(L[i]);
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+function codeBlock(lines) {
+  const p = pasteParts(lines), where = p ? p.where : null, body = p ? p.body : lines;
   return `<div class="code-blk">${where !== null ? `<div class="code-h">${where ? `Paste into: ${esc(where)}` : "To paste"}</div>` : ""}<pre><code>${esc(body.join("\n"))}</code></pre><button type="button" class="code-copy" data-code-copy title="Copy this block">${icon("copy")}Copy</button></div>`;
 }
 document.addEventListener("click", async e => {  // one listener for every code block, however it was drawn
@@ -390,10 +411,15 @@ function md(text, link) {
   const flush = () => { if (para.length) { out += `<p>${inline(para.join(" "), link)}</p>`; para.length = 0; } };
   while (i < L.length) {
     const l = L[i];
-    if (/^```/.test(l)) {
+    const f = FENCE.exec(l);
+    if (f) {
       flush(); const buf = []; i++;
-      while (i < L.length && !/^```/.test(L[i])) buf.push(L[i++]);
+      while (i < L.length && !L[i].trimStart().startsWith(f[1])) buf.push(L[i++]);
       i++; out += codeBlock(buf); continue;
+    }
+    if (PASTE_START.test(l)) {  // a paste block written without a fence
+      let j = i + 1; while (j < L.length && !PASTE_END.test(L[j])) j++;
+      if (j < L.length) { flush(); out += codeBlock(L.slice(i, j + 1)); i = j + 1; continue; }
     }
     if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < L.length && /^\s*\|?[\s:-]+\|[\s|:-]*$/.test(L[i + 1])) {
       flush();
@@ -5638,7 +5664,7 @@ function ssMsgActions(it, i, chat) {
   const fk = it.u && it.p && !chat ? `<button class="ss-ma" data-fork="${i}" title="A new session with the conversation up to here; this one stays as it is">${icon("branch")}Fork</button>` : "";
   return `<div class="ss-msg-a">${rw}${fk}<button class="ss-ma" data-ss-copy="${i}" title="Copy">${icon("copy")}Copy</button></div>`;
 }
-const ssItemText = it => it.k === "skill" ? `/${it.name.replace(/^\//, "")}${it.args ? " " + it.args : ""}` : it.k === "tool" ? `${it.name} ${JSON.stringify(it.input || {})}` : (it.text || "").replace(/\[Image #\d+\]\s?/g, "").replace(/\s*<lfg-review\b[^>]*>[\s\S]*?<\/lfg-review>\s*/g, "");
+const ssItemText = it => it.k === "skill" ? `/${it.name.replace(/^\//, "")}${it.args ? " " + it.args : ""}` : it.k === "tool" ? `${it.name} ${JSON.stringify(it.input || {})}` : it.k === "ai" ? copyText(it.text) : (it.text || "").replace(/\[Image #\d+\]\s?/g, "").replace(/\s*<lfg-review\b[^>]*>[\s\S]*?<\/lfg-review>\s*/g, "");
 function ssMarkdown(d) {  // Export: the conversation as Markdown, like /export
   const out = [`# ${d.title}`, "", [d.branch && `Branch: ${d.branch}`, d.updated && `Updated: ${new Date(d.updated).toLocaleString()}`, `Session: ${d.id}`].filter(Boolean).join(" · "), ""];
   (d.items || []).forEach(it => {
