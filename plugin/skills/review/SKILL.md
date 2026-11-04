@@ -8,7 +8,7 @@ description: >
 author: Varun Singh
 phase: prove
 lanes: [express, standard, full, hotfix]
-reads: [PR diff, Linear ticket, AGENTS.md, review sources, earlier review record]
+reads: [PR diff, PR description, Linear ticket, AGENTS.md, review sources, earlier review record]
 writes: [~/.lfg/reviews/<owner>__<repo>/<number>.json]
 auto-trigger: false
 preflight: graphs
@@ -30,7 +30,10 @@ preflight: graphs
    it doesn't link. Every PR is its own target, saved with `--ticket <ID>`.
 2. **Context, per target.** `lfg review context <pr>` (JSON). If `mine` is true, say so and stop for that PR
    unless the user asked anyway: GitHub won't take an approval from its author.
-3. **Method.** Read every file in `sources`, in order; later files win. Use them for what to look for, how to
+3. **Method.** Read every file in `sources`, in order; later files win. There may be several methods in it (LFG's
+   built-in one and one or more of the user's own review skills): apply all of them together, as one review. A
+   check any of them asks for is done; where two disagree (a severity, a score rule, how a comment reads), the later
+   one wins. Use them for what to look for, how to
    judge severity and score, and how to word comments. **Skip any step in them about presenting findings one at a
    time, waiting for the user, paste blocks or posting:** this skill's Output replaces those. Paths inside a source
    resolve against its own folder, then its parent folders. Name any `missing_sources` to the user.
@@ -45,14 +48,40 @@ preflight: graphs
    clearly worse than when it was settled (higher severity, wider reach, a new way to hit it) and say in `body` what is worse;
    a decision saying something *is* a real problem means keep flagging it. A name in `unavailable` is a graph that
    couldn't be read: say so in the summary.
-5. **Read the change.** `gh pr view <n> -R <repo> --json body,files` and `gh pr diff <n> -R <repo>`. Read the code
+5. **Intent: the ticket and the description.** Always, with any method and in Fresh eyes too (neither is an earlier
+   review's opinion). Context gives `description` (the PR body) and `ticket`: the Linear id its branch, title or
+   description names. A ticket the user named (step 1, or the prompt) wins over it; a ticket's PRs reviewed together
+   share it. Read the ticket with the Linear MCP (`get_issue`), and `list_comments` when its description is thin: scope
+   changes and acceptance criteria often live there. No ticket, or the read fails: carry on from the description and
+   the code, and say so in `intent`. Never stop or ask over it.
+
+   Hold the ticket and the description lightly: either can be wrong, out of date, vague or silent on something, and
+   the review should still be good. Treat them as the author's claims about the change, not a spec to grade line by
+   line, and check each against the code and against each other:
+   - **The ask.** List what the ticket asks for (its goal and acceptance criteria). Anything it asks that the diff
+     doesn't do is a finding on the code (`about: "code"`, `file` null unless one file is plainly where it belongs),
+     unless the description or a ticket comment narrows the scope on purpose: then it's a note, at most.
+   - **Claims.** What the ticket or the description says about current behaviour, the root cause or what the PR does
+     ("fixes the timeout by…", "no behaviour change", "adds tests for…"): verify each in the code. One that isn't
+     true is a finding with `about: "ticket"` or `"description"`.
+   - **Agreement.** Ticket and description that contradict each other, or a ticket whose criteria contradict its
+     own problem statement: say which one the code follows and whether that's the right one.
+   - **Gaps.** Criteria too thin to define done, or a description that doesn't say what the PR does or how to test
+     it: say what's missing, without inventing criteria and grading against them.
+   - **Drift.** A diff that reflects a later, better understanding than the ticket is the code diverging correctly,
+     not a defect: a `note` saying the ticket should be updated before it closes.
+   - **Scope creep.** Work well beyond the ask: a finding when it should be its own PR, a question when it might be.
+   Severity for findings `about` the ticket or description: usually `minor` or `note`, and never deducted for being
+   absent alone (no ticket or no description is said in `intent`, not filed). `major` only when a wrong ticket or
+   description is steering the change to the wrong fix, or would mislead someone merging or testing it.
+6. **Read the change.** `gh pr view <n> -R <repo> --json files` and `gh pr diff <n> -R <repo>`. Read the code
    around each hunk at `head_sha`: from a worktree (`git fetch origin pull/<n>/head:review/pr-<n>` then
    `lfg worktree new review/pr-<n>`) when the repo is local, else `gh api repos/<repo>/contents/<path>?ref=<sha>`.
-6. **First review** (`re_review` false): one full pass over the whole diff, following the method. Every finding
+7. **First review** (`re_review` false): one full pass over the whole diff, following the method. Every finding
    gets `since: "first"`. **Fresh eyes** (`fresh_eyes` true) is a first review on a PR that has earlier ones: skip
-   steps 7 and 8, leave `prior` and `echoes` empty, and don't look for earlier reviews or others' comments (the
+   steps 8 and 9, leave `prior` and `echoes` empty, and don't look for earlier reviews or others' comments (the
    commands that show them refuse). LFG notes repeats itself after saving.
-7. **Re-review** (`re_review` true): `lfg review show <pr> --json` and `lfg review threads <pr>`, then three passes:
+8. **Re-review** (`re_review` true): `lfg review show <pr> --json` and `lfg review threads <pr>`, then three passes:
    - **Earlier findings.** For each row in `threads.posted`, read the code at the new head and set a state:
      `fixed` (the problem is gone, verified in the code), `replied` (the author answered and the issue is still
      open: say whether the answer holds up), `withdrawn` (their answer is right, or you were wrong),
@@ -71,7 +100,7 @@ preflight: graphs
    **New full review** (asked for one on a PR with earlier reviews): review the whole PR from scratch, findings with
    `since: "first"`, and still do the **Earlier findings** and **Settled** passes above, so every finding still open
    is tracked in `prior` rather than lost or filed twice.
-8. **Other reviewers.** `lfg review others <pr>`: what people and bots (CodeRabbit, Sonar, other agents) already
+9. **Other reviewers.** `lfg review others <pr>`: what people and bots (CodeRabbit, Sonar, other agents) already
    said, inline (with `file` and `line`) or in the conversation. For each finding someone already raised, at the same
    spot or the same idea in other words, list them in `echoes` and say so in `body`: agree with them by name and add
    only what is new ("@coderabbitai flagged this too; the part it missed is ..."). If they said everything you would,
@@ -83,14 +112,14 @@ preflight: graphs
    it is right and worth the change; `maybe`; `skip`: wrong, already handled, or not worth it, and say why in
    `issue`), your own `severity`, and `reply`: what the user would answer in that thread if they pass on it, in
    their voice (one or two sentences: why not, or what was done instead). `body` stays your own read of it.
-9. **Questions.** Anything you couldn't settle from the code, the ticket or the sources and that would change a
+10. **Questions.** Anything you couldn't settle from the code, the ticket or the sources and that would change a
    finding (intent, a product decision, whether a caller exists elsewhere) goes in `questions`, at most five, each
    with `why` it matters. Don't ask what the code can answer. `lfg review context` lists in `answered` every
    question the user already answered about this PR, from any earlier review: take each answer as a fact, never ask
    it again (in other words either), and let it settle the findings it bears on. Fresh eyes too: answers aren't an
    earlier review's opinion. Also check `settled.decisions` and `settled.notes` before asking; a saved one is an answer.
-10. **Save.** Write the JSON below to a scratch file and `lfg review save <pr> --file <path> [--ticket <ID>]`. Fix
-   and re-run on a validation error.
+11. **Save.** Write the JSON below to a scratch file and `lfg review save <pr> --file <path> [--ticket <ID>]`.
+   Fix and re-run on a validation error.
 
 ## Output
 
@@ -104,18 +133,24 @@ The file passed to `lfg review save`:
    "file": "path/in/repo.ts", "line": 42, "issue": "one line", "fix": "one line",
    "detail": "evidence for the reviewer: what you checked and where; not posted",
    "body": "the comment the author reads, in the voice the sources describe",
-   "origin": "introduced|exposed|pre-existing", "since": "first|new|missed",
+   "origin": "introduced|exposed|pre-existing", "since": "first|new|missed", "about": "code|ticket|description",
    "echoes": [{"who": "coderabbitai", "url": "https://github.com/...#discussion_r1", "said": "what they said, short",
                "bot": true}],
    "raised_by": {"who": "coderabbitai", "url": "...", "comment_id": 123, "kind": "inline|review|comment",
                  "bot": true},
    "worth": "fix|maybe|skip", "reply": "only with raised_by: the user's answer if they pass on it"}],
+ "intent": {"ticket": "ATO-4223 or empty when there is none", "ticket_title": "its title in Linear",
+            "read_ticket": true, "read_description": true, "delivers": "all|most|part|unclear",
+            "note": "one or two sentences: what the ticket asked, what the PR does of it, and what is off in either"},
  "questions": [{"ask": "is the old export endpoint still called by the mobile app?", "why": "if so, 1.2 is a blocker",
                 "costs": 12}],
  "prior": [{"id": "1.3", "state": "fixed|replied|withdrawn|resolved-unchanged|ignored|open", "note": "why"}]}
 ```
 
-`line` is a line in the PR's version of the file, or null for a finding about the PR as a whole.
+`line` is a line in the PR's version of the file, or null for a finding about the PR as a whole. `about` is
+`code` (the default) for a problem in the diff, `ticket` or `description` for one in the Linear ticket or the PR's
+description (step 5); those have `file` and `line` null. `read_description` is false when the PR has no
+description, or one that says nothing about what it does.
 
 A question that holds the verdict back costs points (the method's Score rule): put that cost in its `costs` (4, 12 or
 25; leave it out when the question costs nothing). LFG works out the score as 100 minus what is still open, so don't
@@ -123,7 +158,8 @@ give one: anything that holds the PR back must be a finding or a question that c
 should hold it up, `almost` when only small fixes stand in the way (minors, a
 failing check with an obvious cause, a question to answer), `not` with any blocker or major, or a design problem.
 
-Then show the user, per PR: the earlier-finding states (re-review), the score, then one row per finding: id,
+Then show the user, per PR: the intent line (ticket id and title, how much of it the PR does, the note), the
+earlier-finding states (re-review), the score, then one row per finding: id,
 severity, title, `file:line`, the `issue` line. All at once, not one at a time. Then triage on their word:
 `lfg review mark <pr> <id>... --keep|--drop`, and for an edit `--body-file <path>` with the new comment. When every
 finding is decided, give the posting command for them to run, in a fenced block:

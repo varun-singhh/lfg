@@ -19,6 +19,9 @@ from . import sessions as SS
 SEVERITIES = ("blocker", "major", "minor", "nitpick", "note")
 ORIGINS = ("introduced", "exposed", "pre-existing")      # who the bug belongs to
 SINCE = ("first", "new", "missed")                      # re-review: in new commits, or missed by an earlier pass
+ABOUT = ("code", "ticket", "description")               # what a finding is about: the diff, the ticket, the PR body
+DELIVERS = ("all", "most", "part", "unclear")           # how much of the ticket's ask the PR does
+BUILTIN = "builtin"                                     # review.sources: LFG's own method, next to your own sources
 PRIOR_STATES = ("fixed", "replied", "ignored", "resolved-unchanged", "open", "withdrawn")
 STATUSES = ("pending", "keep", "drop")
 EVENTS = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES", "comment": "COMMENT"}
@@ -67,8 +70,9 @@ def _gh(args, stdin=None, timeout=60):
 
 def pr_meta(repo, number):
     j = gh_json(["pr", "view", str(number), "-R", repo, "--json",
-                 "number,title,url,author,headRefOid,baseRefName,headRefName,state,isDraft"])
+                 "number,title,url,author,headRefOid,baseRefName,headRefName,state,isDraft,body"])
     return {"title": j["title"], "url": j["url"], "author": (j.get("author") or {}).get("login", ""),
+            "body": j.get("body") or "",
             "head_sha": j["headRefOid"], "base": j["baseRefName"], "branch": j["headRefName"], "state": j["state"]}
 
 
@@ -355,12 +359,13 @@ def _clean_finding(f, i):
         raise ReviewError("finding %d: line must be a positive integer or null" % i)
     origin = f.get("origin") or "introduced"
     since = f.get("since") or "first"
-    if origin not in ORIGINS or since not in SINCE:
-        raise ReviewError("finding %d: origin is one of %s; since is one of %s"
-                          % (i, ", ".join(ORIGINS), ", ".join(SINCE)))
+    about = f.get("about") or "code"
+    if origin not in ORIGINS or since not in SINCE or about not in ABOUT:
+        raise ReviewError("finding %d: origin is one of %s; since is one of %s; about is one of %s"
+                          % (i, ", ".join(ORIGINS), ", ".join(SINCE), ", ".join(ABOUT)))
     return {"title": _text(f.get("title"), "title", 200), "severity": sev, "file": f.get("file") or None,
             "line": line, "issue": _text(f.get("issue"), "issue", 1000), "fix": _text(f.get("fix"), "fix", 1000),
-            "detail": _text(f.get("detail"), "detail"), "body": body, "origin": origin, "since": since,
+            "detail": _text(f.get("detail"), "detail"), "body": body, "origin": origin, "since": since, "about": about,
             "echoes": _echoes(f.get("echoes"), i), "status": "pending", "comment_id": None, "comment_url": None,
             **_raised(f, i)}
 
@@ -520,6 +525,7 @@ def save(repo, number, data, ticket=None, meta=None):
     verdict = data.get("verdict") or None
     if verdict not in (None,) + VERDICTS:
         raise ReviewError("verdict must be one of %s, or left out" % ", ".join(VERDICTS))
+    intent = _intent(data.get("intent"))
     rec["passes"].append({
         "n": n, "kind": "first" if n == 1 else "re-review", "ts": C.now_iso(), "reviewer": data.get("reviewer") or "",
         "head_sha": data.get("head_sha") or meta["head_sha"], "base": meta["base"],
@@ -531,10 +537,30 @@ def save(repo, number, data, ticket=None, meta=None):
                        "answer": None, "costs": q["costs"] if q.get("costs") in (4, 12, 25) else 0}
                       for k, q in enumerate([q for q in data.get("questions") or []
                                                                if isinstance(q, dict) and q.get("ask")][:10], 1)],
-        "findings": found, "prior": prior, "posted": None})
+        "findings": found, "prior": prior, "posted": None, **({"intent": intent} if intent else {})})
+    if intent and intent["ticket"] and not rec.get("ticket"):
+        rec["ticket"] = intent["ticket"]
     store(rec)
     C.audit("review_save", {"pr": "%s#%d" % (repo, number), "pass": n, "findings": len(found)})
     return rec
+
+
+def _intent(raw):
+    """What the PR was meant to do, as the review read it: the Linear ticket (or none found), whether it and the PR's
+    description could be read, how much of the ticket's ask the diff delivers, and one line saying so."""
+    if raw in (None, {}):
+        return None
+    if not isinstance(raw, dict):
+        raise ReviewError("intent is {ticket, ticket_title, read_ticket, read_description, delivers, note}")
+    delivers = raw.get("delivers") or "unclear"
+    if delivers not in DELIVERS:
+        raise ReviewError("intent.delivers is one of %s" % ", ".join(DELIVERS))
+    ticket = str(raw.get("ticket") or "").strip().upper()
+    if ticket and not re.match(r"^[A-Z][A-Z0-9]{1,9}-\d{1,6}$", ticket):
+        raise ReviewError("intent.ticket is a Linear id like ATO-4223, or empty when there is none")
+    return {"ticket": ticket, "ticket_title": _text(raw.get("ticket_title"), "intent.ticket_title", 300),
+            "read_ticket": bool(raw.get("read_ticket")), "read_description": bool(raw.get("read_description")),
+            "delivers": delivers, "note": _text(raw.get("note"), "intent.note", 1000)}
 
 
 def discard(repo, number, n):
@@ -717,6 +743,8 @@ def threads(repo, number):
 # ---------------------------------------------------------------- what the review reads
 
 def _expand(path):
+    if path == BUILTIN:  # LFG's own method, listed with your sources so the two are read together
+        path = default_dir()
     path = os.path.expanduser(path)
     if os.path.isdir(path):
         return sorted(glob.glob(os.path.join(path, "**", "*.md"), recursive=True))
@@ -832,7 +860,11 @@ def context(repo, number):
             "agents_md": agents_md(repo, meta["head_sha"], files),
             "read_agents_md": "gh api repos/%s/contents/<path>?ref=%s -H 'Accept: application/vnd.github.raw'"
                               % (repo, meta["head_sha"]),
-            "changed_files": len(files), "answered": answered(repo, number), "settled": memory(repo)}
+            "changed_files": len(files), "answered": answered(repo, number), "settled": memory(repo),
+            # what the PR was meant to do: its description, and the Linear ticket its branch, title or description
+            # names (a ticket the user named for this review wins; `lfg review run --ticket` passes it on)
+            "title": meta["title"], "branch": meta["branch"], "description": meta.get("body") or "",
+            "ticket": os.environ.get("LFG_REVIEW_TICKET") or ticket_of(meta["title"], meta.get("body"), meta["branch"])}
 
 
 def answered(repo, number):
@@ -1082,6 +1114,9 @@ def method_choices():
         about = str(K._frontmatter(C.read_text(d)[:20000]).get("description") or "").lstrip(">- \n").strip()
         out.append({"id": name, "label": name, "sources": [src], "about": about[:300], "saved": saved == [src],
                     "fits": saved == [src] or bool(re.match(r"(review|audit)\b", about, re.I))})
+    if saved and not any(x["saved"] for x in out):  # your saved method isn't one skill folder: e.g. several read
+        out.insert(1, {"id": "saved", "label": method_label(saved), "sources": list(saved), "fits": True,  # together
+                       "saved": True, "about": "Your saved Review method: read together, in order, later ones win."})
     return out
 
 
@@ -1089,7 +1124,14 @@ def method_label(srcs):
     """A method's name for people: the skill folder's name, or LFG's built-in method."""
     if not srcs:
         return "LFG's built-in method"
-    return ", ".join(os.path.basename(x.rstrip("/")) or x for x in srcs)
+    return " + ".join(dict.fromkeys("LFG's built-in method" if x == BUILTIN else _skill_name(x) for x in srcs))
+
+
+def _skill_name(path):
+    """A source's name for people: the skill it belongs to (…/skills/review-pr/SKILL.md is review-pr), else the file
+    or folder's own name."""
+    m = re.search(r"/skills/([^/]+)", str(path))
+    return m.group(1) if m else (os.path.basename(str(path).rstrip("/")) or str(path))
 
 
 def start(repo, number, ticket=None, fresh=False, together=(), model=None, method=None, fresh_eyes=False, notes=None):
@@ -1212,6 +1254,8 @@ def run(repo, number, ticket=None, fresh=False, together=(), model=None, method=
         env = dict(os.environ, PATH=os.path.join(C.PLUGIN_ROOT, "bin") + os.pathsep + os.environ.get("PATH", ""))
         if method:
             env["LFG_REVIEW_SOURCES"] = method  # `lfg review context` in that session reads this run's method
+        if ticket and len(prs) == 1:
+            env["LFG_REVIEW_TICKET"] = ticket  # the ticket you named wins over the one the PR's branch names
         if fresh_eyes:
             env["LFG_REVIEW_FRESH_EYES"] = "1"  # its `lfg review` commands hide earlier reviews and others' comments
         env["LFG_REVIEWER"] = "1"  # the guard blocks every git and GitHub write in it, whatever your Preferences

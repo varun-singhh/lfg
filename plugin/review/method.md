@@ -5,8 +5,9 @@ The default way `/lfg:review` finds and judges issues. Replace it by pointing `r
 
 ## What to look for
 
-1. **Intent first.** Read the PR body and its linked ticket. Judge the diff against what it was meant to do: missing
-   pieces of the ask are findings, and so is work well beyond it that belongs in its own PR.
+1. **Intent first.** Read the PR's description and its Linear ticket, and judge the diff against what it was meant to
+   do, as `/lfg:review`'s Intent step says: missing pieces of the ask are findings, and so is work well beyond it that
+   belongs in its own PR. Either can be wrong or out of date; check their claims against the code.
 2. **Bugs the PR introduces.** Read enough of the surrounding code to judge each hunk; never review a hunk blind.
 3. **Latent bugs the PR exposes.** A new caller that now reaches an existing broken edge case is a real finding even
    though the broken line didn't change. Mark these `origin: exposed`.
