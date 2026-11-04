@@ -19,8 +19,8 @@ from . import sessions as SS
 SEVERITIES = ("blocker", "major", "minor", "nitpick", "note")
 ORIGINS = ("introduced", "exposed", "pre-existing")      # who the bug belongs to
 SINCE = ("first", "new", "missed")                      # re-review: in new commits, or missed by an earlier pass
-ABOUT = ("code", "ticket", "description")               # what a finding is about: the diff, the Linear ticket or the PR's
-DELIVERS = ("all", "most", "part", "unclear")           # description; how much of the ticket's ask the PR does
+ABOUT = ("code", "ticket", "description")               # what a finding is about: the diff, the ticket, the PR body
+DELIVERS = ("all", "most", "part", "unclear")           # how much of the ticket's ask the PR does
 BUILTIN = "builtin"                                     # review.sources: LFG's own method, next to your own sources
 PRIOR_STATES = ("fixed", "replied", "ignored", "resolved-unchanged", "open", "withdrawn")
 STATUSES = ("pending", "keep", "drop")
