@@ -45,9 +45,11 @@ class RedrawTest(unittest.TestCase):
         js = read("app.js")
         draw = js[js.index("const draw = () => {"):]
         draw = draw[:draw.index("wired();")]
-        self.assertIn("if (html !== conv.dataset.html)", draw)
-        self.assertIn('$$("details[open]", conv)', draw)
-        self.assertIn("delete conv.dataset.html", draw)  # an empty chat forgets what it last drew
+        # what it last drew lives on the element, not in a data- attribute a redraw of the page would take away;
+        # what changed is updated in place (morph), so an open section is the same element and stays open
+        self.assertIn("if (html !== conv._html) { morph(conv, html); conv._html = html; }", draw)
+        self.assertNotIn("conv.dataset.html", js)
+        self.assertNotIn("conv.innerHTML", draw)
 
     def test_copy_is_always_visible_under_a_reply_on_a_review_page(self):
         css = read("app.css")

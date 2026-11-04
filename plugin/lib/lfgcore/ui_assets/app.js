@@ -19,9 +19,9 @@ function apApply(a) {
 }
 function apSet(k, v) { const a = apRead(); a[k] = v; a.v = 2; try { localStorage.setItem("lfg.appearance", JSON.stringify(a)); } catch (e) { /* private window: this visit only */ } apApply(a); apFavicon(); return a; }
 /* The logo, drawn in the accent colour (inline, so it follows the theme); the favicon is rebuilt to match. */
-let LOGO_N = 0;
+let LOGO_N = 2e6;  // logos drawn outside a page; a page numbers its own from 1
 function logoSvg(size) {
-  const g = "lg" + (++LOGO_N);
+  const g = "lg" + (tPage ? ++TID : ++LOGO_N);  // numbered with the page, so a redraw draws the same logo
   return `<svg class="lfg-logo" width="${size}" height="${size}" viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="${g}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color:var(--logo-a)"/><stop offset=".55" style="stop-color:var(--logo-b)"/><stop offset="1" style="stop-color:var(--logo-c)"/></linearGradient></defs><rect width="32" height="32" rx="7" fill="url(#${g})"/><path d="M8.5 9.5 15 16l-6.5 6.5" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 9.5 22 16l-6.5 6.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="26.2" cy="16" r="1.6" fill="#fff"/></svg>`;
 }
 function hexMix(a, b, t) {  // t of a, the rest b
@@ -182,15 +182,18 @@ function stat(k, v, s) {
 }
 
 /* table(rows, cols, opts): cols = [{k, label, num, html: row => string, sort: row => value}] */
-let TID = 0;
+/* A page's tables are numbered from 1 each time the page draws, so a redraw finds the same table (and keeps how you
+   sorted and filtered it); one drawn later (a drawer) gets a number no page uses. */
+let TID = 0, TLATE = 1e6, tPage = false;
 const TABLES = {};
 function table(rows, cols, opts = {}) {
-  const id = "t" + ++TID;
+  const id = "t" + (tPage ? ++TID : ++TLATE);
   if (!rows || !rows.length) return empty(opts.emptyTitle || "Nothing here yet", opts.emptyBody || "");
-  TABLES[id] = { rows, cols, opts, sort: opts.sort || null, dir: opts.dir || -1, filter: "" };
+  const was = TABLES[id], same = was && was.cols.map(c => c.k).join() === cols.map(c => c.k).join();
+  TABLES[id] = { rows, cols, opts, sort: same ? was.sort : opts.sort || null, dir: same ? was.dir : opts.dir || -1, filter: same ? was.filter : "" };
   const tools = rows.length > 15 && opts.filter !== false ?
     `<div class="table-tools"><input type="search" placeholder="Search…" data-filter="${id}"><span class="count" id="${id}-count"></span></div>` : "";
-  return `${tools}<div class="table-wrap"><table id="${id}"></table></div>`;
+  return `${tools}<div class="table-wrap"><table id="${id}" data-fill></table></div>`;
 }
 function drawTable(id) {
   const t = TABLES[id], el = document.getElementById(id);
@@ -207,8 +210,8 @@ function drawTable(id) {
     });
   }
   const shown = rows.slice(0, t.opts.limit || 500);
-  el.innerHTML = `<thead><tr>${t.cols.map(c => `<th data-k="${esc(c.k)}" class="${c.num ? "num" : ""} ${t.sort === c.k ? (t.dir > 0 ? "sorted-asc" : "sorted-desc") : ""}">${esc(c.label)}</th>`).join("")}</tr></thead>
-    <tbody>${shown.map(r => `<tr class="${t.opts.onRow ? "click" : ""}" data-i="${t.rows.indexOf(r)}">${t.cols.map(c => `<td class="${c.num ? "num" : ""}">${c.html ? c.html(r) : c.num ? n(r[c.k]) : esc(r[c.k])}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  morph(el, `<thead><tr>${t.cols.map(c => `<th data-k="${esc(c.k)}" class="${c.num ? "num" : ""} ${t.sort === c.k ? (t.dir > 0 ? "sorted-asc" : "sorted-desc") : ""}">${esc(c.label)}</th>`).join("")}</tr></thead>
+    <tbody>${shown.map(r => `<tr class="${t.opts.onRow ? "click" : ""}" data-i="${t.rows.indexOf(r)}">${t.cols.map(c => `<td class="${c.num ? "num" : ""}">${c.html ? c.html(r) : c.num ? n(r[c.k]) : esc(r[c.k])}</td>`).join("")}</tr>`).join("")}</tbody>`);
   const cnt = document.getElementById(id + "-count");
   if (cnt) cnt.textContent = rows.length === t.rows.length ? plural(rows.length, "item") : `${n(rows.length)} of ${n(t.rows.length)}`;
   $$("th", el).forEach(th => th.onclick = () => { const k = th.dataset.k; t.dir = t.sort === k ? -t.dir : -1; t.sort = k; drawTable(id); });
@@ -225,7 +228,7 @@ function tabs(id, items) {
   const shown = items.filter(it => it[2] == null || it[2] > 0);
   const list = shown.length ? shown : items.slice(0, 1);
   TABS[id] = list;
-  return `<div class="tabs" data-tabs="${id}">${list.map(([k, l, c]) => `<button class="tab" data-k="${esc(k)}">${esc(l)}${c ? `<span class="n">${compact(c)}</span>` : ""}</button>`).join("")}</div><div id="${id}-body"></div>`;
+  return `<div class="tabs" data-tabs="${id}">${list.map(([k, l, c]) => `<button class="tab" data-k="${esc(k)}">${esc(l)}${c ? `<span class="n">${compact(c)}</span>` : ""}</button>`).join("")}</div><div id="${id}-body" data-fill></div>`;
 }
 function mountTabs(root = document) {
   $$("[data-tabs]", root).forEach(bar => {
@@ -234,7 +237,7 @@ function mountTabs(root = document) {
       $$(".tab", bar).forEach(b => { b.classList.toggle("on", b.dataset.k === k); if (b.dataset.k === k && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = b.offsetLeft - 16; });
       const it = TABS[id].find(x => x[0] === k);
       const body = document.getElementById(id + "-body");
-      body.innerHTML = it[3]();
+      morph(body, it[3]());
       mountTables(body); mountTabs(body); wire(body);
       sessionStorage.setItem("lfg.tab." + id, k);
     };
@@ -248,10 +251,10 @@ function mountTabs(root = document) {
 /* Interactive bars: hover or focus a day for its numbers, click it to pin it (onPick), click a legend key to hide a
    series. data: [{label, values: [..], raw}], series: [[name, color, fmt]]. The y-axis gutter fits its labels. */
 const ICHARTS = {};
-let ICID = 0;
 function iChart(data, series, opts = {}) {
-  const id = "ic" + ++ICID;
-  ICHARTS[id] = { data, series, opts, hidden: new Set(opts.hidden || []), pick: opts.pick ?? null };
+  const id = "ic" + (tPage ? ++TID : ++TLATE);  // numbered with the page's tables: a redraw finds the same chart
+  const was = ICHARTS[id], same = was && was.series.map(x => x[0]).join() === series.map(x => x[0]).join();  // and keeps what you hid
+  ICHARTS[id] = { data, series, opts, hidden: same ? was.hidden : new Set(opts.hidden || []), pick: opts.pick ?? null };
   return `<div class="ichart" id="${id}">${iChartBody(id)}</div>`;
 }
 function iChartBody(id) {
@@ -287,6 +290,7 @@ function wireIChart(id) {
   const el = document.getElementById(id), C = ICHARTS[id];
   if (!el || !C) return;
   const tip = $(".ic-tip", el), svg = $("svg", el);
+  if (!svg) return;  // "Nothing recorded": no bars to wire
   const show = (g, ev) => {
     const i = +g.dataset.i, d = C.data[i];
     tip.textContent = "";
@@ -559,7 +563,7 @@ function wireOnboarding(root) {
   const msgEl = $("#onboard-msg", root);
   if (!saveBtn) return;
   const count = () => { const n = $$("[data-feature]", root).filter(c => c.checked).length; $("#wl-count", root).textContent = `${n} selected`; };
-  $$("[data-feature]", root).forEach(c => c.addEventListener("change", count)); count();
+  $$("[data-feature]", root).forEach(c => c.onchange = count); count();
   saveBtn.onclick = async () => {
     saveBtn.disabled = true; saveBtn.textContent = "Saving…";
     const selected = $$("[data-feature]", root).filter(c => c.checked).map(c => c.dataset.feature);
@@ -621,8 +625,9 @@ function wire(root) {
     if (!r.ok) { b.disabled = false; return alert(String(r.why || "Not saved.")); }
     state.cache = {}; route();
   });
-  if ($("[data-checks-running]", root)) setTimeout(() => { if (document.body.contains(root) && $("[data-checks-running]", root)) { state.cache = {}; route(); } }, 10000);
-  if ($("[data-spend-pending]", root)) setTimeout(() => { if (document.body.contains(root) && $("[data-spend-pending]", root)) route(); }, 4000);
+  // timers redraw in place (softRoute), never from the top: a full route() would scroll you up and close what you opened
+  if ($("[data-checks-running]", root)) pageTimer("checks", 10000, () => { if (document.body.contains(root) && $("[data-checks-running]", root)) { state.cache = {}; softRoute(); } });
+  if ($("[data-spend-pending]", root)) pageTimer("spend", 4000, () => { if (document.body.contains(root) && $("[data-spend-pending]", root)) softRoute(); });
 }
 
 // ------------------------------------------------------------------ rules: hover any mention to see what it means
@@ -881,7 +886,7 @@ function dictateControls(o, dis) {
   </div>`;
 }
 function settingsClaudeCode() {
-  return '<div id="cc-box"><div class="loading">Looking at your Claude Code setup…</div></div>';
+  return '<div id="cc-box" data-fill><div class="loading">Looking at your Claude Code setup…</div></div>';
 }
 let ccTimer = null;
 const where = r => r.root.replace(/^\/Users\/[^/]+/, "~");
@@ -904,7 +909,7 @@ async function loadClaudeCode() {
     : `<div class="box calm">${dot("ok")}LFG has changed nothing outside ~/.lfg.</div>`;
   const legacy = d.legacy.length ? `<div class="set-section"><h4>Left over from an older LFG</h4><p class="muted">Older versions changed Claude Code for every session. Each fix below removes exactly what LFG added.</p>
     <div class="box"><ul class="list">${d.legacy.map(l => `<li>${dot("warn")}<div class="grow"><div class="title">${esc(l.title)}</div><div class="meta">${esc(l.fix)}</div></div>${l.default ? `<button class="btn small" data-cc="legacy_fix" data-id="${esc(l.id)}" ${dis}>Fix</button>` : ""}</li>`).join("")}</ul></div></div>` : "";
-  box.innerHTML = `<p class="muted">What LFG does to Claude Code, and where. Everything here is recorded and can be undone; nothing outside the repos you pick is touched.</p>
+  morph(box, `<p class="muted">What LFG does to Claude Code, and where. Everything here is recorded and can be undone; nothing outside the repos you pick is touched.</p>
     <span class="save-msg" id="cc-msg"></span>${legacy}
     <div class="set-section" id="cc-where"><h4>Where LFG is on</h4><p class="muted">In other repos Claude Code works exactly as if LFG weren't installed: no skills, hooks or MCP servers.</p>
       <label class="row"><input type="checkbox" data-cc="everywhere" ${R.everywhere ? "checked" : ""} ${dis}> Turn LFG on in every repo <span class="muted small">(not recommended)</span></label>
@@ -923,7 +928,7 @@ async function loadClaudeCode() {
         <li><div class="grow"><div class="title">Skills that share a name with LFG's</div><div class="meta">${sc.skill_collisions.length ? sc.skill_collisions.map(x => `<code>/${esc(x)}</code> is yours, LFG's is <code>/lfg:${esc(x)}</code>`).join(" · ") : "none"}</div></div></li>
       </ul></div></div>
     <div class="set-section"><h4>Changes LFG made outside ~/.lfg</h4>${changes}
-      <p class="muted small mt">To remove LFG completely, run <code>lfg uninstall</code> in your terminal. It lists everything it will undo before it does anything.</p></div>`;
+      <p class="muted small mt">To remove LFG completely, run <code>lfg uninstall</code> in your terminal. It lists everything it will undo before it does anything.</p></div>`);
   $$("[data-dict]", box).forEach(el => el.onchange = async () => {
     el.disabled = true;
     state.ccMsg = await save("config", { values: { [el.dataset.dict]: el.type === "checkbox" ? el.checked : el.value } });
@@ -954,7 +959,7 @@ async function integrationsPage() {
   state.settings = Object.assign(state.settings || {}, { cfg, unlocked });
   return `${head("Integrations", "The tools LFG works with. Turn one on and its settings appear on its card; everything installs locally and can be turned off again.")}
     ${unlocked ? "" : lockedNote("change anything")}
-    <span class="save-msg" id="int-msg"></span><div id="int-box"><div class="loading">Checking each integration…</div></div>`;
+    <span class="save-msg" id="int-msg"></span><div id="int-box" data-fill><div class="loading">Checking each integration…</div></div>`;
 }
 let intTimer = null;
 const INT_ICON = { core: "code", knowledge: "knowledge", headroom: "compress", sonarqube: "checks", dictate: "mic", pentest: "target", security: "lock", shipcheck: "box", linear: "issues", github: "branch" };
@@ -977,7 +982,7 @@ async function loadIntegrations() {
     if (i.name === "knowledge") return `<div class="int-acts"><button class="btn small" data-int-act="omnigraph_restart" ${dis}>Restart the servers</button></div>`;
     if (i.name === "sonarqube") return `<div class="int-acts">${/needs a restart/.test(i.status) ? `<button class="btn small primary" data-int-act="sonar_apply" ${dis}>Restart to apply</button>` : ""}<a class="btn small" href="http://127.0.0.1:9000" target="_blank" rel="noopener noreferrer">Open SonarQube ↗</a><span class="muted small">sign in as admin · <code>lfg sonar login</code></span></div>`;
     if (i.name === "dictate" && i.settings) return dictateControls(i.settings, dis);
-    if (i.name === "pentest" && i.on) return '<div class="int-sub"><div class="set-label">Local AI models (Ollama)</div><div id="ollama-box"><div class="loading">Asking the local Ollama…</div></div></div>';
+    if (i.name === "pentest" && i.on) return '<div class="int-sub"><div class="set-label">Local AI models (Ollama)</div><div id="ollama-box" data-fill><div class="loading">Asking the local Ollama…</div></div></div>';
     return "";
   };
   const fieldsOf = i => i.name === "dictate" ? [] : i.name === "pentest" ? i.fields.filter(f => f.key !== "pentest.model") : i.fields;
@@ -989,8 +994,8 @@ async function loadIntegrations() {
     return `<div class="int-item${open ? " open" : ""}" data-pack="${esc(i.name)}"><div class="int-row"><button class="int-main" ${hasPanel(i) ? `data-int-open="${esc(i.name)}" aria-expanded="${open}"` : "tabindex=\"-1\""} title="${esc(i.about || "")}">${icon(INT_ICON[i.name] || "settings")}<span class="grow"><span class="int-nm">${esc(i.title.replace(/ \((experimental|local)\)/, ""))}${i.experimental ? ' <span class="tag">Experimental</span>' : ""}</span>${status(i)}</span>${hasPanel(i) ? icon(open ? "chevron-up" : "chevron-down", "ico chev") : ""}</button>${sw(i)}</div>
       ${open ? `<div class="int-panel">${i.missing.length && i.on ? `<div class="int-acts"><span class="int-st warn">Missing: ${esc(i.missing.map(m => m.split(":").pop()).join(", "))}</span><button class="btn small" data-cc="pack_add" data-name="${esc(i.name)}" ${dis}>Install missing</button></div>` : ""}${fieldsOf(i).map(field).join("")}${extra(i)}${job(i.name)}</div>` : ""}</div>`;
   };
-  box.innerHTML = `<div class="int-list">${d.integrations.map(row).join("")}</div>
-    <details class="int-tools"><summary class="muted small">Command-line tools LFG uses</summary><div id="int-tools" class="mt"><div class="loading">Checking…</div></div></details>`;
+  morph(box, `<div class="int-list">${d.integrations.map(row).join("")}</div>
+    <details class="int-tools"><summary class="muted small">Command-line tools LFG uses</summary><div id="int-tools" class="mt" data-fill><div class="loading">Checking…</div></div></details>`);
   const msg = $("#int-msg");
   const said = r => { if (msg) saidMsg(msg, r, r.ok ? "Saved" : ""); };
   $$("[data-int-open]", box).forEach(b => b.onclick = () => { const k = b.dataset.intOpen; state.intOpen.has(k) ? state.intOpen.delete(k) : state.intOpen.add(k); loadIntegrations(); });
@@ -1001,7 +1006,7 @@ async function loadIntegrations() {
     if (!on) state.intOpen.add(name);
     said(await save(on ? "pack_remove" : "pack_add", { name })); loadIntegrations();
   });
-  $$("[data-cfg]", box).forEach(el => el.addEventListener("change", async () => {
+  $$("[data-cfg]", box).forEach(el => el.onchange = (async () => {  // a property: this box redraws in place every 2 seconds
     const v = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
     const r = await save("config", { values: { [el.dataset.cfg]: v } }); said(r); if (r.ok) loadIntegrations();
   }));
@@ -1017,13 +1022,13 @@ async function loadIntegrations() {
   if (state.pendingTour && $('[data-pack="dictate"]', box)) { const t = state.pendingTour; state.pendingTour = null; setTimeout(() => startTour(t), 250); }
   if ($("#ollama-box", box)) loadOllama();
   api("tools").then(t => { const el = $("#int-tools"); if (!el) return; const miss = t.tools.filter(x => !x.installed);
-    el.innerHTML = miss.length ? `<div class="box"><ul class="list">${miss.map(x => `<li>${dot(x.required ? "bad" : "")}<div class="grow"><div class="title">${esc(x.tool)} is not installed</div><div class="meta">${esc(x.purpose)}</div></div></li>`).join("")}</ul></div>` : `<p class="muted small">All ${n(t.tools.length)} tools are installed.</p>`; });
+    morph(el, miss.length ? `<div class="box"><ul class="list">${miss.map(x => `<li>${dot(x.required ? "bad" : "")}<div class="grow"><div class="title">${esc(x.tool)} is not installed</div><div class="meta">${esc(x.purpose)}</div></div></li>`).join("")}</ul></div>` : `<p class="muted small">All ${n(t.tools.length)} tools are installed.</p>`); });
   clearTimeout(intTimer);
   if (Object.values(d.jobs).some(j => j.status === "running")) intTimer = setTimeout(() => { if (document.body.contains(box)) loadIntegrations(); }, 2000);
 }
 
 function settingsTools() {
-  return '<div id="tools-box"><div class="loading">Checking…</div></div>';
+  return '<div id="tools-box" data-fill><div class="loading">Checking…</div></div>';
 }
 // "MCP: ✔ Connected" (raw `claude mcp list` text) -> "Connected"
 const plainDetail = s => (s || "").replace(/MCP:\s*/g, "").replace(/[✔✓✘✗⏸]\uFE0F?\s*/g, "");
@@ -1053,7 +1058,7 @@ function mcpSection(list) {
     <div class="box">${group("Connected", by("ok"), true)}${group("Failed to connect", by("bad"), true, "Run <code>/mcp</code> in Claude Code to see why.")}${group("Need you to sign in", by("auth"), false, "Not usable until you sign in: run <code>/mcp</code> in Claude Code and pick it.")}</div></div>`;
 }
 function settingsOllama() {
-  return '<div id="ollama-box"><div class="loading">Asking the local Ollama…</div></div>';
+  return '<div id="ollama-box" data-fill><div class="loading">Asking the local Ollama…</div></div>';
 }
 const gb = v => (v ? `${v} GB` : "—");
 function pullBar(name, p) {
@@ -1069,7 +1074,7 @@ async function loadOllama() {
   const canPull = un && d.running ? "" : "disabled";
   const pulls = Object.entries(d.pulls || {});
   const use = name => (name === d.current ? `<span class="st">${dot("ok")}In use</span>` : `<button class="btn" data-ollama-use="${esc(name)}" ${dis}>Use</button>`);
-  box.innerHTML = `<p class="muted">Security tests (<code>/lfg:pentest</code>) run on a model on this computer, never in the cloud. ${d.running ? "" : fmtWhy(d.why)}</p>
+  morph(box, `<p class="muted">Security tests (<code>/lfg:pentest</code>) run on a model on this computer, never in the cloud. ${d.running ? "" : fmtWhy(d.why)}</p>
     <div class="row">${dot(d.running ? "ok" : "bad")}<span>${d.running ? "Ollama is running" : "Ollama is not running"}</span><span class="muted small">· model in use: ${d.current ? esc(d.current) : "none yet"}${d.ram_gb ? ` · this computer has ${d.ram_gb} GB memory` : ""}</span></div>
     ${pulls.length ? `<div class="set-section"><h4>Downloading</h4>${pulls.map(([k, p]) => pullBar(k, p)).join("")}</div>` : ""}
     <div class="set-section"><h4>On this computer</h4><div class="box">${table(d.installed, [
@@ -1082,7 +1087,7 @@ async function loadOllama() {
       { k: "fit", label: "Fits this computer", html: r => ({ fits: `${dot("ok")} Yes`, tight: `${dot("warn")} Just`, "too big": `${dot("bad")} No` }[r.fit] || "—") },
       { k: "act", label: "", html: r => (r.installed ? use(r.name) : `<button class="btn" data-ollama-pull="${esc(r.name)}" ${canPull}>Download</button>`) },
     ], { filter: false })}</div>
-      <div class="row mt"><input type="text" id="ollama-name" placeholder="Other model, e.g. qwen3:14b" ${dis}><button class="btn" id="ollama-pull" ${canPull}>Download</button><span class="save-msg" id="ollama-msg"></span></div></div>`;
+      <div class="row mt"><input type="text" id="ollama-name" placeholder="Other model, e.g. qwen3:14b" ${dis}><button class="btn" id="ollama-pull" ${canPull}>Download</button><span class="save-msg" id="ollama-msg"></span></div></div>`);
   mountTables(box);
   const pull = async name => {
     const r = await save("ollama_pull", { name });
@@ -2245,7 +2250,7 @@ async function wireSonar(root) {
     if (!r.ok) { alert(String(r.why || "Couldn't start the scan.").replace(/`/g, "")); b.disabled = false; b.textContent = "Scan now"; return; }
     route({ soft: true });
   });
-  if ($("[data-sq-scanning]", root)) setTimeout(() => { if (location.hash.startsWith("#checks") && $("[data-sq-scanning]")) route({ soft: true }); }, 10000);
+  if ($("[data-sq-scanning]", root)) pageTimer("sonar", 10000, () => { if (location.hash.startsWith("#checks") && $("[data-sq-scanning]")) route({ soft: true }); });
   const box = $("#sq-cloud", root);
   if (box) {
     const c = await api("sonar_cloud");
@@ -2621,7 +2626,7 @@ PAGES.sessions = async () => {
   state.sessions = d;
   const runsOf = {};
   (sr.runs || []).forEach(j => (runsOf[j.session] || (runsOf[j.session] = [])).push(j));
-  if ((sr.runs || []).some(j => ["running", "starting"].includes(j.status))) setTimeout(() => { if (location.hash.startsWith("#sessions")) softRoute(); }, 4000);
+  if ((sr.runs || []).some(j => ["running", "starting"].includes(j.status))) pageTimer("sess-runs", 4000, () => { if (location.hash.startsWith("#sessions")) softRoute(); });
   const q = (state.sessionFind || "").toLowerCase();
   const hit = s => !q || [s.name, s.repo, s.worktree, s.branch, s.ticket, s.folder, s.first, s.cwd].join(" ").toLowerCase().includes(q);
   const starredOnly = sessStarredOn(), nStarred = sessStarredCount(d.sessions);
@@ -2638,7 +2643,7 @@ PAGES.sessions = async () => {
   }
   const line = s => `<li class="sess" data-sid="${esc(s.id)}"><button class="star${s.starred ? " on" : ""}" data-sess-star='${esc(JSON.stringify([s.id, !s.starred]))}' ${unlocked ? "" : "disabled"} title="${s.starred ? "Starred: kept at the top of its group. Click to unstar" : "Star a session you still care about: it stays at the top of its group and is never folded away"}" aria-label="${s.starred ? "Unstar" : "Star"}">${s.starred ? "★" : "☆"}</button><div class="grow"><div class="title">${esc(s.name)}${s.named ? "" : ' <span class="tag" title="You haven\'t named it (/rename in Claude Code, or Rename here); this name is made up from its ticket, branch and first message">not named</span>'}</div>
       <div class="meta">${ago(s.modified)} · ${plural(s.prompts, "message")}${s.worktree ? ` · worktree <span class="mono">${esc(s.worktree)}</span>` : ""}${s.branch && s.group !== s.branch ? ` · <span class="mono">${esc(s.branch)}</span>` : ""}${s.app ? " · desktop app" : ""}${s.cost != null ? ` · ${usd(s.cost)}` : ""}${s.folder_exists ? "" : ` · <span class="bad-tx">its folder is gone</span>`}</div>
-      ${Date.now() - Date.parse(s.modified) < 6 * 36e5 ? `<div class="sess-work" data-sess-work="${esc(s.id)}"></div>` : ""}
+      ${Date.now() - Date.parse(s.modified) < 6 * 36e5 ? `<div class="sess-work" data-sess-work="${esc(s.id)}" data-fill></div>` : ""}
       <details class="more" data-sess-recent="${esc(s.id)}"><summary class="small">Recent messages and what it used</summary><div class="sess-recent small muted"><span class="loading-inline">Loading…</span></div></details>${skillRuns(runsOf[s.id], unlocked)}</div>
       <div class="sess-actions"><button class="btn small primary" data-copy="${esc(s.resume)}" title="${esc(s.resume)}">Copy resume command</button>
       <button class="btn small" data-sess-changes='${esc(JSON.stringify([s.id, s.name]))}' title="Every file this session edited, as diffs, from its own transcript. Pick lines to ask about them or have it change them">What it changed</button>
@@ -2806,8 +2811,8 @@ function wireSessions(root) {
   $$("[data-sess-skill]", root).forEach(b => b.onclick = () => { const [sid, name] = JSON.parse(b.dataset.sessSkill); sessionSkill(sid, name); });
   $$("[data-sess-changes]", root).forEach(b => b.onclick = async () => { const [sid, name] = JSON.parse(b.dataset.sessChanges); sessionChanges(sid, name, await isUnlocked()); });
   const work = $$("[data-sess-work]", root);
-  work.forEach(async el => { const d = await api("sessionwork", { id: el.dataset.sessWork }).catch(() => null); if (document.body.contains(el)) el.innerHTML = sessionWork(d); });
-  if (work.length) setTimeout(() => { if (document.body.contains(root) && $$("[data-sess-work] .dot.on", root).length) softRoute(); }, 15000);
+  work.forEach(async el => { const d = await api("sessionwork", { id: el.dataset.sessWork }).catch(() => null); if (document.body.contains(el)) morph(el, sessionWork(d)); });
+  if (work.length) pageTimer("sess-work", 15000, () => { if (document.body.contains(root) && $$("[data-sess-work] .dot.on", root).length) softRoute(); });
   $$("[data-run-stop]", root).forEach(b => b.onclick = async () => { b.disabled = true; const r = await save("skill_stop", { id: b.dataset.runStop }); if (!r.ok) return alertMsg(b, r); b.textContent = "Stopping after this pass"; });
   const find = $("#sess-find", root);
   if (find) {
@@ -2944,7 +2949,7 @@ const MB = b => b == null ? "?" : b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math
 PAGES.environment = async () => {
   const [d, unlocked] = await Promise.all([api("environment", scopeArgs("environment")), isUnlocked()]);
   if (d.pending) {
-    setTimeout(() => { if ((location.hash.slice(1) || "").startsWith("environment")) route(); }, 2500);
+    setTimeout(() => { if ((location.hash.slice(1) || "").startsWith("environment")) softRoute(); }, 2500);
     return `${head("Environment", "Every repo and worktree on this computer, and what LFG runs in the background.")}<div class="loading">Looking at every repo and worktree… (about 10 seconds)</div>`;
   }
   if (d.available === false) return unavailable(d);
@@ -3276,7 +3281,7 @@ async function todoToLinear(t, lin) {
 PAGES.usage = async () => {
   const [d, H] = await Promise.all([api("usage", { days: UR.days > 30 ? 90 : 30 }), api("headroom", { days: UR.days > 30 ? 90 : 30 })]);
   if (d.pending) {
-    setTimeout(() => { if ((location.hash.slice(1) || "").startsWith("usage")) softRoute(); }, 2500);
+    pageTimer("usage", 2500, () => { if ((location.hash.slice(1) || "").startsWith("usage")) softRoute(); });
     return `${head("Usage", "What Claude Code used and what it would cost at API prices, across every session on this computer.")}<div class="loading">Adding up every session's usage… the first time after an update this reads every transcript again, which can take a minute.</div><div class="skeleton" style="height:260px"></div>`;
   }
   const hrDay = Object.fromEntries((((H || {}).when || {}).days || []).map(x => [x.day, x]));
@@ -3296,7 +3301,7 @@ PAGES.usage = async () => {
   const usdFmt = v => usd(v || 0);
   const filters_row = `<div class="row filters">${seg("days", [[7, "7 days"], [14, "14 days"], [30, "30 days"], [90, "90 days"]])}${seg("by", [["day", "By day"], ["week", "By week"]])}${seg("measure", [["usd", "Dollars"], ["tokens", "Tokens"]])}</div>`;
   const ghost = { ghost: true };
-  if (hrPending) setTimeout(() => { if ((location.hash.slice(1) || "").startsWith("usage")) softRoute(); }, 2500);
+  if (hrPending) pageTimer("usage", 2500, () => { if ((location.hash.slice(1) || "").startsWith("usage")) softRoute(); });
   const chart = UR.measure === "usd"
     ? iChart(rows.map(r => ({ label: r.label, short: r.short, values: [r.usd, r.hr_usd], raw: r })), [["Actual cost", "var(--series-1)", usdFmt], ["Saved by Headroom", "var(--series-1)", usdFmt, ghost]],
         { title: "Cost per " + UR.by, onPick: i => usageDetail(rows, i), total: (x, hid) => hid.has(1) ? "" : `Without Headroom: ${usd((x.values[0] || 0) + (x.values[1] || 0))}` })
@@ -3313,7 +3318,7 @@ PAGES.usage = async () => {
       : `solid: what was sent (new text, and text reused from cache, hidden until you click its key) and what Claude wrote back. Dashed on top: what Headroom removed before sending, so the whole bar is what would have been sent without it${hrPending ? " (Headroom's numbers are still loading)" : ""}.`)}
     ${(d.models || []).length ? section("By model", `<div class="box">${table(d.models, [{ k: "model", label: "Model" }, { k: "input", label: "Sent", num: true, html: r => compact((r.input || 0) + (r.cache_read || 0) + (r.cache_write || 0)) }, { k: "output", label: "Written", num: true, html: r => compact(r.output) }, { k: "usd", label: "Cost", num: true, html: r => r.usd != null ? usd(r.usd) : "" }], { filter: false })}</div>`, "last " + (d.days || []).length + " days") : ""}
     ${revs.length ? section("PR reviews", `<div class="box">${table(revs, [{ k: "pr", label: "PR", html: r => esc(r.pr) }, { k: "last", label: "Last used", html: r => `<span class="nowrap">${esc(r.last)}</span>` }, { k: "tokens", label: "Tokens", num: true, html: r => compact(r.tokens) }, { k: "usd", label: "Cost", num: true, html: r => usd(r.usd) }], { filter: false, sort: "last" })}</div>`, "sessions that started with /review-pr, /lfg:review or the dashboard's Review button, with their subagents") : ""}
-    <div id="hr-detail"><div class="loading">Reading Headroom's logs…</div></div>
+    <div id="hr-detail" data-fill><div class="loading">Reading Headroom's logs…</div></div>
     ${lfgReplies(d.replies)}
     ${(d.runs || []).length ? section(`${repoName()}, by run`, `<div class="box">${table(d.runs, [{ k: "run", label: "Run", html: r => r.run && r.run !== "(no run)" ? `<a href="#runs/${encodeURIComponent(r.run)}">${esc(runName({ slug: r.run.slice(14) }))}</a>` : '<span class="muted">Outside a run</span>' }, { k: "input", label: "Sent", num: true, html: r => compact((r.input || 0) + (r.cache_read || 0)) }, { k: "output", label: "Written", num: true, html: r => compact(r.output) }], { filter: false })}</div>`, "this project only, all time") : ""}`;
 };
@@ -3349,13 +3354,13 @@ async function loadHeadroom() {
   const rows = bucket(days, UR.by, rs => addRows(rs, ["saved", "calls", "usd", "before"]));
   const status = d.routed ? `<span class="row" style="gap:8px">${dot(d.live ? "ok" : "bad")}<span>${d.live ? "On: every Claude Code session goes through it." : "Every terminal session goes through it, but it isn't running right now, so they can't reach Claude. Run <code>lfg headroom restart</code> in a terminal."}</span></span>` : d.live ? `<span class="row" style="gap:8px">${dot("warn")}<span>Running, but Claude Code doesn't go through it.</span></span>` : `<span class="row" style="gap:8px">${dot("")}<span>Off.</span></span>`;
   const hours = (W.today_by_hour || []).filter(h => h.calls).sort((a, b) => b.calls - a.calls).slice(0, 3);
-  box.innerHTML = section("Saved by Headroom", `<p class="muted">Headroom is a small program on this computer that every request from Claude Code passes through on its way to Anthropic. It removes repeated and unneeded text first, so less is sent and billed.</p>
+  morph(box, section("Saved by Headroom", `<p class="muted">Headroom is a small program on this computer that every request from Claude Code passes through on its way to Anthropic. It removes repeated and unneeded text first, so less is sent and billed.</p>
     <p>${status}</p>
     ${rows.length ? `<p class="muted small">In this range: ${compact(rows.reduce((a, x) => a + (x.saved || 0), 0))} tokens removed from ${n(rows.reduce((a, x) => a + (x.calls || 0), 0))} requests, about ${usd(rows.reduce((a, x) => a + (x.usd || 0), 0))} by Headroom's count. It's the dashed part of the chart above.${hours.length ? ` Busiest today: ${hours.map(h => `${h.hour}:00 (${n(h.calls)} requests)`).join(", ")}.` : ""}</p>` : ""}
     ${(X.sessions || []).length ? `<div class="k">Where it saved the most, since ${ago(X.since)}</div>
       <p class="muted small">Headroom's request log only keeps the last few hours. Requests are matched to a session by their token counts: ${n(X.matched)} of ${n(X.requests)} matched one session exactly.</p>
       <div class="box">${table(X.repos, [{ k: "repo", label: "Repo" }, { k: "sessions", label: "Sessions", num: true }, { k: "calls", label: "Requests", num: true }, { k: "saved", label: "Tokens removed", num: true, html: r => compact(r.saved) }], { filter: false })}</div>
-      <div class="box mt">${table(X.sessions, [{ k: "name", label: "Session", html: r => `${esc(r.name)}<div class="sub">${esc(r.repo)}${r.group ? " · " + esc(r.group) : ""} · last ${ago(r.last)}</div>` }, { k: "calls", label: "Requests", num: true }, { k: "saved", label: "Tokens removed", num: true, html: r => compact(r.saved) }, { k: "percent", label: "Smaller by", num: true, html: r => r.percent + "%" }], { filter: false, sort: "saved" })}</div>` : ""}`);
+      <div class="box mt">${table(X.sessions, [{ k: "name", label: "Session", html: r => `${esc(r.name)}<div class="sub">${esc(r.repo)}${r.group ? " · " + esc(r.group) : ""} · last ${ago(r.last)}</div>` }, { k: "calls", label: "Requests", num: true }, { k: "saved", label: "Tokens removed", num: true, html: r => compact(r.saved) }, { k: "percent", label: "Smaller by", num: true, html: r => r.percent + "%" }], { filter: false, sort: "saved" })}</div>` : ""}`));
   mountTables(box);
   wireICharts(box);
 }
@@ -4032,7 +4037,8 @@ function prFinding(f, pr, unlocked, live, own) {
   const btn = (status, text) => `<button class="btn small${f.status === status ? " primary" : ""}" data-pr-mark='${esc(JSON.stringify([pr, f.id, status]))}' ${can ? "" : "disabled"}>${text}</button>`;
   const chat = f.chat || [];
   const ref = esc(JSON.stringify([pr, f.id]));
-  const code = f.file && f.line ? `<div class="pr-snip" data-pr-snip='${ref}'><div class="pr-snip-h mono">${esc(where)}</div><div class="muted small pad"><span class="loading-inline">Loading the code…</span></div></div>` : `<div class="muted small mono">${esc(where)}</div>`;
+  const known = (state.snips || {})[JSON.stringify([pr, f.id])];  // fetched before: drawn at once, so a redraw doesn't show "Loading" again
+  const code = f.file && f.line ? `<div class="pr-snip" data-pr-snip='${ref}'>${known ? snipHtml(known) : `<div class="pr-snip-h mono">${esc(where)}</div><div class="muted small pad">${known === false ? "Couldn't get this code from GitHub." : '<span class="loading-inline">Loading the code…</span>'}</div>`}</div>` : `<div class="muted small mono">${esc(where)}</div>`;
   const cost = POINTS[f.severity] || 0;
   const pts = cost ? `<span class="pts ${settled(f) ? "off" : ""}" title="${settled(f) ? `Would cost ${cost} points; ${f.status === "drop" ? "dropped" : "fixed"}, so it doesn't count` : `Costs ${cost} points of the score (${f.severity}). Nitpicks count once per kind`}">−${cost}</span>` : "";
   return `<div class="card pr-finding ${esc(f.status)}" id="f-${esc(f.id)}"><div class="row">${st(f.severity === "nitpick" ? "nit" : f.severity)}${pts}${tags}<span class="grow"></span><span class="muted small mono">${esc(f.id)}</span></div>
@@ -4190,10 +4196,12 @@ function findingSaveRow(pr, f, unlocked) {
    behind a button; your choice is remembered. Ask, push back, or say a finding isn't needed: the review changes to
    match what the conversation settles. */
 const chatMode = () => localStorage.getItem("lfg.chat") || "side";
+const rvBusy = d => !!d && ["working", "needs-you", "starting"].includes(d.state);
 function talkPane(pr, p, unlocked, byId) {
   state.lastTalk = { pr, p, unlocked, byId };  // what a Discuss redraws from at once, before the page catches up
   const about = (state.chatAbout || {})[pr], f = about && byId[about];
   const mode = chatMode(), count = (p.chat || []).length;
+  const rd = ((state.rv || {})[pr] || {}).d;  // the chat as last seen, so a redraw of the page draws it the same
   const hint = f ? `Ask about ${f.id}, push back, or say it isn't needed. If Claude agrees after checking the code, it drops the finding; if not, it says why it still matters.`
     : `Ask why something is rated the way it is, push back, or ask for a change: "drop 1.3, it's handled in the caller", "make 1.1 softer". The review changes to match.`;
   const ico = d => `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
@@ -4202,15 +4210,15 @@ function talkPane(pr, p, unlocked, byId) {
     ? `<div class="pr-remember chat-save"><div class="row"><span class="muted small">Dropped. Should reviews stop raising it?</span><button class="btn small" data-pr-passoffer='${esc(JSON.stringify([pr, f.id]))}' ${unlocked ? "" : "disabled"} title="Tell reviews not to flag this again: on this PR, on every PR in this repo, or in every repo">Don't flag again…</button></div></div>` : "";
   return `<button class="chat-fab" data-chat-mode="side" ${mode === "hidden" ? "" : "hidden"}>${ico("M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z")}Chat${count ? `<span class="n">${count}</span>` : ""}</button>
   <aside class="pr-talk ${mode}" ${mode === "hidden" ? "hidden" : ""} data-chat="${esc(JSON.stringify([pr, p.n, f ? f.id : ""]))}">
-    <div class="pr-talk-h"><b>Chat</b><select class="chat-to" data-chat-to="${esc(pr)}" title="The session your messages go to. It opens on the session that did this review, which can change the review. Any other session only answers; a terminal session is copied first, so the terminal's stays as it was."></select><span class="rv-ctx"></span><span class="grow"></span><a class="icon-btn rv-open" href="#studio" title="Open this session in Studio" hidden>${ico("M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5")}</a>
+    <div class="pr-talk-h"><b>Chat</b><select class="chat-to" data-chat-to="${esc(pr)}" data-fill title="The session your messages go to. It opens on the session that did this review, which can change the review. Any other session only answers; a terminal session is copied first, so the terminal's stays as it was."></select><span class="rv-ctx" data-fill></span><span class="grow"></span><a class="icon-btn rv-open" href="#studio${rd ? "/" + esc(rd.id) : ""}" title="Open this session in Studio" ${rd ? "" : "hidden"}>${ico("M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5")}</a>
       <button class="icon-btn" data-chat-mode="${mode === "wide" ? "side" : "wide"}" title="${mode === "wide" ? "Back to the side" : "Make it bigger"}">${ico(mode === "wide" ? "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" : "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7")}</button>
       <button class="icon-btn" data-chat-mode="hidden" title="Hide the chat">${ico("M18 6 6 18M6 6l12 12")}</button></div>
     <div class="chat-about"><button class="chip ${f ? "" : "on"}" data-chat-about='${esc(JSON.stringify([pr, ""]))}'>Whole review${count ? ` · ${count}` : ""}</button>${f ? `<span class="chip on" title="${esc(f.title || f.issue || "")}">${esc(f.id)} · ${esc((f.title || f.issue || "").slice(0, 40))}${(f.title || f.issue || "").length > 40 ? "…" : ""}<a href="#" data-chat-about='${esc(JSON.stringify([pr, ""]))}' aria-label="Back to the whole review">×</a></span>` : ""}</div>
     ${old.length ? `<details class="chat-hist chat-old"><summary>${plural(old.length, "earlier message")} from before the chat moved into Studio</summary>${old.map(x => chatTurn(x, pr)).join("")}</details>` : ""}
-    <div class="pr-thread ss-conv rv-conv" data-hint="${esc(hint)}"><div class="loading-inline">Opening the chat…</div></div>
+    <div class="pr-thread ss-conv rv-conv" data-hint="${esc(hint)}" data-fill><div class="loading-inline">Opening the chat…</div></div>
     ${f ? findingSaveRow(pr, f, unlocked) : ""}${askAgain}
-    <div class="pr-compose big" id="rv-comp"><div class="ss-att" id="rv-att" hidden></div><textarea data-grow rows="3" data-pr-chat placeholder="${f ? `Say something about ${esc(f.id)}…` : "Ask, push back, or ask for a change. Start with / for a command or skill."}" ${unlocked ? "" : "disabled"}></textarea>
-      <div class="pr-compose-bar"><button type="button" class="icon-btn ss-clip" data-rv-attach title="Attach files or images. You can also drop them here or paste them." ${unlocked ? "" : "disabled"}>${icon("clip")}</button><input type="file" data-rv-file multiple hidden><span class="muted small grow">Enter to send · Shift+Enter for a new line · drop, paste or attach any file</span><button class="btn small primary" data-pr-chatgo ${unlocked ? "" : "disabled"}>Send</button></div></div></aside>`;
+    <div class="pr-compose big" id="rv-comp"><div class="ss-att" id="rv-att" data-fill data-keep="hidden" hidden></div><textarea data-grow rows="3" data-pr-chat placeholder="${f ? `Say something about ${esc(f.id)}…` : "Ask, push back, or ask for a change. Start with / for a command or skill."}" ${unlocked ? "" : "disabled"}></textarea>
+      <div class="pr-compose-bar"><button type="button" class="icon-btn ss-clip" data-rv-attach title="Attach files or images. You can also drop them here or paste them." ${unlocked ? "" : "disabled"}>${icon("clip")}</button><input type="file" data-rv-file multiple hidden><span class="muted small grow">Enter to send · Shift+Enter for a new line · drop, paste or attach any file</span><button class="btn small primary" data-pr-chatgo ${unlocked ? "" : "disabled"}>${rvBusy(rd) ? "Queue" : "Send"}</button></div></div></aside>`;
 }
 /* Copy one finding or earlier comment: short for a person, everything an agent needs to act on it. */
 const copyBtns = (person, agent) => `<button class="btn small" data-copy="${esc(person)}" title="What's wrong, where, and the comment: to paste to a person">Copy</button><button class="btn small" data-copy="${esc(agent)}" title="Everything needed to act on it: file and line, issue, fix, the evidence, the comment and its status">Copy for an agent</button>`;
@@ -4290,7 +4298,7 @@ async function prDetail(arg) {
   prTabOpen(pr, (rec && rec.title) || (d.gh && d.gh.title) || "");
   const running = j && j.status === "running";
   const fixing = d.fix_job && d.fix_job.status === "running";
-  if (running || fixing) setTimeout(() => { if (location.hash === `#prs/${arg}`) softRoute(); }, 4000);
+  if (running || fixing) pageTimer("pr", 4000, () => { if (location.hash === `#prs/${arg}`) softRoute(); });
   const back = '<a class="back" href="#prs">← All reviews</a>';
   const kindOf = j && (j.fresh ? "review from scratch" : j.re_review ? "re-review" : "review");
   const jobBox = j && j.status === "running" ? `<div class="callout">${dot("on")}<b>${esc(kindOf[0].toUpperCase() + kindOf.slice(1))} running</b>${(j.with || []).length ? `, together with ${j.with.map(x => `<a class="mono" href="#prs/${esc(x.replace("#", "/"))}">${esc(x)}</a>`).join(", ")} in one session${j.ticket ? ` for ${esc(ticketName(j.ticket))}` : ""}` : ""}, started ${ago(j.started)}${j.method ? `, following <b>${esc(j.method)}</b>` : ""}${j.model ? ` on ${esc(modelName(j.model))}` : ""}. It shows up below as a new tab when it's done; this updates by itself.${unlocked ? ` <button class="btn small" data-pr-cancel="${esc(pr)}" title="Stop this review and its Claude session; nothing is saved">Cancel</button>` : ""}${(j.steps || []).length ? `<ul class="mono small pr-steps">${j.steps.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}${j.notes ? usedNotes(j.notes, pr, "Your notes for this review") : ""}</div>`
@@ -4528,9 +4536,9 @@ function wireChatPane(root) {
   if (!pane) return;
   const [pr, n, fid] = JSON.parse(pane.dataset.chat), conv = $(".rv-conv", pane), input = $("[data-pr-chat]", pane), b = $("[data-pr-chatgo]", pane);
   const rv = (state.rv || (state.rv = {}))[pr] || (state.rv[pr] = {}), to = () => (state.chatTo || {})[pr] || "";
-  const hint = conv.dataset.hint, sel = $("[data-chat-to]", pane), ctxBox = $(".rv-ctx", pane), open = $(".rv-open", pane);
+  const hint = conv.dataset.hint, sel = $("[data-chat-to]", pane), ctxBox = $(".rv-ctx", pane), open = $(".rv-open", pane), first = !conv._drawn;
   const A = ssAttach({ comp: $("#rv-comp", pane), ta: input, box: $("#rv-att", pane), file: $("[data-rv-file]", pane), btn: $("[data-rv-attach]", pane), say: m => prefToast(m, true) });
-  const fill = () => { sel.innerHTML = rvOptions(pr, to(), rv.own, state.rvList ? state.rvList.list : []); };
+  const fill = () => morph(sel, rvOptions(pr, to(), rv.own, state.rvList ? state.rvList.list : []));
   fill();
   rvSessions(pr).then(() => { if (document.body.contains(sel)) fill(); });
   const atBottom = () => conv.scrollTop + conv.clientHeight >= conv.scrollHeight - 120;
@@ -4542,32 +4550,25 @@ function wireChatPane(root) {
     } });
     wire();
   };
+  // The conversation is this element's own (data-fill), kept across the page's redraws: what it last drew and whether
+  // it drew at all live on the element itself, never in attributes a redraw of the page would take away.
   const draw = () => {
-    const d = rv.d, stick = !conv.dataset.drawn || atBottom();
-    conv.dataset.drawn = "1";
-    if (!d) {
-      delete conv.dataset.html;  // the next conversation always draws
-      conv.innerHTML = `<div class="chat-empty">${esc(hint)}</div>`;
-      if (rv.history) conv.innerHTML = `<details class="chat-hist" open><summary>Earlier in <b>${esc(rv.history.title)}</b></summary>${rv.history.html}</details>` + conv.innerHTML;
-    } else {
-      const html = `${d.earlier ? `<p class="muted small chat-more">${plural(d.earlier, "earlier message")} not shown. <a href="#studio/${esc(d.id)}">Open the whole session in Studio</a></p>` : ""}${(d.items || []).length || ssLive(d.state) || (d.queued || []).length ? "" : `<div class="chat-empty">${esc(hint)}</div>`}${ssConv(d, true)}`;
-      if (html !== conv.dataset.html) {  // a redraw that would change nothing is skipped: no flash
-        const open = $$("details[open]", conv).map(x => (x.querySelector("summary") || {}).textContent);  // what you opened stays open
-        conv.innerHTML = html; conv.dataset.html = html;
-        $$("details", conv).forEach(x => { if (open.includes((x.querySelector("summary") || {}).textContent)) x.open = true; });
-      }
-      wired();
-    }
+    const d = rv.d, stick = !conv._drawn || atBottom();  // the first draw starts at the end; after that only if you were there
+    conv._drawn = true;
+    const html = d ? `${d.earlier ? `<p class="muted small chat-more">${plural(d.earlier, "earlier message")} not shown. <a href="#studio/${esc(d.id)}">Open the whole session in Studio</a></p>` : ""}${(d.items || []).length || ssLive(d.state) || (d.queued || []).length ? "" : `<div class="chat-empty">${esc(hint)}</div>`}${ssConv(d, true)}`
+      : `${rv.history ? `<details class="chat-hist" open><summary>Earlier in <b>${esc(rv.history.title)}</b></summary>${rv.history.html}</details>` : ""}<div class="chat-empty">${esc(hint)}</div>`;
+    if (html !== conv._html) { morph(conv, html); conv._html = html; }  // only what changed; nothing at all when nothing did
+    if (d) wired();
     if (stick) conv.scrollTop = conv.scrollHeight;
-    b.textContent = d && (d.state === "working" || d.state === "needs-you" || d.state === "starting") ? "Queue" : "Send";
+    b.textContent = rvBusy(d) ? "Queue" : "Send";
     if (open) { open.hidden = !d; if (d) open.href = `#studio/${d.id}`; }
-    if (ctxBox) ctxBox.innerHTML = d && ssLive(d.state) ? ssCtxHtml((state.ssCtx || {})[d.id]) : "";
+    if (ctxBox) morph(ctxBox, d && ssLive(d.state) ? ssCtxHtml((state.ssCtx || {})[d.id]) : "");
   };
   const loadCtx = async () => {  // how full the session's context is, once Claude is idle
     const d = rv.d;
     if (!d || !ssLive(d.state) || d.state === "working") return;
     const c = await api("studio_context", { id: d.id }).catch(() => null);
-    if (c && c.percent != null) { (state.ssCtx = state.ssCtx || {})[d.id] = c; if (ctxBox && document.body.contains(ctxBox)) ctxBox.innerHTML = ssCtxHtml(c); }
+    if (c && c.percent != null) { (state.ssCtx = state.ssCtx || {})[d.id] = c; if (ctxBox && document.body.contains(ctxBox)) morph(ctxBox, ssCtxHtml(c)); }
   };
   const BUSY = ["working", "starting", "needs-you"];
   async function poll() {
@@ -4586,7 +4587,7 @@ function wireChatPane(root) {
   (async () => {
     const t = await api("review_chat", { pr, pass: n, session: to() }).catch(e => ({ available: false, why: e.message }));
     if (!document.body.contains(conv)) return;
-    if (t.available === false) { conv.innerHTML = `<p class="muted small">${fmtWhy(t.why)}</p>`; return; }
+    if (t.available === false) { morph(conv, `<p class="muted small">${fmtWhy(t.why)}</p>`); conv._html = null; return; }
     rv.own = t.own; fill();
     if (rv.sid !== t.session) { rv.sid = t.session; rv.d = null; rv.history = null; }
     if (rv.d) draw();  // what the last visit saw, until the fresh copy arrives
@@ -4598,7 +4599,7 @@ function wireChatPane(root) {
       }
     }
     if (t.session) await poll(); else draw();
-    conv.scrollTop = conv.scrollHeight;
+    if (first) conv.scrollTop = conv.scrollHeight;  // opening the chat starts at its end; a redraw of the page leaves it where you are
     loadCtx();
   })();
   const go = async () => {
@@ -4654,7 +4655,7 @@ function chatSetMode(mode) {
 /* A text box that grows with what you type, up to a limit, then scrolls. */
 function grow(t) {
   const fit = () => { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight + 2, Math.round(innerHeight * .4)) + "px"; };
-  t.addEventListener("input", fit);
+  if (once(t, "grow")) t.addEventListener("input", fit);
   fit();
 }
 function wirePrs(root) {
@@ -4811,11 +4812,11 @@ function wirePrs(root) {
   // finding ids repeat across PRs on one page (1.1 on each), so look inside the finding's own card
   $$("[data-pr-snip]", root).forEach(async el => {
     const [pr, id] = JSON.parse(el.dataset.prSnip), cache = state.snips || (state.snips = {});
-    if (cache[el.dataset.prSnip]) return (el.innerHTML = snipHtml(cache[el.dataset.prSnip]));
+    if (cache[el.dataset.prSnip] !== undefined) return;  // drawn with the page: the code, or that GitHub didn't give it
     const d = await api("prsnippet", { pr, id }).catch(() => ({}));
-    if (d.snippet) cache[el.dataset.prSnip] = d.snippet;
+    cache[el.dataset.prSnip] = d.snippet || false;  // false: not asked again until you refresh, so redraws don't flip it back to Loading
     setTimeout(() => { if (state.pin && Date.now() < state.pin.until) state.pin.keep(); }, 0);
-    if (d.snippet) el.innerHTML = snipHtml(d.snippet);
+    if (d.snippet) morph(el, snipHtml(d.snippet));
     else $(".pad", el).textContent = "Couldn't get this code from GitHub.";
   });
   $$("[data-pr-goto]", root).forEach(a => a.onclick = e => {
@@ -5071,10 +5072,10 @@ function renderNav(active) {
   // the pages the welcome turned on (always the one you're on)
   const visible = new Set(state.pages || NAV.map(p => p[0]));
   visible.add(active);
-  $("#nav").innerHTML = navSessions(active) + NAV_GROUPS.map(([g, ks]) => {
+  morph($("#nav"), navSessions(active) + NAV_GROUPS.map(([g, ks]) => {
     const shown = ks.filter(k => visible.has(k));
     return shown.length ? `<div class="nav-grp">${esc(g)}</div>${shown.map(k => `<a class="${k === active && !(k === "prs" && openTabs().some(t => location.hash === prTabHref(t.pr))) ? "on" : ""}" href="#${k}" title="${esc(TITLES[k])}"${k === active ? ' aria-current="page"' : ""}>${icon(k)}<span>${esc(TITLES[k])}</span></a>${subs(k)}`).join("")}` : "";
-  }).filter(Boolean).join("");
+  }).filter(Boolean).join(""));
 }
 /* The Sessions accordion at the top of the sidebar: new session, the ones live here (and whether they need you),
    your recent ones, and the full list. Open or closed is remembered. */
@@ -5150,25 +5151,95 @@ async function mapStatus() {
   try {
     const g = await api("graphs");
     const [text, t] = say(g.status);
-    el.innerHTML = `<span class="map-line">${dot(t)}<span class="label">${esc(repoName())} code map: ${esc((text || "unknown").toLowerCase())}</span></span>${mapBtn(g.status, "btn tiny")}`;
+    morph(el, `<span class="map-line">${dot(t)}<span class="label">${esc(repoName())} code map: ${esc((text || "unknown").toLowerCase())}</span></span>${mapBtn(g.status, "btn tiny")}`);
     el.title = `The code map of ${repoName()} (the project picked above): an index of its functions and what calls what, which LFG's agents read instead of whole files. ${text || "Unknown"}. Each project has its own.`;
     wireMap(el);
     if (g.status === "syncing") { mapWatching = true; mapTimer = setTimeout(mapStatus, 4000); }
     else if (mapWatching) {
       mapWatching = false;
-      if ((location.hash.slice(1) || "").split("/")[0] === "code") { state.cache = {}; route(); }
+      if ((location.hash.slice(1) || "").split("/")[0] === "code") { state.cache = {}; softRoute(); }
     }
   } catch (e) { el.innerHTML = ""; }
 }
 let renderSeq = 0, lastHtml = "", lastHash = "";
 const pageCache = {};  // each page as last drawn, shown at once when you come back to it
+/* morph(el, html): make el's content match html by changing only what differs, instead of throwing it away and
+   building it again (innerHTML). Everything that didn't change is the same element as before, so a redraw keeps
+   what you did to it: scroll position, an open section, focus and the caret, selected text, typed text, an open
+   menu. What the page itself owns is left alone:
+   - data-fill on an element (in the HTML): script draws its content (a table, a tab's body, the review chat), so a
+     redraw keeps what is in it; the script that fills it updates it (with morph too).
+   - data-local on an element script added (a Rewind box): stays until script removes it.
+   - data-keep="attr ..." on an element: those attributes are script's (hidden, aria-expanded, class, href).
+   - always the person's: a <details>'s open, a text box's typed value, a style script set (a grown text box),
+     and the flags script puts on what it loaded (data-loaded and the like, whose content it then also keeps). */
+const SCRIPT_FLAGS = ["data-loaded", "data-done", "data-wired", "data-ins-wired"];
+function morph(el, html) {
+  const t = document.createElement("template");
+  t.innerHTML = html;
+  morphKids(el, t.content);
+}
+function morphOuter(el, html) {  // el itself becomes the (single) element html describes
+  const t = document.createElement("template");
+  t.innerHTML = html.trim();
+  const nb = t.content.firstElementChild;
+  if (!nb) return el.remove();
+  if (sameNode(el, nb)) morphNode(el, nb); else el.replaceWith(nb);
+}
+const isLocal = n => n.nodeType === 1 && n.hasAttribute("data-local");
+const nodeKey = n => n.nodeType === 1 ? n.id || n.getAttribute("data-key") || n.getAttribute("data-i") || "" : "";
+const firstClass = n => (n.getAttribute("class") || "").split(" ")[0];
+function sameNode(a, b) {
+  if (a.nodeType !== b.nodeType) return false;
+  if (a.nodeType !== 1) return true;
+  return a.tagName === b.tagName && nodeKey(a) === nodeKey(b) && firstClass(a) === firstClass(b);
+}
+function keepAttr(a, name, inNew) {
+  if (SCRIPT_FLAGS.includes(name)) return true;
+  if (name === "open" && a.tagName === "DETAILS") return true;
+  if (name === "style" && !inNew) return true;
+  if (name === "hidden" && a.matches(KEEP_SHOWN)) return true;
+  const own = a.getAttribute("data-keep");
+  return !!own && own.split(" ").includes(name);
+}
+function morphNode(a, b) {
+  if (a.nodeType !== 1) { if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue; return; }
+  for (const { name, value } of [...b.attributes]) if (a.getAttribute(name) !== value && !keepAttr(a, name, true)) a.setAttribute(name, value);
+  for (const { name } of [...a.attributes]) if (!b.hasAttribute(name) && !keepAttr(a, name, false)) a.removeAttribute(name);
+  if ((b.hasAttribute("data-fill") && a.childNodes.length) || SCRIPT_FLAGS.some(f => a.hasAttribute(f))) return;  // script's content
+  morphKids(a, b);
+}
+function morphKids(a, b) {
+  let cur = a.firstChild;
+  for (let nb = b.firstChild; nb;) {
+    const next = nb.nextSibling;
+    while (cur && isLocal(cur)) cur = cur.nextSibling;
+    if (cur && sameNode(cur, nb)) { morphNode(cur, nb); cur = cur.nextSibling; } else {
+      let hit = null;
+      if (nodeKey(nb)) for (let x = cur; x; x = x.nextSibling) if (sameNode(x, nb)) { hit = x; break; }
+      if (hit) { a.insertBefore(hit, cur); morphNode(hit, nb); } else a.insertBefore(nb, cur);
+    }
+    nb = next;
+  }
+  while (cur) { const n = cur.nextSibling; if (!isLocal(cur)) cur.remove(); cur = n; }
+}
+/* A page that watches something (a running review, checks, a scan) redraws itself on a timer, and each redraw asks
+   for the next one. pageTimer keeps one pending per name, so redraws from elsewhere don't stack up extra timers. */
+const PAGE_TIMERS = {};
+function pageTimer(name, ms, fn) {
+  if (PAGE_TIMERS[name]) return;
+  PAGE_TIMERS[name] = setTimeout(() => { delete PAGE_TIMERS[name]; fn(); }, ms);
+}
+/* Wiring that adds listeners runs again after each redraw that keeps the element: once(el, "what") is true only
+   the first time for that element, so a listener is never added twice (one Enter sending a message twice). */
+const once = (el, k) => { const w = el._wired || (el._wired = new Set()); return !w.has(k) && !!w.add(k); };
 /* A refresh redraws the page from scratch. What you did to it (opened, shown, typed, focused, scrolled) is noted
    first, by a key that survives the redraw, and put back after, so a page that updates itself never undoes you. */
 const KEEP_SHOWN = ".pr-discuss, .pr-edit, [data-pr-body], [data-pr-discuss], [data-pr-editbox]";
 function uiKey(el, view) {
   const part = e => {
     if (e.id) return "#" + e.id;
-    const a = [...e.attributes].find(x => x.name.startsWith("data-") && x.name !== "data-loaded");
+    const a = [...e.attributes].find(x => x.name.startsWith("data-") && !["data-fill", "data-keep", "data-local", ...SCRIPT_FLAGS].includes(x.name));
     if (a) return `[${a.name}=${a.value}]`;
     if (e.tagName === "DETAILS") { const sm = e.querySelector(":scope > summary"); return "details:" + (sm ? sm.textContent.trim().slice(0, 60) : ""); }
     return "";
@@ -5198,7 +5269,8 @@ function uiRestore(view, snap) {
   keyed(view, KEEP_SHOWN).forEach(([k, el]) => { if (snap.shown.has(k)) el.hidden = snap.shown.get(k); });
   keyed(view, "input, textarea").forEach(([k, el]) => {
     if (snap.typed.has(k)) el.value = snap.typed.get(k);
-    if (snap.focus && snap.focus.key === k) { el.focus({ preventScroll: true }); try { el.setSelectionRange(snap.focus.start, snap.focus.end); } catch (e) { /* not a text field */ } }
+    // only a box the redraw replaced: focusing one that kept its focus would move your text selection into it
+    if (snap.focus && snap.focus.key === k && document.activeElement !== el) { el.focus({ preventScroll: true }); try { el.setSelectionRange(snap.focus.start, snap.focus.end); } catch (e) { /* not a text field */ } }
   });
   keyed(view, ".pr-thread, .pr-activity ol, .pr-steps, .scroll").forEach(([k, el]) => { if (snap.scroll.has(k)) el.scrollTo({ top: snap.scroll.get(k) === -1 ? el.scrollHeight : snap.scroll.get(k), behavior: "instant" }); });  // never animate from the top after a redraw
 }
@@ -5226,15 +5298,17 @@ async function route(opts) {
   else if (!soft) view.innerHTML = skeletonPage(key, !!arg && arg !== "scores");
   const bar = soft ? null : setTimeout(() => document.body.classList.add("routing"), 120);  // a slow page shows the bar
   let html;
-  try { html = await PAGES[key](decodeURIComponent(arg)); } catch (e) { html = unavailable({ why: "Couldn't load this page: " + e.message }); }
+  TID = 0; tPage = true;
+  try { html = await PAGES[key](decodeURIComponent(arg)); } catch (e) { html = unavailable({ why: "Couldn't load this page: " + e.message }); } finally { tPage = false; }
   if (bar) { clearTimeout(bar); if (seq === renderSeq) document.body.classList.remove("routing"); }
   if (seq !== renderSeq) return;
   if (soft && html === lastHtml && location.hash === lastHash) return applyGoto(view);  // nothing changed: leave the page alone
   lastHtml = html; lastHash = location.hash;
   pageCache[location.hash] = html;
   view.classList.remove("stale");
-  view.innerHTML = html;
-  wireView(key, view);
+  if (soft || seen) morph(view, html); else view.innerHTML = html;  // a page already showing changes only where it changed
+  tPage = true;
+  try { wireView(key, view); } finally { tPage = false; }
   const rf = $("#refreshed");
   if (rf) rf.textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   if (soft) {
@@ -5259,7 +5333,7 @@ function wireView(key, view) {
   if (key === "prefs") wirePrefsPage(view);
   if (key === "talk") wireTalk(view);
   if (key === "environment") wireEnvironment(view);
-  if (key === "checks") { $$('[data-tabs="checks"] .tab', view).forEach(t => t.addEventListener("click", () => setTimeout(() => wireSonar(view), 0))); wireSonar(view); }
+  if (key === "checks") { $$('[data-tabs="checks"] .tab', view).forEach(t => { if (once(t, "sonar")) t.addEventListener("click", () => setTimeout(() => wireSonar(view), 0)); }); wireSonar(view); }
   if (key === "onboarding") drawJourney(view);
   if (state.gh && state.gh.starred) $$("[data-gh-star]", view).forEach(b => (b.textContent = "★ Starred, thank you"));
   if (state.pendingTour && state.pendingTour.startsWith("page-")) { const t = state.pendingTour; state.pendingTour = null; setTimeout(() => startTour(t), 400); }
@@ -5389,8 +5463,8 @@ function ssComposer(o) {
   const seg = (name, opts, cur) => `<span class="seg" role="radiogroup" data-seg="${name}">${opts.map(([k, l, tip]) => `<button type="button" role="radio" aria-checked="${k === cur}" class="pill${k === cur ? " on" : ""}" data-v="${k}" title="${esc(tip)}">${l}</button>`).join("")}</span>`;
   const fork = o.fork ? `<div class="ss-forking">${icon("branch")}<span class="grow">New session from ${o.fork.at ? `before <b>“${esc(o.fork.label)}”</b>` : "this whole conversation"}. This one stays as it is.</span><button class="btn small" data-fork-x>Cancel</button></div>` : "";
   return `<div class="ss-comp" id="ss-comp">
-    <div class="ss-ac" id="ss-ac" hidden></div>${fork}
-    <div class="ss-att" id="ss-att" hidden></div>
+    <div class="ss-ac" id="ss-ac" data-fill data-keep="hidden" hidden></div>${fork}
+    <div class="ss-att" id="ss-att" data-fill data-keep="hidden" hidden></div>
     <textarea id="ss-text" rows="1" placeholder="${o.fork ? "What should the new session do?" : o.isNew ? "Describe the task. / for skills, @ for files and folders" : o.saved ? "Write to continue this session here" : "Reply to Claude. / for skills, @ for files"}"></textarea>
     <div class="ss-comp-b"><button type="button" class="icon-btn ss-clip" id="ss-attach" title="Attach files or images. You can also drop them here or paste a screenshot.">${icon("clip")}</button><input type="file" id="ss-file" multiple hidden>
       ${o.isNew ? ssWherePicker() : ""}${o.isNew || o.live ? seg("mode", SS_MODES, mode) : ""}
@@ -5495,7 +5569,7 @@ function ssItems(items, live, pr, chat) {
   items.forEach((it, i) => {
     if (it.k === "tool") { group.push(it); return; }
     flush(false);
-    if (it.k === "me") html += `<div class="ss-me" data-i="${i}">${(it.images || []).length ? `<div class="ss-imgs">${it.images.map(m => `<button class="ss-img" data-img="${esc(m.u)}:${m.i}" title="Show larger"></button>`).join("")}</div>` : ""}${ssMeText(it) ? `<div class="ss-bub">${ssMeText(it)}</div>` : ""}${ssMsgActions(it, i, chat)}</div>`;
+    if (it.k === "me") html += `<div class="ss-me" data-i="${i}">${(it.images || []).length ? `<div class="ss-imgs">${it.images.map(m => `<button class="ss-img" data-img="${esc(m.u)}:${m.i}" data-fill data-keep="class" title="Show larger"></button>`).join("")}</div>` : ""}${ssMeText(it) ? `<div class="ss-bub">${ssMeText(it)}</div>` : ""}${ssMsgActions(it, i, chat)}</div>`;
     else if (it.k === "skill") html += `<div class="ss-me" data-i="${i}"><div class="ss-bub skill">${icon("skills")}/${esc(it.name.replace(/^\//, ""))}${it.args ? ` <span>${esc(it.args)}</span>` : ""}</div>${ssMsgActions(it, i, chat)}</div>`;
     else if (it.k === "ai") html += `<div class="ss-ai" data-i="${i}"><span class="ss-ai-av">${icon("studio")}</span><div class="md">${md(it.text)}</div>${changedChips(it.changed, pr)}<div class="ss-msg-a"><button class="ss-ma" data-ss-copy="${i}" title="Copy this answer">${icon("copy")}Copy</button></div></div>`;
     else if (it.k === "note") html += `<div class="ss-note">${esc(it.text)}</div>`;
@@ -5640,8 +5714,8 @@ function ssHead(d) {
   return `<div class="grow"><h1 class="ss-title" title="Click to rename" data-ss-rename>${esc(d.title)}</h1>
       <div class="ss-tags">${ssTagList(d, true)}${model ? `<span class="tg">${esc(model)}</span>` : ""}${d.via === "headroom" ? '<span class="tg on">via Headroom</span>' : ""}</div></div>
     <div class="ss-head-a">${ssLive(d.state) ? ssCtxHtml((state.ssCtx || {})[d.id]) : ""}${d.cost ? `<span class="ss-cost" title="What this session has cost so far">${money(d.cost)}</span>` : ""}${ssLive(d.state) ? `<button class="btn small" data-ss-end title="End the Claude Code process; you can continue the session later">End</button>` : ""}
-      <button class="icon-btn ss-more" data-ss-more aria-haspopup="menu" aria-expanded="false" title="More">${icon("more")}</button>
-      <div class="ss-menu" role="menu" hidden>
+      <button class="icon-btn ss-more" data-ss-more data-keep="aria-expanded" aria-haspopup="menu" aria-expanded="false" title="More">${icon("more")}</button>
+      <div class="ss-menu" role="menu" data-keep="hidden" hidden>
         <button role="menuitem" data-menu="fork">${icon("branch")}Fork session</button>
         <button role="menuitem" data-menu="compact">${icon("compress")}Compact conversation</button>
         <hr><button role="menuitem" data-menu="export">${icon("download")}Export as Markdown</button>
@@ -5682,8 +5756,7 @@ function ssAct(d) {
 }
 /* the accordion's clicks: delegated, so they keep working after each refresh redraws the panel */
 function wireAct(box) {
-  if (!box || box.dataset.wired) return;
-  box.dataset.wired = "1";
+  if (!box || !once(box, "act")) return;  // not a data- flag: that would make redraws leave the list alone
   box.addEventListener("click", e => {
     const h = e.target.closest("[data-act-fold]");
     if (!h) return;
@@ -5857,14 +5930,14 @@ function wireSessChanges(root) {
       location.hash = `#studio/${id}`;  // watch the answer in the conversation
     });
   };
-  $$("[data-df-pick]", root).forEach(el => el.addEventListener("mousedown", e => {
+  $$("[data-df-pick]", root).forEach(el => el.onmousedown = (e => {  // a property, not a listener: a redraw that keeps the line rewires it, once
     if (e.button !== 0) return;
     e.preventDefault();
     const tr = el.closest(".df-l"), table = el.closest(".df-t");
     if (e.shiftKey && sel && sel.table === table) sel.b = tr; else sel = { table, a: tr, b: tr };
     dragging = true; mark();
   }));
-  $$(".df-t", root).forEach(table => table.addEventListener("mouseover", e => {
+  $$(".df-t", root).forEach(table => table.onmouseover = (e => {
     if (!dragging || !sel || sel.table !== table) return;
     const tr = e.target.closest(".df-l");
     if (tr && tr !== sel.b) { sel.b = tr; mark(); }
@@ -5884,8 +5957,13 @@ function wireSessChanges(root) {
 }
 
 /* Files for a message: the paperclip, files dropped on the box, a pasted screenshot. Each is uploaded as it is added
-   (up to 10); `att` is what is attached, `attached()` what a send carries. Used by Studio and by the chat on a review. */
-function ssAttach({ comp, ta, box, file, btn, say }) {
+   (up to 10); `att` is what is attached, `attached()` what a send carries. Used by Studio and by the chat on a review.
+   One per composer: a redraw that keeps the composer gets the same one back, with what you attached still there. */
+function ssAttach(o) {
+  if (!o.comp._att) o.comp._att = ssAttachNew(o);
+  return o.comp._att;
+}
+function ssAttachNew({ comp, ta, box, file, btn, say }) {
   const att = [], tell = say || (m => alert(m));
   const paint = () => {
     box.hidden = !att.length;
@@ -6009,7 +6087,7 @@ function ssConvWirer(o) {
   const ssRewind = async b => {
     $$(".ss-rw", conv).forEach(x => x.remove());
     const msg = b.closest(".ss-me"), u = b.dataset.rw;
-    const box = document.createElement("div"); box.className = "ss-rw";
+    const box = document.createElement("div"); box.className = "ss-rw"; box.dataset.local = "";  // yours until you close it: a redraw keeps it
     box.innerHTML = `<div class="ss-rw-h"><b>Rewind to before this message</b><span class="muted small" data-rw-prev>Checking which files would change…</span></div><div class="ss-rw-files" hidden></div>
       <div class="ss-rw-a"><button class="btn small primary" data-rw-go="both">Code and conversation</button><button class="btn small" data-rw-go="chat">Conversation only</button><button class="btn small" data-rw-go="code">Code only</button><button class="btn small" data-rw-x>Cancel</button></div>`;
     msg.append(box); box.scrollIntoView({ block: "nearest" });
@@ -6039,21 +6117,24 @@ function wireStudio(root) {
   // the list: filter and search
   $$("[data-ss-filter]", root).forEach(b => b.onclick = () => { state.ssFilter = b.dataset.ssFilter; route({ soft: true }); });
   const find = $("#ss-find", root);
-  if (find) find.oninput = () => { const q = find.value.trim().toLowerCase(); $$(".ss-row", root).forEach(a => { a.hidden = !!q && !q.split(/\s+/).every(w => a.dataset.title.includes(w)); }); };
+  if (find) { find.oninput = () => { const q = find.value.trim().toLowerCase(); $$(".ss-row", root).forEach(a => { a.hidden = !!q && !q.split(/\s+/).every(w => a.dataset.title.includes(w)); }); }; if (find.value) find.oninput(); }  // a redraw keeps your search applied
   // the composer
   const ta = $("#ss-text", root), send = $("#ss-send", root), ac = $("#ss-ac", root);
+  const fresh = ta && once(ta, "studio");  // a redraw that keeps the text box wires it again: listeners and focus only once
   $$("[data-seg]", root).forEach(seg => $$("button", seg).forEach(b => b.onclick = () => {
     $$("button", seg).forEach(x => { x.classList.toggle("on", x === b); x.setAttribute("aria-checked", x === b); });
     localStorage.setItem("lfg.ss." + seg.dataset.seg, b.dataset.v);
     if (seg.dataset.seg === "mode" && S.id && d && ssLive(d.state)) go("sess_mode", { id: S.id, mode: b.dataset.v });
   }));
   const segVal = k => { const b = $(`[data-seg="${k}"] button.on`, root); return b ? b.dataset.v : undefined; };
-  if (ta) {
+  if (fresh) {
     ssAutocomplete(ta, ac);
-    ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && ac.hidden) { e.preventDefault(); send.click(); } });
+    ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && $("#ss-ac").hidden) { e.preventDefault(); $("#ss-send").click(); } });
     ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 280) + "px"; });
+  }
+  if (ta) {
     if (state.ssPrefill) { ta.value = state.ssPrefill; state.ssPrefill = ""; ta.dispatchEvent(new Event("input")); state.ssFresh = true; }
-    if (!S.id || ssLive(d && d.state) || state.ssFresh) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    if ((fresh && (!S.id || ssLive(d && d.state))) || state.ssFresh) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
     state.ssFresh = false;
   }
   // attachments: the paperclip, drag and drop onto the composer, or a pasted screenshot
@@ -6150,16 +6231,16 @@ function wireStudio(root) {
     if (!c || c.percent == null) return;
     (state.ssCtx = state.ssCtx || {})[S.id] = c;
     const a = $(".ss-head-a", head), old = $(".ss-ctx-box", a);
-    if (old) old.outerHTML = ssCtxHtml(c); else a.insertAdjacentHTML("afterbegin", ssCtxHtml(c));
+    if (old) morphOuter(old, ssCtxHtml(c)); else a.insertAdjacentHTML("afterbegin", ssCtxHtml(c));  // an open breakdown stays open
   };
   wireConv(); wireHead(); loadCtx();
   const atBottom = () => conv.scrollTop + conv.clientHeight >= conv.scrollHeight - 120;
-  conv.scrollTop = conv.scrollHeight;
+  if (once(conv, "at-end")) conv.scrollTop = conv.scrollHeight;  // a session opens at its end; a redraw leaves you where you are
   let sig = "";
   const sigOf = n => JSON.stringify([n.items.length, n.state, (n.pending || []).length, (n.queued || []).length, n.error, n.cost, (n.items[n.items.length - 1] || {}).result != null]);
   const busyBg = n => (n.activity || []).some(a => a.status === "running");
   wireAct($("#ss-act", root));
-  const drawAct = n => { const box = $("#ss-act", root); if (box) { const html = ssAct(n); if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; } } const one = $(".ss-one", root); if (one) one.classList.toggle("has-act", !!(n.activity || []).length); };
+  const drawAct = n => { const box = $("#ss-act", root); if (box) morph(box, ssAct(n)); const one = $(".ss-one", root); if (one) one.classList.toggle("has-act", !!(n.activity || []).length); };
   sig = sigOf(d);
   async function refresh() {
     clearTimeout(ssPoll);
@@ -6171,7 +6252,7 @@ function wireStudio(root) {
     if (nsig !== sig) {
       const stick = atBottom(), was = d.state;
       sig = nsig; state.sess.d = n; Object.assign(d, n);
-      conv.innerHTML = ssConv(n); head.innerHTML = ssHead(n); wireConv(); wireHead();
+      morph(conv, ssConv(n)); morph(head, ssHead(n)); wireConv(); wireHead();  // only what changed: open steps, selection, the menu stay
       conv.classList.toggle("ss-busy", n.state === "working" || n.state === "starting" || !!(n.pending || []).length);
       if (n.state === "idle" && was !== "idle") loadCtx();
       if (send) { const want = ssLive(n.state) ? "Send" : "Continue here"; if (!send.disabled && send.textContent !== want) send.textContent = want; }
@@ -6212,9 +6293,9 @@ function paintBell() {
     : !("Notification" in window) ? "" : Notification.permission === "granted" ? `<span class="muted small">System notifications are on when this tab is in the background.</span>`
     : Notification.permission === "denied" ? `<span class="muted small">System notifications are blocked for this page in your browser's settings.</span>`
     : `<button class="btn small" id="note-perm">Notify me when this tab is in the background</button>`;
-  pop.innerHTML = `<div class="bell-h"><b>Notifications</b><span class="grow"></span>${unread ? `<a href="#" class="small" id="note-read">Mark all read</a>` : ""}</div>
+  morph(pop, `<div class="bell-h"><b>Notifications</b><span class="grow"></span>${unread ? `<a href="#" class="small" id="note-read">Mark all read</a>` : ""}</div>
     <div class="bell-list">${NOTES.events.slice(0, 30).map(e => noteHtml(e, "note")).join("") || '<p class="muted small bell-empty">Nothing yet. When the AI finishes a review, an answer or a fix run, or a scan or check is done, it shows up here.</p>'}</div>
-    <div class="bell-f">${perm}</div>`;
+    <div class="bell-f">${perm}</div>`);
   $$("[data-note]", pop).forEach(a => a.onclick = e => { e.preventDefault(); openNote(NOTES.events.find(x => x.id === a.dataset.note)); });
   const rd = $("#note-read", pop); if (rd) rd.onclick = e => { e.preventDefault(); markSeen(); };
   const pm = $("#note-perm", pop); if (pm) pm.onclick = async () => { await Notification.requestPermission(); paintBell(); };
@@ -6387,10 +6468,10 @@ function noticesDraw() {
   const shown = noticesOpen ? NOTICES : NOTICES.slice(0, 3), more = NOTICES.length - shown.length;
   const card = (x, i) => `<div class="notice ${x.ok ? "ok" : "bad"}" data-notice="${i}" title="Open it">${dot(x.ok ? "ok" : "bad")}<div class="grow"><b>${esc(x.title)}</b><div class="small muted">${esc(x.body)}</div><div class="small faint">${ago(x.at)}</div></div><button class="btn tiny" data-notice-x="${i}" aria-label="Close">×</button></div>`;
   const ask = "Notification" in window && Notification.permission === "default";
-  box.innerHTML = `${NOTICES.length > 1 ? `<div class="notices-h"><b>${plural(NOTICES.length, "update")}</b><span class="grow"></span>${ask ? '<button class="btn tiny" data-notify-on>Desktop alerts</button>' : ""}<button class="btn tiny" data-notices-clear>Clear all</button></div>` : ""}
+  morph(box, `${NOTICES.length > 1 ? `<div class="notices-h"><b>${plural(NOTICES.length, "update")}</b><span class="grow"></span>${ask ? '<button class="btn tiny" data-notify-on>Desktop alerts</button>' : ""}<button class="btn tiny" data-notices-clear>Clear all</button></div>` : ""}
     <div class="notices-list ${noticesOpen ? "open" : ""}">${shown.map((x, i) => card(x, i)).join("")}</div>
     ${more ? `<button class="notices-more" data-notices-more>Show ${plural(more, "more update")}</button>` : noticesOpen && NOTICES.length > 3 ? '<button class="notices-more" data-notices-more>Show fewer</button>' : ""}
-    ${NOTICES.length === 1 && ask ? '<button class="btn tiny notices-ask" data-notify-on>Also tell me on the desktop</button>' : ""}`;
+    ${NOTICES.length === 1 && ask ? '<button class="btn tiny notices-ask" data-notify-on>Also tell me on the desktop</button>' : ""}`);
   $$("[data-notice]", box).forEach(el => el.onclick = e => {
     const i = +el.dataset.notice;
     if (e.target.closest("[data-notice-x]")) { NOTICES.splice(i, 1); return noticesDraw(); }
@@ -6458,7 +6539,7 @@ async function checkUpdate(fresh) {
   if (j && j.status === "running") {
     box.hidden = false;
     box.className = "callout";
-    box.innerHTML = runningMsg(j);
+    morph(box, runningMsg(j));
     watchUpdate();
     return;
   }
@@ -6466,7 +6547,7 @@ async function checkUpdate(fresh) {
   if (F && F.status === "running") {
     box.hidden = false;
     box.className = "callout";
-    box.innerHTML = fixingMsg(F);
+    morph(box, fixingMsg(F));
     watchUpdate();
     return;
   }
@@ -6643,7 +6724,7 @@ async function watchLoop() {
 setInterval(checkUpdate, 60 * 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) checkUpdate(); });
 window.addEventListener("focus", () => checkUpdate());
-function refresh() { state.cache = {}; state.fresh = true; mapStatus(); checkUpdate(true); route().finally(() => { state.fresh = false; }); }
+function refresh() { Object.keys(state.snips || {}).forEach(k => { if (!state.snips[k]) delete state.snips[k]; }); state.cache = {}; state.fresh = true; mapStatus(); checkUpdate(true); route().finally(() => { state.fresh = false; }); }
 /* Pages whose data changes without you (GitHub, running jobs) reload every 10 minutes, unless you're typing or a
    drawer is open, so nothing you're in the middle of is thrown away. */
 const AUTO_REFRESH = ["home", "sessions", "environment", "prs", "checks", "runs", "issues"];
@@ -6651,6 +6732,6 @@ setInterval(() => {
   const page = (location.hash.slice(1) || "home").split("/")[0];
   const busy = document.hidden || document.querySelector("#drawer:not([hidden])") ||
     ["TEXTAREA", "INPUT", "SELECT"].includes((document.activeElement || {}).tagName);
-  if (AUTO_REFRESH.includes(page) && !busy) refresh();
+  if (AUTO_REFRESH.includes(page) && !busy) { state.cache = {}; state.fresh = true; softRoute().finally(() => { state.fresh = false; }); }  // in place
 }, 10 * 60 * 1000);
 init();
