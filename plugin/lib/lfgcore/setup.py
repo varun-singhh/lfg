@@ -693,10 +693,29 @@ def apply(steps, packs=("core",), here=None, yes=False, log=print):
     return {"ok": True, "results": results}
 
 
+def _refresh_rules(log):
+    """Your rules file (~/.claude/lfg-preferences.md) holds the wording of each preference as of when it was last
+    written: only turning Preferences on or changing one rewrote it, so a new version's reworded rules never reached
+    Claude. Rewrite it from your preferences with this version's wording, if you use them. Your own wording stays."""
+    from . import prefs as P
+    if not os.path.isfile(P.PREFS_MD):
+        return None
+    before = C.read_text(P.PREFS_MD)
+    try:
+        P.write_defaults_file()
+    except Exception as e:  # a rules file that can't be rewritten must not undo the install
+        log("!!  couldn't refresh your rules file: %s" % e)
+        return "your rules file (%s) wasn't refreshed: %s" % (P.PREFS_MD, e)
+    if C.read_text(P.PREFS_MD) != before:
+        log("    your rules file now has this version's wording")
+    return None
+
+
 def _apply_one(s, legacy, yes, log):
     sid = s["id"]
     if sid == "files":
         install_files(log)
+        return _refresh_rules(log)
     elif sid == "shim":
         CC.link(os.path.join(C.HOME, ".local", "bin", "lfg"), C.lfg_path("plugin", "bin", "lfg"),
                 "`lfg` on your PATH", "core", tag="shim")

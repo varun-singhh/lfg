@@ -3492,6 +3492,22 @@ class PrefsTest(unittest.TestCase):
         m.start()
         self.addCleanup(m.stop)
 
+    def test_an_install_rewrites_the_rules_file_with_the_new_wording(self):
+        from lfgcore import setup as SU
+        logs = []
+        self.assertIsNone(SU._refresh_rules(logs.append))  # never used Preferences: no file is made
+        self.assertFalse(os.path.exists(self.md))
+        C.write_text(self.md, "# Your rules\n- the old wording of a rule\n")
+        SU._refresh_rules(logs.append)
+        text = C.read_text(self.md)
+        self.assertNotIn("the old wording", text)
+        self.assertIn("nothing after the backslash", text)  # this version's wording of the paste rule
+        self.assertEqual(logs, ["    your rules file now has this version's wording"])
+        SU._refresh_rules(logs.append)
+        self.assertEqual(len(logs), 1)  # unchanged: nothing said
+        with mock.patch.object(self.P, "write_defaults_file", side_effect=OSError("read-only")):
+            self.assertIn("wasn't refreshed", SU._refresh_rules(logs.append))  # the install goes on
+
     def hook(self, event, data):
         out = io.StringIO()
         with mock.patch("sys.stdin", io.StringIO(json.dumps(data))), mock.patch("sys.stdout", out), \
