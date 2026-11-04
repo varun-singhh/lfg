@@ -2435,6 +2435,55 @@ class ClaudeSessionsTest(unittest.TestCase):
                 CS.start("r1", self.root, "   ")
 
 
+    def test_a_session_carried_on_in_another_window_is_reloaded_before_the_studio_writes_to_it(self):
+        import datetime
+        CS, sid = self.CS, "88888888-2222-3333-4444-555555555555"
+        fake = os.path.join(self.root, "claude")
+        C.write_text(fake, FAKE_CLAUDE)
+        os.chmod(fake, 0o755)
+        now = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+        b = {"cwd": self.root, "timestamp": "2026-10-24T10:00:00Z"}
+        lines = [dict(b, type="user", uuid="u1", parentUuid=None, entrypoint="cli",
+                      message={"role": "user", "content": "first"}),
+                 dict(b, type="assistant", uuid="a1", parentUuid="u1", entrypoint="sdk-cli",
+                      message={"content": [{"type": "text", "text": "ok"}]})]
+        self._transcript(sid, lines)
+        with mock.patch.object(C, "which", lambda n: fake if n == "claude" else None), \
+                mock.patch.dict(os.environ, {"FAKE_LOG": os.path.join(self.root, "fake.log")}), \
+                mock.patch.object(CS, "PROJECTS", self.proj):
+            CS.resume("r1", self.root, sid)
+            first = CS._LIVE[sid]
+            for _ in range(100):
+                if first.state == "idle":
+                    break
+                time.sleep(0.05)
+            # the terminal wrote before this process read the file: nothing to warn about
+            self.assertIsNone(CS.detail("r1", self.root, sid)["outside"])
+            self.assertEqual(CS.fresh("r1", self.root, sid), (first, False))
+            # the studio's own lines (a `claude -p`) never count as another window
+            self._transcript(sid, lines + [dict(b, type="user", uuid="u2", parentUuid="a1", entrypoint="sdk-cli",
+                                                timestamp=now(), message={"role": "user", "content": "more"})])
+            self.assertIsNone(CS.detail("r1", self.root, sid)["outside"])
+            # then /compact in a terminal: the page says so, and the next message reloads it first
+            lines += [{"type": "system", "subtype": "compact_boundary", "uuid": "cb", "parentUuid": None,
+                       "entrypoint": "cli", "timestamp": now(), "cwd": self.root}]
+            self._transcript(sid, lines)
+            out = CS.detail("r1", self.root, sid)["outside"]
+            self.assertEqual((out["where"], out["compacted"]), ("a terminal", True))
+            live, reloaded = CS.fresh("r1", self.root, sid)
+            self.assertTrue(reloaded)
+            self.assertIsNot(live, first)
+            self.assertEqual((first.state, live.state, CS._LIVE[sid]), ("ended", "idle", live))
+            self.assertIsNone(CS.detail("r1", self.root, sid)["outside"])  # the new process read it all
+            self.assertEqual(CS.fresh("r1", self.root, sid), (live, False))
+            live.state = "working"  # mid-turn it is never restarted under Claude
+            self._transcript(sid, lines + [dict(b, type="user", uuid="u9", parentUuid="cb", entrypoint="cli",
+                                                timestamp=now(), message={"role": "user", "content": "hi"})])
+            self.assertEqual(CS.fresh("r1", self.root, sid), (live, False))
+            self.assertEqual(CS.detail("r1", self.root, sid)["outside"]["compacted"], False)
+            live.state = "idle"
+            live.stop()
+
     def test_rewound_turns_compaction_and_images_read_like_claude_code_shows_them(self):
         CS, sid = self.CS, "77777777-2222-3333-4444-555555555555"
         b = {"cwd": self.root, "entrypoint": "cli", "timestamp": "2026-10-24T10:00:00Z"}

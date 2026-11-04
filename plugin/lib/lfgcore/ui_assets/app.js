@@ -5672,7 +5672,7 @@ function ssCtxHtml(c) {
   const cells = ssCtxCells(c).map(k => `<i class="ctx-c ${typeof k === "number" ? "c" + (k % 8) : k}"></i>`).join("");
   const row = (cls, name, tok) => `<li><i class="ctx-c ${cls}"></i><span class="grow">${esc(name)}</span><span class="mono">${(tok || 0).toLocaleString()}</span><span class="muted small ctx-pc">${c.max ? Math.max(0.1, Math.round(tok / c.max * 1000) / 10) : 0}%</span></li>`;
   const legend = parts.map((p, i) => row("c" + (i % 8), p.name, p.tokens)).join("") + (c.free ? row("free", "Free space", c.free) : "") + (c.reserved ? row("reserved", "Kept back for compacting", c.reserved) : "");
-  const warn = long ? `<div class="ctx-warn">${dot("warn")}<span><b>This session is long (${ssTok(c.used)} tokens).</b> Every new message sends all of it again, so replies get slower and cost more. Compact it from the ⋯ menu, or start a new session for something different.</span></div>` : "";
+  const warn = long ? `<div class="ctx-warn">${dot("warn")}<span><b>This session is long (${ssTok(c.used)} tokens).</b> Every new message sends all of it again, so replies get slower and cost more. Compact it, or start a new session for something different.</span><button class="btn small" data-ctx-compact>Compact now</button></div>` : "";
   return `<details class="ss-ctx-box"><summary class="ss-ctx${long ? " long" : c.percent >= 70 ? " warn" : ""}" title="What fills this session's context window. Click for the breakdown."><i style="--p:${Math.min(100, c.percent)}%"></i>${c.percent}% context${long ? ` · long: ${ssTok(c.used)} tokens` : ""}</summary>
     <div class="ctx-pop"><div class="ctx-h"><b>${(c.used || 0).toLocaleString()}</b> of ${(c.max || 0).toLocaleString()} tokens used${c.auto_compact_at ? `<span class="muted small"> · compacts by itself near ${c.auto_compact_at.toLocaleString()}</span>` : ""}</div>${warn}
       <div class="ctx-grid" role="img" aria-label="${c.percent}% of the context window is used">${cells}</div><ul class="ctx-legend">${legend}</ul>
@@ -5726,7 +5726,15 @@ function ssConv(d, chat) {  // chat: on a review's page, where there is no Rewin
   const live = ssLive(d.state);
   return `${ssItems(d.items || [], live, (d.review || {}).pr, chat)}${(d.queued || []).map(q => `<div class="ss-me"><div class="ss-bub queued">${esc(q)}<span class="muted small"> · goes in when Claude is ready</span></div></div>`).join("")}
     ${ssPending(d)}${d.state === "working" || d.state === "starting" ? `<div class="ss-working"><span class="ss-pulse"></span> Claude is working… <button class="btn small" data-ss-interrupt>Stop</button></div>` : ""}
-    ${d.error ? `<div class="callout bad small">${fmtWhy(d.error)}</div>` : ""}${chat ? "" : ssFollowups(d)}${!(d.items || []).length && !live && !chat ? empty("Nothing to show", "This session has no messages yet.") : ""}`;
+    ${d.error ? `<div class="callout bad small">${fmtWhy(d.error)}</div>` : ""}${ssOutside(d)}${chat ? "" : ssFollowups(d)}${!(d.items || []).length && !live && !chat ? empty("Nothing to show", "This session has no messages yet.") : ""}`;
+}
+/* Somebody carried on with this session in another window (a terminal, the desktop app) while it runs here. The
+   process here read the conversation when it started and never again, so without a reload it would answer from its
+   older copy and split the session in two. The server reloads it before the next message; this says so. */
+function ssOutside(d) {
+  const o = d.outside;
+  if (!o) return "";
+  return `<div class="callout warn small ss-outside">You carried on with this session in ${esc(o.where)} ${ago(o.ts)}${o.compacted ? " and compacted it there" : ""}. The studio hasn't seen that yet: it is still working from its copy from before. Your next message here reloads it first, so it picks up where ${esc(o.where)} left off. Use one window at a time, or the two copies drift apart again. <button class="btn small" data-ss-reload>Reload now</button></div>`;
 }
 function ssHead(d) {
   const model = String(d.model || "").replace(/^claude-/, "").replace(/-(\d)-(\d)$/, " $1.$2").replace(/^./, c => c.toUpperCase());
@@ -6237,12 +6245,18 @@ function wireStudio(root) {
       if (k === "export") return ssDownload(`${(d.title || "session").replace(/[^\w.-]+/g, "-").slice(0, 60)}.md`, ssMarkdown(d));
       if (k === "resume") { await navigator.clipboard.writeText(`claude --resume ${S.id}`); return alert(`Copied: claude --resume ${S.id}\n\nRun it in this project's folder to carry on in a terminal.`); }
       if (k === "fork") { state.ssFork = { sid: S.id, at: "", label: "" }; route({ soft: true }); return; }
-      if (k === "compact") {
-        if (!confirm("Compact this conversation? Claude Code summarizes it to free up context, as /compact does in a terminal.")) return;
-        if (!ssLive(d.state)) { const r = await go("sess_resume", { id: S.id }); if (!r.ok) return; }
-        const r = await go("sess_compact", { id: S.id }); if (r.ok) refresh();
-      }
+      if (k === "compact") return compact();
     });
+  };
+  const compact = async () => {
+    if (!confirm("Compact this conversation? Claude Code summarizes it to free up context, as /compact does in a terminal.")) return;
+    if (!ssLive(d.state)) { const r = await go("sess_resume", { id: S.id }); if (!r.ok) return; }
+    const r = await go("sess_compact", { id: S.id }); if (r.ok) refresh();
+  };
+  head.onclick = e => { if (e.target.closest("[data-ctx-compact]")) { e.preventDefault(); compact(); } };  // the button in the long-session warning (one handler, however often this runs)
+  const wireOut = () => {
+    const b = $("[data-ss-reload]", conv);
+    if (b) b.onclick = async () => { const r = await go("sess_reload", { id: S.id }, b, "Reloading…"); if (r.ok) { await refresh(); loadCtx(); } };
   };
   const loadCtx = async () => {  // how full the context is, once Claude is idle
     if (!ssLive(d.state) || d.state === "working") return;
@@ -6252,11 +6266,11 @@ function wireStudio(root) {
     const a = $(".ss-head-a", head), old = $(".ss-ctx-box", a);
     if (old) morphOuter(old, ssCtxHtml(c)); else a.insertAdjacentHTML("afterbegin", ssCtxHtml(c));  // an open breakdown stays open
   };
-  wireConv(); wireHead(); loadCtx();
+  wireConv(); wireHead(); wireOut(); loadCtx();
   const atBottom = () => conv.scrollTop + conv.clientHeight >= conv.scrollHeight - 120;
   if (once(conv, "at-end")) conv.scrollTop = conv.scrollHeight;  // a session opens at its end; a redraw leaves you where you are
   let sig = "";
-  const sigOf = n => JSON.stringify([n.items.length, n.state, (n.pending || []).length, (n.queued || []).length, n.error, n.cost, (n.items[n.items.length - 1] || {}).result != null]);
+  const sigOf = n => JSON.stringify([n.items.length, n.state, (n.pending || []).length, (n.queued || []).length, n.error, n.cost, (n.items[n.items.length - 1] || {}).result != null, (n.outside || {}).ts]);
   const busyBg = n => (n.activity || []).some(a => a.status === "running");
   wireAct($("#ss-act", root));
   const drawAct = n => { const box = $("#ss-act", root); if (box) morph(box, ssAct(n)); const one = $(".ss-one", root); if (one) one.classList.toggle("has-act", !!(n.activity || []).length); };
@@ -6271,7 +6285,7 @@ function wireStudio(root) {
     if (nsig !== sig) {
       const stick = atBottom(), was = d.state;
       sig = nsig; state.sess.d = n; Object.assign(d, n);
-      morph(conv, ssConv(n)); morph(head, ssHead(n)); wireConv(); wireHead();  // only what changed: open steps, selection, the menu stay
+      morph(conv, ssConv(n)); morph(head, ssHead(n)); wireConv(); wireHead(); wireOut();  // only what changed: open steps, selection, the menu stay
       conv.classList.toggle("ss-busy", n.state === "working" || n.state === "starting" || !!(n.pending || []).length);
       if (n.state === "idle" && was !== "idle") loadCtx();
       if (send) { const want = ssLive(n.state) ? "Send" : "Continue here"; if (!send.disabled && send.textContent !== want) send.textContent = want; }
