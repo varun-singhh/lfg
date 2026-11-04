@@ -158,6 +158,12 @@ def read(path, limit=MAX_ITEMS):
                 continue
             if ev.get("isSidechain"):
                 continue
+            # written by another window (a terminal, the desktop app), not by a `claude -p` like the studio's own
+            if t in ("user", "assistant", "system") and ev.get("entrypoint") not in (None, "sdk-cli") and \
+                    ev.get("timestamp"):
+                meta["outside"] = {"ts": ev["timestamp"], "entry": ev["entrypoint"]}
+                if ev.get("subtype") == "compact_boundary":
+                    meta["outside_compact"] = ev["timestamp"]
             if t == "system" and ev.get("subtype") == "compact_boundary":
                 items.append({"k": "note", "text": "Conversation compacted", "ts": ev.get("timestamp")})
             if t not in ("user", "assistant"):
@@ -490,6 +496,7 @@ class Live:
         self.sid, self.rid, self.root, self.model, self.mode, self.title = sid, rid, root, model, mode, title
         self.state, self.pending, self.allowed = "starting", {}, set()
         self.started, self.cost, self.error, self.queued = C.now_iso(), None, None, []
+        self.born = time.time()  # when it read the transcript: what other windows write after this, it doesn't see
         self._branch, self._replies = (0, ""), {}
         # a PR review this session is the chat of ({"pr", "n"}): its messages carry the review (reviewchat.py), and
         # each turn's reply is read for changes to it when the turn ends. _turns: what each sent message was, in order.
@@ -974,6 +981,44 @@ def resume(rid, root, sid, review=None):
     return {"id": sid, "live": True}
 
 
+def outside(l_, meta):
+    """What another window (a terminal, the desktop app) wrote to this session since its process here read it, or
+    None. The process here only reads the transcript when it starts, so it would carry on from its older copy and
+    split the session in two (each window then sees only its own half): see `fresh`."""
+    o = (meta or {}).get("outside")
+    if not (l_ and o and l_.state != "ended") or (_epoch(o["ts"]) or 0) <= l_.born:
+        return None
+    return {"ts": o["ts"], "where": {"claude-desktop": "the desktop app", "cli": "a terminal"}.get(o["entry"],
+                                                                                                 "another window"),
+            "compacted": (_epoch(meta.get("outside_compact")) or 0) > l_.born}
+
+
+def reload(rid, root, sid):
+    """Start this session's process again, so it reads what other windows added (a /compact, messages) from disk."""
+    l_ = live(sid)
+    l_._idle()
+    l_.stop()
+    resume(rid, root, sid)
+    new = live(sid)
+    for _ in range(100):  # ready once Claude Code has answered `initialize`
+        if new.state != "starting":
+            break
+        time.sleep(0.1)
+    return new
+
+
+def fresh(rid, root, sid):
+    """The live session, reloaded first when another window wrote to it since it started and it is free to restart.
+    Returns it and whether it was reloaded."""
+    l_ = live(sid)
+    if l_.state != "idle" or l_.pending or l_.queued:
+        return l_, False
+    _items, meta = read(transcript(sid, l_.root), limit=1)
+    if not outside(l_, meta):
+        return l_, False
+    return reload(rid, root, sid), True
+
+
 def live(sid):
     l_ = _LIVE.get(sid)
     if not l_:
@@ -1034,6 +1079,7 @@ def detail(rid, root, sid, limit=None):
                                                               for p in (l_.pending.values() if l_ else [])],
             "queued": [REVIEW_NOTE.sub("", _text_of(q) if isinstance(q, list) else q) for q in l_.queued] if l_ else [],
             "error": l_.error if l_ else None, "forked_from": mine.get("forked_from"),
+            "outside": outside(l_, meta),
             "review": mine.get("review"), "earlier": earlier,
             "cost": _cost(path) if path else None, "additions": meta.get("additions", 0),
             "deletions": meta.get("deletions", 0),

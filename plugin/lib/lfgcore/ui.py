@@ -712,14 +712,20 @@ def session_action(what, body):
             if what == "sess_rewind_preview":
                 return live.rewind_preview(msg)
             return live.rewind(msg, str(body.get("what") or ""))
-        if what == "sess_compact":
-            return {"status": CS.live(sid).say("/compact " + CS._one_line(body.get("focus"))[:300]
-                                               if body.get("focus") else "/compact")}
+        if what == "sess_compact":  # (reloaded first, as for a message: see CS.fresh)
+            live, reloaded = CS.fresh(rid, root, sid)
+            return {"status": live.say("/compact " + CS._one_line(body.get("focus"))[:300]
+                                       if body.get("focus") else "/compact"), "reloaded": reloaded}
+        if what == "sess_reload":
+            CS.reload(rid, root, sid)
+            return {"saved": True}
         if what == "sess_resume":
             return CS.resume(rid, root, sid)
         if what == "sess_say":
             att = body.get("attachments")
-            return {"status": CS.live(sid).say(CS._check(body.get("text"), att), att)}
+            text = CS._check(body.get("text"), att)
+            live, reloaded = CS.fresh(rid, root, sid)  # another window wrote to it: read that first, don't split it
+            return {"status": live.say(text, att), "reloaded": reloaded}
         if what == "sess_decide":
             CS.live(sid).decide(str(body.get("request") or ""), str(body.get("decision") or ""),
                                 answers=body.get("answers"), message=str(body.get("message") or ""))
