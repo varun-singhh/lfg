@@ -364,6 +364,25 @@ function inline(s, link) {
     .replace(/(^|[\s(])\*([^*]+)\*(?=[\s).,;:]|$)/g, "$1<em>$2</em>");
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
 }
+/* A code block, with Copy. A block wrapped in "--- PASTE START (where) ---" / "--- PASTE END ---" (how Claude marks
+   something to paste, which keeps it exact in a terminal) shows only what goes in, under a "Paste into" line naming
+   where; Copy takes only what goes in. */
+const PASTE_START = /^\s*-{2,}\s*PASTE START\s*(?:\((.*)\))?\s*-{2,}\s*$/i, PASTE_END = /^\s*-{2,}\s*PASTE END\s*-{2,}\s*$/i;
+function codeBlock(lines) {
+  let where = null, body = lines;
+  const s = lines.findIndex(x => x.trim()), e = lines.length - 1 - [...lines].reverse().findIndex(x => x.trim());
+  const m = s >= 0 && PASTE_START.exec(lines[s]);
+  if (m && e > s && PASTE_END.test(lines[e])) { where = m[1] || ""; body = lines.slice(s + 1, e); }
+  return `<div class="code-blk">${where !== null ? `<div class="code-h">${where ? `Paste into: ${esc(where)}` : "To paste"}</div>` : ""}<pre><code>${esc(body.join("\n"))}</code></pre><button type="button" class="code-copy" data-code-copy title="Copy this block">${icon("copy")}Copy</button></div>`;
+}
+document.addEventListener("click", async e => {  // one listener for every code block, however it was drawn
+  const b = e.target.closest && e.target.closest("[data-code-copy]");
+  const code = b && b.parentElement.querySelector("pre code");
+  if (!code) return;
+  const was = b.innerHTML;
+  try { await navigator.clipboard.writeText(code.textContent); b.textContent = "Copied"; } catch (err) { b.textContent = "Select and copy"; }
+  setTimeout(() => { b.innerHTML = was; }, 1400);
+});
 function md(text, link) {
   const L = String(text || "").replace(/\r/g, "").split("\n");
   let out = "", i = 0;
@@ -374,7 +393,7 @@ function md(text, link) {
     if (/^```/.test(l)) {
       flush(); const buf = []; i++;
       while (i < L.length && !/^```/.test(L[i])) buf.push(L[i++]);
-      i++; out += `<pre><code>${esc(buf.join("\n"))}</code></pre>`; continue;
+      i++; out += codeBlock(buf); continue;
     }
     if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < L.length && /^\s*\|?[\s:-]+\|[\s|:-]*$/.test(L[i + 1])) {
       flush();
