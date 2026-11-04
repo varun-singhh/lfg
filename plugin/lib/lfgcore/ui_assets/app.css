@@ -373,6 +373,15 @@ label.row { cursor: pointer; }
 .md pre { background: var(--pre-bg); color: var(--pre-tx); border: 1px solid var(--pre-line); border-radius: 12px; padding: 16px 20px;
   overflow: auto; font-size: 13px; line-height: 1.6; }
 .md pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+/* a code block's Copy, top right; a block to paste names where it goes above it */
+.code-blk { position: relative; margin: 12px 0; }
+.code-blk pre { margin: 0; }
+.code-h { font-size: 12px; color: var(--muted); margin: 0 0 4px 2px; }
+.code-copy { position: absolute; right: 8px; bottom: 8px; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px;
+  border: 1px solid var(--pre-line); border-radius: 6px; background: var(--pre-bg); color: var(--pre-tx); font: inherit; font-size: 12px;
+  cursor: pointer; opacity: .75; }
+.code-copy:hover, .code-copy:focus-visible { opacity: 1; }
+.code-copy .ico { width: 13px; height: 13px; }
 .md .md-table { overflow-x: auto; margin: 12px 0; }
 .md table { font-size: 13.5px; width: auto; }
 .md .md-table { border: 1px solid var(--line); border-radius: 10px; }
@@ -1120,7 +1129,6 @@ a.stk-i:hover { background: var(--hover); }
 /* the PR page's chat is redrawn as a review runs: a redraw must land at the bottom at once, not scroll down from the top */
 .rv-conv { scroll-behavior: auto; }
 /* on a review page the Copy under each reply is always there: the answer (Fixed, Partly fixed, Not fixed) is what you copy */
-.rv-conv .ss-ai .ss-msg-a { opacity: 1; }
 .ss-me { display: flex; justify-content: flex-end; padding-left: 18%; }
 .ss-bub { background: var(--blue-bg); color: var(--blue-tx, var(--text)); padding: 10px 14px; border-radius: 16px 16px 4px 16px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.55; }
 .ss-bub.skill { display: inline-flex; gap: 6px; align-items: center; font-family: var(--mono); font-size: 13px; background: var(--ai-bg); color: var(--ai-tx); }
@@ -2312,8 +2320,9 @@ body.rail .ns-n { position: absolute; top: 1px; right: 3px; min-width: 15px; hei
 
 /* ------------------------------------------------------------------ Studio: message actions, rewind, fork, attachments */
 .ss-me { position: relative; flex-direction: column; align-items: flex-end; }
-.ss-msg-a { display: flex; gap: 2px; margin-top: 4px; opacity: 0; transition: opacity .12s; }
-.ss-me:hover .ss-msg-a, .ss-me:focus-within .ss-msg-a, .ss-ai:hover .ss-msg-a, .ss-ai:focus-within .ss-msg-a { opacity: 1; }
+.ss-msg-a { display: flex; gap: 2px; margin-top: 4px; transition: opacity .12s; }  /* always there: Copy is easy to find */
+.ss-ma[data-rw], .ss-ma[data-fork] { opacity: 0; transition: opacity .12s; }  /* Rewind and Fork show on hover */
+.ss-me:hover .ss-ma, .ss-me:focus-within .ss-ma { opacity: 1; }
 .ss-ma { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 7px; border: 0; border-radius: 6px; background: none;
   color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
 .ss-ma:hover { background: var(--hover); color: var(--text); }

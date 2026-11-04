@@ -51,9 +51,34 @@ class RedrawTest(unittest.TestCase):
         self.assertNotIn("conv.dataset.html", js)
         self.assertNotIn("conv.innerHTML", draw)
 
-    def test_copy_is_always_visible_under_a_reply_on_a_review_page(self):
+    def test_copy_is_always_visible_under_every_message(self):
+        # yours and Claude's, in Studio and on a review page: only Rewind and Fork wait for hover
         css = read("app.css")
-        self.assertRegex(css, r"\.rv-conv \.ss-ai \.ss-msg-a\s*\{\s*opacity:\s*1;")
+        rule = re.search(r"\.ss-msg-a \{[^}]*\}", css).group(0)
+        self.assertNotRegex(rule, r"opacity:\s*0")
+        self.assertRegex(css, r"\.ss-ma\[data-rw\], \.ss-ma\[data-fork\] \{ opacity: 0;")
+        self.assertIn('data-ss-copy="${i}"', read("app.js"))
+
+
+class CodeBlockCopyTest(unittest.TestCase):
+    def block(self):
+        js = read("app.js")
+        return js[js.index("const PASTE_START"):js.index("function md(text, link)")]
+
+    def test_every_code_block_has_its_own_copy(self):
+        js = read("app.js")
+        self.assertIn("i++; out += codeBlock(buf); continue;", js)
+        b = self.block()
+        self.assertIn('data-code-copy title="Copy this block"', b)
+        self.assertIn('document.addEventListener("click"', b)  # one listener: works however the block was drawn
+        self.assertIn('navigator.clipboard.writeText(code.textContent)', b)
+
+    def test_a_paste_block_shows_and_copies_only_what_goes_in(self):
+        b = self.block()
+        start = re.search(r"PASTE_START = (/.*?/i)", b).group(1)
+        self.assertIn("PASTE START", start)
+        self.assertIn("body = lines.slice(s + 1, e)", b)  # the marker lines are left out of what shows and copies
+        self.assertIn("Paste into: ${esc(where)}", b)
 
 
 class SavedNoteTest(unittest.TestCase):
