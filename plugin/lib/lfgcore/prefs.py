@@ -108,10 +108,14 @@ BUILTIN = [
          "see or be able to do."),
         ("style_paste_blocks", "Put anything to paste in markers",
          "Anything you need to copy (a command, a query, a prompt for another session, a PR body) comes in a code "
-         "block between PASTE START and PASTE END, with only that inside and a line saying where it goes.",
+         "block between PASTE START and PASTE END, with only that inside and a line saying where it goes. A long "
+         "command is split over lines with a trailing \\, so it pastes into a terminal as one command.",
          "Anything I have to paste (a command, query, prompt for another session, PR body or message) goes inside a "
          "fenced code block between `--- PASTE START ---` and `--- PASTE END ---`, with nothing else between the "
-         "markers. Say where it goes."),
+         "markers. Say where it goes. A shell command too long for one line is split with a ` \\` at the end of every "
+         "line but its last (nothing after the backslash, not even a space or a comment), so it pastes into a "
+         "terminal as one command; never break a command across lines without one, since every line then runs on "
+         "its own. Several separate commands each start on their own line."),
         ("style_risky_blocks", "Say what SQL and risky commands do",
          "The PASTE START line of a query or a command that changes things names where it runs and whether it only "
          "reads or what it writes. Writes come with the row count to expect, a way to check them, and a dry run.",
