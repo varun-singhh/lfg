@@ -3582,6 +3582,16 @@ function priorGroups(prior, byId) {
 }
 const SINCE = { new: "in the new commits", missed: "missed last time" };
 const ORIGIN = { exposed: "existing bug this PR now reaches", "pre-existing": "was already there" };
+const ABOUT = { ticket: ["About the ticket", "The Linear ticket is wrong, out of date, contradicts itself or leaves something out, or the PR doesn't do part of what it asks"], description: ["About the PR description", "The PR's description says something the code doesn't do, leaves out something it does, or contradicts the ticket"] };
+/* What the PR was meant to do, as this review read it: its ticket and description, and how much of the ask it does. */
+const DELIVERS = { all: ["Does all of it", "c-green"], most: ["Does most of it", "c-yellow"], part: ["Does part of it", "c-red"], unclear: ["Can't tell", "c-gray"] };
+function intentLine(p) {
+  const it = p.intent;
+  if (!it) return "";
+  const [dl, cls] = DELIVERS[it.delivers] || DELIVERS.unclear;
+  const tk = it.ticket ? `<b>${esc(it.ticket)}</b>${it.ticket_title ? ` (${esc(it.ticket_title)})` : ""}${it.read_ticket ? "" : ' <span class="tag warn" title="The review couldn\'t read this ticket from Linear">not read</span>'}` : '<span class="tag warn">no ticket found</span>';
+  return `<div class="row wrap mt" style="gap:8px"><span class="k" style="margin:0">Against the ticket</span>${tk}<span class="chip ${cls}">${dl}</span>${it.read_description ? "" : '<span class="tag warn" title="The PR has no description, or it says nothing about what the PR does">no description</span>'}</div>${it.note ? `<p class="muted small" style="margin-top:4px">${txt(it.note)}</p>` : ""}`;
+}
 /* " together with owner/repo#n" (and the ticket) for a review that covers several PRs in one session */
 const togetherWith = j => (j.with || []).length ? ` together with ${j.with.map(esc).join(", ")}${j.ticket ? ` for ${esc(ticketName(j.ticket))}` : ""}` : "";
 function jobLine(j) {
@@ -3892,7 +3902,7 @@ function offerPass(pr, id, title, own) {
 function methodSection(m, unlocked) {
   if (!m) return "";
   const gs = methodGroups(m.sources);
-  const part = x => `<span class="mono small">${esc(x.path)}</span> ${x.missing ? '<span class="tag bad">not found</span>' : `<span class="muted small">${plural(x.found, "file")}</span>`}`;
+  const part = x => `${x.path === "builtin" ? "<b>LFG's built-in method</b>" : `<span class="mono small">${esc(x.path)}</span>`} ${x.missing ? '<span class="tag bad">not found</span>' : `<span class="muted small">${plural(x.found, "file")}</span>`}`;
   const rows = gs.map((g, gi) => {
     const xs = g.items.map(i => m.sources[i]);
     const what = g.skill && xs.length > 1 ? `<b>${esc(g.skill)}</b> skill <span class="mono small muted">${esc(g.key)}</span><ul class="parts">${xs.map(x => `<li>${part({ ...x, path: x.path.slice(g.key.length + 1) || x.path })}</li>`).join("")}</ul>` : part(xs[0]);
@@ -3901,7 +3911,7 @@ function methodSection(m, unlocked) {
   return `<details class="more mt" id="review-method"><summary><b>Review method</b> <span class="muted small">${m.own ? `your own: ${plural(gs.length, "source")}` : "LFG's built-in method"}</span></summary>
     <div class="readable"><p class="muted small">What every review here reads, in order, to decide what to look for, how serious each finding is, the score and how comments are worded. Later ones win. The repo's AGENTS.md and CLAUDE.md files are read after these and win over them.</p>
     <ul class="items box">${rows}</ul>
-    ${unlocked ? `<div class="row mt"><input type="text" id="rm-new" class="grow mono" placeholder="A file or folder, e.g. ~/.claude/skills/review-pr/SKILL.md"><button class="btn" id="rm-add">Add</button>${m.own ? '<button class="btn" id="rm-reset" title="Go back to LFG\'s built-in review method">Use LFG\'s built-in method</button>' : ""}</div><span class="save-msg" id="rm-msg"></span>` : '<p class="muted small">Run <code>${esc(unlockCmd())}</code> to change it here.</p>'}
+    ${unlocked ? `<div class="row mt"><input type="text" id="rm-new" class="grow mono" placeholder="A file or folder, e.g. ~/.claude/skills/review-pr/SKILL.md"><button class="btn" id="rm-add">Add</button>${m.own && !m.sources.some(x => x.path === "builtin") ? '<button class="btn" id="rm-builtin" title="Read LFG\'s built-in method together with your own sources. Move it up to have your sources win where they disagree">Also use LFG\'s built-in method</button>' : ""}${m.own ? '<button class="btn" id="rm-reset" title="Go back to LFG\'s built-in review method">Use LFG\'s built-in method</button>' : ""}</div><span class="save-msg" id="rm-msg"></span>` : '<p class="muted small">Run <code>${esc(unlockCmd())}</code> to change it here.</p>'}
     <p class="muted small">Read last, after everything above: <span class="mono">${esc(m.overrides)}</span> (${m.override_files.length ? plural(m.override_files.length, "file") : "empty"}).</p></div></details>`;
 }
 function wireMethod(root) {
@@ -3919,6 +3929,8 @@ function wireMethod(root) {
   const add = $("#rm-add", box), inp = $("#rm-new", box);
   if (add) add.onclick = () => { const v = inp.value.trim(); if (v) put([...cur(), v]); };
   if (inp) inp.onkeydown = e => { if (e.key === "Enter") add.onclick(); };
+  const both = $("#rm-builtin", box);
+  if (both) both.onclick = () => put(["builtin", ...cur()]);  // read first, so your own sources win where they disagree
   const reset = $("#rm-reset", box);
   if (reset) reset.onclick = () => put([]);
   if (sessionStorage.getItem("lfg.methodOpen")) { box.open = true; sessionStorage.removeItem("lfg.methodOpen"); }
@@ -4044,7 +4056,8 @@ function postBar(pr, p, live, own, unlocked, fj, carry) {
 }
 function prFinding(f, pr, unlocked, live, own) {
   const where = f.file ? `${f.file}${f.line ? ":" + f.line : ""}` : "the PR as a whole";
-  const tags = [f.since !== "first" && SINCE[f.since], ORIGIN[f.origin]].filter(Boolean).map(t => `<span class="tag">${esc(t)}</span>`).join("")
+  const tags = (ABOUT[f.about] ? `<span class="tag c-blue" title="${esc(ABOUT[f.about][1])}">${ABOUT[f.about][0]}</span>` : "")
+    + [f.since !== "first" && SINCE[f.since], ORIGIN[f.origin]].filter(Boolean).map(t => `<span class="tag">${esc(t)}</span>`).join("")
     + (f.echoes || []).map(e => `<a class="tag warn" ${e.url ? `href="${esc(e.url)}" target="_blank" rel="noopener noreferrer"` : ""} title="${esc((e.near ? "Commented within a few lines of this: " : "") + (e.said || ""))}">Also raised by ${e.bot ? "" : "@"}${esc(e.who)}${e.url ? " ↗" : ""}</a>`).join("")
     + (f.repeats || []).map(r => `<span class="tag warn" title="This Fresh eyes review didn't see earlier reviews; review ${r.pass} raised this as ${esc(r.id)}${r.status === "drop" ? " and you dropped it" : r.status === "keep" ? " and you kept it" : ""}${r.posted ? ", and it was posted" : ""}">Also in review ${r.pass} (${esc(r.id)}${r.status === "drop" ? ", dropped" : ""})</span>`).join("")
     + (f.status === "drop" && f.dropped_by === "claude" ? `<span class="tag" title="You said it wasn't needed and Claude agreed after checking the code">Claude agreed: not needed</span>` : "")
@@ -4369,7 +4382,7 @@ async function prDetail(arg) {
     ${passTabs}
     <div class="pr-split"><div class="pr-pass-body">
       <div class="panel">${verdictHero({ ...p, history: passes.map(x => ({ n: x.n, score: x.score, kind: x.kind })) }, together.length, d.gh)}<div class="row"><span class="muted">${ago(p.ts)} · reviewed at commit <span class="mono">${esc(p.head_sha.slice(0, 8))}</span>${d.gh && d.gh.head_sha && d.gh.head_sha !== p.head_sha ? ` · <span class="tag warn" title="Commits were pushed after this review. Is it fixed? checks a finding against the newest code; a re-review reads them all">PR is now at <span class="mono">${esc(d.gh.head_sha.slice(0, 8))}</span></span>` : ""}${p.imported_from ? " · imported from a session" : ""}${(p.run || {}).notes ? ` · <span class="tag" title="${esc(p.run.notes)}">with your notes</span>` : ""}</span><span class="grow"></span><button class="btn small" data-copy="${esc(prCopyText(rec, p))}" title="The summary, approach notes and every finding, as Markdown to paste to an agent">Copy summary and findings</button>${discard}</div>
-        ${p.summary ? `<p>${txt(p.summary)}</p>` : ""}
+        ${p.summary ? `<p>${txt(p.summary)}</p>` : ""}${intentLine(p)}
         ${(p.run || {}).notes ? usedNotes(p.run.notes, pr, `Your notes for review ${p.n}`) : ""}
         ${(p.approach_notes || []).length ? `<div class="k">Approach notes (not posted)</div><ul>${p.approach_notes.map(x => `<li>${txt(x)}</li>`).join("")}</ul>` : ""}
         ${p.run ? `<div class="row wrap mt">${p.run.resume ? `<button class="btn small" data-copy="${esc(p.run.resume)}" title="${esc(p.run.resume)}">Copy command to resume it in a terminal</button>` : ""}${(p.run.with || []).length ? `<span class="muted small">Reviewed together with ${p.run.with.map(x => `<a class="mono" href="#prs/${esc(x.replace("#", "/"))}">${esc(x)}</a>`).join(", ")}</span>` : ""}</div>
@@ -4402,7 +4415,7 @@ function prCopyText(rec, p) {
   const decided = { keep: "kept", drop: "dropped", pending: "not decided yet" };
   const byId = Object.fromEntries((rec.passes || []).flatMap(x => x.findings).map(x => [x.id, x]));
   const f = p.findings.map((x, i) => [`### ${i + 1}. ${x.title || x.issue || x.id} (${x.id}, ${x.severity}, ${decided[x.status] || x.status}${x.comment_url ? ", posted" : ""})`,
-    x.file ? `Where: ${x.file}${x.line ? ":" + x.line : ""}` : "Where: the PR as a whole",
+    x.file ? `Where: ${x.file}${x.line ? ":" + x.line : ""}` : ABOUT[x.about] ? `Where: ${ABOUT[x.about][0].replace("About", "in")}` : "Where: the PR as a whole",
     x.issue && x.title ? `Issue: ${x.issue}` : "", x.fix ? `Fix: ${x.fix}` : "", x.detail ? `What the review checked: ${x.detail}` : "",
     ...findingState(x), x.body ? `Comment:\n${x.body}` : "", x.comment_url ? `On GitHub: ${x.comment_url}` : "",
     (x.chat || []).length ? `#### Discussion of ${x.id}\n\n${copyChat(x.chat)}` : ""].filter(Boolean).join("\n"));
@@ -4410,7 +4423,9 @@ function prCopyText(rec, p) {
     `  Answer: ${q.answer ? String(q.answer).trim() : "not answered yet"}`].filter(Boolean).join("\n"));
   const prior = (p.prior || []).map(x => `- ${x.id}${byId[x.id] ? ` (${byId[x.id].title || byId[x.id].issue || ""})` : ""}: ${(PRIOR[x.state] || [x.state])[0]}${x.note ? ". " + x.note : ""}`);
   return [`# Review of ${rec.repo}#${rec.number}: ${rec.title || ""}`, `${rec.url || ""}\nReview ${p.n}, at commit ${p.head_sha}${p.score != null ? `, score ${p.score}` : ""}`,
-    p.summary ? `## Summary\n${p.summary}` : "", (p.approach_notes || []).length ? `## Approach notes\n${p.approach_notes.map(x => "- " + x).join("\n")}` : "",
+    p.summary ? `## Summary\n${p.summary}` : "",
+    p.intent ? `## Against the ticket\n${p.intent.ticket ? `${p.intent.ticket}${p.intent.ticket_title ? ` (${p.intent.ticket_title})` : ""}` : "No ticket found"}: ${(DELIVERS[p.intent.delivers] || DELIVERS.unclear)[0].toLowerCase()}${p.intent.note ? `. ${p.intent.note}` : ""}` : "",
+    (p.approach_notes || []).length ? `## Approach notes\n${p.approach_notes.map(x => "- " + x).join("\n")}` : "",
     (p.run || {}).notes ? `## Your notes for this review\n${p.run.notes}` : "",
     qs.length ? `## Questions (${qs.length})\n${qs.join("\n")}` : "",
     prior.length ? `## Earlier review comments (${prior.length})\n${prior.join("\n")}` : "",

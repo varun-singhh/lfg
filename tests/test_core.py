@@ -4909,6 +4909,55 @@ class ReviewTest(unittest.TestCase):
         with self.assertRaises(R.ReviewError):
             R.start("o/r", 7, method="no-such-skill")
 
+    def test_several_methods_are_read_together_with_lfgs_own_among_them(self):
+        stack = ["builtin", "~/.claude/skills/review-pr/SKILL.md", "~/.claude/skills/review-pr/checklists"]
+        self.assertEqual(R._expand("builtin"), R._expand(R.default_dir()))
+        self.assertTrue(R._expand("builtin"))
+        self.assertEqual(R.method_label(stack), "LFG's built-in method + review-pr")
+        cfg = dict(R.C.config(), review={"sources": stack})
+        with mock.patch.object(R.C, "config", return_value=cfg):
+            ms = R.method_choices()
+            self.assertEqual([(m["id"], m["saved"]) for m in ms[:2]], [("builtin", False), ("saved", True)])
+            self.assertEqual(ms[1]["sources"], stack)  # the page's default sends the whole stack
+            self.assertEqual(R.sources()["files"][:len(R._expand("builtin"))], R._expand("builtin"))  # read first
+        home = tempfile.mkdtemp()  # never the real ~/.claude/skills
+        self.addCleanup(__import__("shutil").rmtree, home, True)
+        os.makedirs(os.path.join(home, ".claude", "skills", "review-x"))
+        with open(os.path.join(home, ".claude", "skills", "review-x", "SKILL.md"), "w") as f:
+            f.write("---\nname: review-x\ndescription: Review a PR\n---\n")
+        one = dict(R.C.config(), review={"sources": ["~/.claude/skills/review-x"]})
+        with mock.patch.object(R.C, "config", return_value=one), mock.patch.object(R.C, "HOME", home):
+            self.assertNotIn("saved", [m["id"] for m in R.method_choices()])  # one skill: its own entry is the default
+
+    def test_a_review_says_what_the_pr_was_meant_to_do_and_files_ticket_problems_apart(self):
+        meta = dict(self.META, branch="dev/ato-4223-fix-export", body="Fixes the export timeout.")
+        with mock.patch.object(R, "pr_meta", return_value=meta):
+            rec = R.save("o/r", 7, {"summary": "s", "findings": [
+                self.finding(),
+                self.finding(title="The ticket blames the cache", severity="minor", file=None, line=None,
+                             about="ticket"),
+                self.finding(title="Says it adds tests; it doesn't", severity="minor", file=None, line=None,
+                             about="description")],
+                "intent": {"ticket": "ato-4223", "ticket_title": "Fix the export timeout", "read_ticket": True,
+                           "read_description": True, "delivers": "most", "note": "Does the timeout, not the retry."}})
+            p = rec["passes"][-1]
+            self.assertEqual([f["about"] for f in p["findings"]], ["code", "ticket", "description"])
+            self.assertEqual((p["intent"]["ticket"], p["intent"]["delivers"], rec["ticket"]),
+                             ("ATO-4223", "most", "ATO-4223"))
+            rec = R.save("o/r", 7, {"summary": "s", "findings": []})  # older sessions send neither: still fine
+            self.assertNotIn("intent", rec["passes"][-1])
+            for bad in ({"findings": [self.finding(about="vibes")]},
+                        {"findings": [], "intent": {"delivers": "some"}},
+                        {"findings": [], "intent": {"ticket": "not a ticket"}}):
+                with self.assertRaises(R.ReviewError):
+                    R.save("o/r", 7, dict(bad, summary="s"))
+            with mock.patch.object(R, "gh_json", return_value={"files": []}), \
+                    mock.patch.object(R, "agents_md", return_value=[]), mock.patch.object(R, "me", return_value="me"):
+                ctx = R.context("o/r", 7)
+                self.assertEqual((ctx["ticket"], ctx["description"]), ("ATO-4223", "Fixes the export timeout."))
+                with mock.patch.dict(R.os.environ, {"LFG_REVIEW_TICKET": "ATO-9"}):
+                    self.assertEqual(R.context("o/r", 7)["ticket"], "ATO-9")  # the ticket you named wins
+
     def test_notes_tell_one_review_what_to_look_into(self):
         events = [{"type": "system", "subtype": "init", "session_id": "s1"},
                   {"type": "result", "session_id": "s1",
