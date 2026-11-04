@@ -2441,7 +2441,9 @@ class ClaudeSessionsTest(unittest.TestCase):
         fake = os.path.join(self.root, "claude")
         C.write_text(fake, FAKE_CLAUDE)
         os.chmod(fake, 0o755)
-        now = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        def now():
+            return datetime.datetime.now(datetime.timezone.utc).isoformat()
         b = {"cwd": self.root, "timestamp": "2026-10-24T10:00:00Z"}
         lines = [dict(b, type="user", uuid="u1", parentUuid=None, entrypoint="cli",
                       message={"role": "user", "content": "first"}),
