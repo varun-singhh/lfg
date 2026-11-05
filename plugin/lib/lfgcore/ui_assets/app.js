@@ -4310,7 +4310,7 @@ const CHAT_ATT = /\s*\[(?:image|file): ([^\]\s]+)\]/g;
 const chatFiles = q => [...String(q || "").matchAll(CHAT_ATT)].map(m => m[1].split("/").pop());
 const chatFileChips = q => [...String(q || "").matchAll(/\[(image|file): ([^\]\s]+)\]/g)].map(([, k, path]) =>
   `<button type="button" class="ss-chip chat-file" data-chat-file="${esc(path)}" title="Open ${esc(path.split("/").pop())}">${icon(k === "image" ? "image" : "docs")}<span>${esc(path.split("/").pop())}</span></button>`).join("");
-const chatTurnOf = (x, pr, tag) => `<div class="msg you${x.queued ? " queued" : ""}">${tag || ""}<div class="bubble">${txt(String(x.q || "").replace(CHAT_ATT, "").trim())}${chatFiles(x.q).length ? `<div class="ss-att msg-files">${chatFileChips(x.q)}</div>` : ""}</div>${x.queued ? '<div class="msg-at">queued: sends when Claude answers the one before</div>' : x.at ? `<div class="msg-at">${ago(x.at)}</div>` : ""}</div>${x.queued ? "" : x.a == null ? typing(x.session) : `<div class="msg claude"><div class="who">${x.session ? `Session: ${esc(x.session)}` : "Claude"}</div><div class="bubble md">${md(x.a)}</div>${changedChips(x.changed, pr)}</div>`}`;
+const chatTurnOf = (x, pr, tag) => `<div class="msg you${x.queued ? " queued" : ""}">${tag || ""}<div class="bubble">${txt(String(x.q || "").replace(CHAT_ATT, "").trim())}${chatFiles(x.q).length ? `<div class="ss-att msg-files">${chatFileChips(x.q)}</div>` : ""}</div>${x.queued ? '<div class="msg-at">queued: sends when Claude answers the one before</div>' : x.at ? `<div class="msg-at">${msgStamp(x.at)}</div>` : ""}</div>${x.queued ? "" : x.a == null ? typing(x.session) : `<div class="msg claude"><div class="who">${x.session ? `Session: ${esc(x.session)}` : "Claude"}</div><div class="bubble md">${md(x.a)}</div>${changedChips(x.changed, pr)}</div>`}`;
 const typing = who => '<div class="msg claude"><div class="who">' + (who ? "Session: " + esc(who) : "Claude") + '</div><div class="bubble typing" aria-label="Claude is thinking"><i></i><i></i><i></i></div></div>';
 /* What a reply changed in the review, as chips that jump to the finding. */
 function changedChips(changed, pr) {
@@ -5868,7 +5868,7 @@ function ssItems(items, live, pr, chat) {
     flush(false);
     if (it.k === "me") html += `<div class="ss-me" data-i="${i}">${(it.images || []).length ? `<div class="ss-imgs">${it.images.map(m => `<button class="ss-img" data-img="${esc(m.u)}:${m.i}" data-fill data-keep="class" title="Show larger"></button>`).join("")}</div>` : ""}${ssMeText(it) ? `<div class="ss-bub">${ssMeText(it)}</div>` : ""}${ssMsgActions(it, i, chat)}</div>`;
     else if (it.k === "skill") html += `<div class="ss-me" data-i="${i}"><div class="ss-bub skill">${icon("skills")}/${esc(it.name.replace(/^\//, ""))}${it.args ? ` <span>${esc(it.args)}</span>` : ""}</div>${ssMsgActions(it, i, chat)}</div>`;
-    else if (it.k === "ai") html += `<div class="ss-ai" data-i="${i}"><span class="ss-ai-av">${icon("studio")}</span><div class="md">${md(it.text)}</div>${changedChips(it.changed, pr)}<div class="ss-msg-a"><button class="ss-ma" data-ss-copy="${i}" title="Copy this answer">${icon("copy")}Copy</button></div></div>`;
+    else if (it.k === "ai") html += `<div class="ss-ai" data-i="${i}"><span class="ss-ai-av">${icon("studio")}</span><div class="md">${md(it.text)}</div>${changedChips(it.changed, pr)}<div class="ss-msg-a"><button class="ss-ma" data-ss-copy="${i}" title="Copy this answer">${icon("copy")}Copy</button>${msgStamp(it.ts)}</div></div>`;
     else if (it.k === "note") html += `<div class="ss-note">${esc(it.text)}</div>`;
   });
   flush(true);
@@ -5896,10 +5896,19 @@ function ssMeText(it) {
   return t.trim();
 }
 /* each of your messages: Rewind to before it, Fork from before it (a new session), Copy (as in Claude Code) */
+/* When a message was sent, on the message: the time today, the date and time before that (with the year when it isn't
+   this one). Hover for the full date. */
+function msgStamp(ts) {
+  const d = ts ? new Date(ts) : null;
+  if (!d || isNaN(d)) return "";
+  const now = new Date(), time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const day = d.toDateString() === now.toDateString() ? "" : d.toLocaleDateString([], { month: "short", day: "numeric", ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) }) + ", ";
+  return `<time class="msg-ts" datetime="${esc(d.toISOString())}" title="${esc(d.toLocaleString([], { dateStyle: "full", timeStyle: "medium" }))}">${esc(day + time)}</time>`;
+}
 function ssMsgActions(it, i, chat) {
   const rw = it.u && !chat ? `<button class="ss-ma" data-rw="${esc(it.u)}" title="Undo the conversation from here, the code Claude changed since, or both">${icon("rewind")}Rewind</button>` : "";
   const fk = it.u && it.p && !chat ? `<button class="ss-ma" data-fork="${i}" title="A new session with the conversation up to here; this one stays as it is">${icon("branch")}Fork</button>` : "";
-  return `<div class="ss-msg-a">${rw}${fk}<button class="ss-ma" data-ss-copy="${i}" title="Copy">${icon("copy")}Copy</button></div>`;
+  return `<div class="ss-msg-a">${msgStamp(it.ts)}${rw}${fk}<button class="ss-ma" data-ss-copy="${i}" title="Copy">${icon("copy")}Copy</button></div>`;
 }
 const ssItemText = it => it.k === "skill" ? `/${it.name.replace(/^\//, "")}${it.args ? " " + it.args : ""}` : it.k === "tool" ? `${it.name} ${JSON.stringify(it.input || {})}` : it.k === "ai" ? copyText(it.text) : (it.text || "").replace(/\[Image #\d+\]\s?/g, "").replace(/\s*<lfg-review\b[^>]*>[\s\S]*?<\/lfg-review>\s*/g, "");
 function ssMarkdown(d) {  // Export: the conversation as Markdown, like /export

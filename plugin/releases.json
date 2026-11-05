@@ -10,18 +10,17 @@
           "text": "The Studio and PR review tabs in the sidebar and above the page now change with the repo you pick top left, so each repo shows its own sessions and PRs.",
           "page": "studio",
           "sel": "#nav .ns-body"
-        }
-      ]
-    },
-    {
-      "version": "unreleased",
-      "title": "unreleased",
-      "items": [
+        },
         {
           "title": "Plugins from your claude.ai account",
           "text": "Integrations → Claude Code plugins now says when a plugin comes from your claude.ai account or organisation, and that you change it there, instead of calling it a one-repo install.",
           "page": "integrations",
           "sel": "#plg-box"
+        },
+        {
+          "title": "When each message was sent",
+          "text": "Every message in Studio and in a PR review's chat, yours and Claude's, shows when it was sent: the time for today, the date and time for earlier days. Hover it for the full date.",
+          "page": "studio"
         }
       ]
     },

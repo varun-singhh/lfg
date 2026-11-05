@@ -6177,6 +6177,29 @@ let navs = 0; const renderNav = () => { navs++; };
 """ % (json.dumps(hash), block, calls)
         return js, json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
 
+    def test_messages_show_when_they_were_sent(self):
+        node = C.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        js = C.read_text(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js"))
+        block = js[js.index("function msgStamp(ts)"):js.index("function ssMsgActions(")]
+        script = """
+const esc = s => String(s);
+%s
+const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 5);
+const old = new Date(now.getFullYear() - 1, 0, 3, 14, 30);
+console.log(JSON.stringify({today: msgStamp(today.toISOString()), old: msgStamp(old.toISOString()), none: msgStamp(""),
+  bad: msgStamp("nope")}));
+""" % block
+        with mock.patch.dict(os.environ, {"TZ": "UTC", "LANG": "en_US.UTF-8"}):
+            out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertRegex(out["today"], r'^<time class="msg-ts" datetime="[^"]+" title="[^"]+">9:05\s?AM</time>$')
+        self.assertRegex(out["old"], r">Jan 3, \d{4}, 2:30\s?PM</time>$")  # another year: the year too
+        self.assertEqual((out["none"], out["bad"]), ("", ""))
+        self.assertIn('<div class="ss-msg-a">${msgStamp(it.ts)}', js)  # yours, in Studio and the review chat
+        self.assertIn('Copy</button>${msgStamp(it.ts)}</div>', js)  # Claude's
+        self.assertIn('<div class="msg-at">${msgStamp(x.at)}</div>', js)  # older saved review chats
+
     def test_reviews_open_as_tabs_above_the_page_and_in_the_sidebar(self):
         """Open, retitle, close the one you're on."""
         js, out = self.run_tabs("""

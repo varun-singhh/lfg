@@ -2364,6 +2364,7 @@ body.rail .ns-n { position: absolute; top: 1px; right: 3px; min-width: 15px; hei
   color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
 .ss-ma:hover { background: var(--hover); color: var(--text); }
 .ss-ma .ico { width: 13px; height: 13px; }
+.msg-ts { align-self: center; padding: 0 6px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ss-ai .ss-msg-a { margin-top: 2px; }
 .ss-busy .ss-ma[data-rw], .ss-busy .ss-ma[data-fork] { display: none; }
 .ss-rw { align-self: stretch; margin: 6px 0 2px 44px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); display: grid; gap: 10px; }
