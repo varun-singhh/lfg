@@ -59,6 +59,14 @@ After an Update, every open dashboard tab moves to the new version, not only the
 carries a fingerprint of the dashboard's files it loaded (`<meta name="lfg-build">`), and `GET /api/update` returns
 the installed one (`build`). When they differ, the tab reloads itself, or, while you're typing, shows a Reload button.
 
+## Questions for the PR's author
+
+A review asks what it couldn't settle from the code under *Questions for you*. Answer one yourself, or press **Ask
+the author on GitHub…**, edit the wording if it should read better for them, and **Post on GitHub**: inline on the
+line it's about when that line is in the diff, else as a comment on the PR. Their replies show under the question
+(read from GitHub when the page opens, at most every 2 minutes). **Use their reply as the answer** sends them to the
+review's chat, which changes the review when the reply settles something; a re-review reads them on its own.
+
 ## Code map
 
 The code map can be built, updated or rebuilt from scratch, and its docs refreshed, from the side menu, Home and Code. This uses `POST /api/save/graphs_build`, the same background job the hooks start. It needs no edit key, but it does need the same Origin, Host and header checks.

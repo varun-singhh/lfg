@@ -999,6 +999,18 @@ def _review(R, a):
             print("posted %s with %d inline comments: %s" % (out["event"], len(out["comments"]), out["posted"]["url"]))
     elif a.action == "threads":
         _print(R.threads(repo, number))
+    elif a.action == "ask":
+        if len(a.ids) != 1 or not a.pass_:
+            C.die("usage: lfg review ask <pr> <question id> --pass N [--body TEXT]", 2)
+        q = R.ask_author(repo, number, a.pass_, a.ids[0], a.body)
+        C.emit(q, a.json, lambda x: print("asked on GitHub: %s" % x["asked"]["url"]))
+    elif a.action == "replies":
+        rec = R.question_replies(repo, number, max_age=0)
+        rows = [{"pass": p["n"], "id": x["id"], "ask": x["ask"], "url": x["asked"].get("url"),
+                 "replies": x.get("replies") or []} for p, x in R.asked_questions(rec)]
+        C.emit(rows, a.json, lambda rs: [print("%d %s  %s\n  %s" % (r["pass"], r["id"], r["ask"], "\n  ".join(
+            "%s: %s" % (y["by"], y["body"][:200]) for y in r["replies"]) or "(no reply yet)")) for r in rs]
+            or (None if rs else print("no questions asked on GitHub")))
     elif a.action == "others":
         _print(R.others(repo, number))
     elif a.action == "run":
@@ -1751,7 +1763,7 @@ def main(argv=None):
     rv = sp.add_parser("review", help="PR reviews: context, save, show, list, mark, threads, remember, pass; "
                                       "post and run are yours")
     rv.add_argument("action", choices=["context", "save", "show", "list", "mark", "post", "threads", "others", "run",
-                                       "sessions", "import", "fix", "remember", "pass", "passes"])
+                                       "sessions", "import", "fix", "remember", "pass", "passes", "ask", "replies"])
     rv.add_argument("pr", nargs="?", help="PR number (repo from this checkout), owner/repo#12 or a PR URL")
     rv.add_argument("ids", nargs="*", help="mark: finding ids, e.g. 1.2 1.4")
     st = rv.add_mutually_exclusive_group()
@@ -1763,7 +1775,9 @@ def main(argv=None):
                     help="pass: don't flag this again on this PR only, on every PR in the repo, or in every repo")
     rv.add_argument("--note", help="remember: the conclusion in your words; pass: why you passed on it")
     rv.add_argument("--remove", metavar="ID", help="passes: take that pass off the list (ids: `lfg review passes`)")
-    rv.add_argument("--body", help="mark: new comment text; post: text above the inline comments")
+    rv.add_argument("--body", help="mark: new comment text; post: text above the inline comments; ask: the "
+                                   "question as the author reads it (default: as the review asked it)")
+    rv.add_argument("--pass", dest="pass_", type=int, help="ask: the review the question is from")
     rv.add_argument("--body-file")
     rv.add_argument("--file", help="save: findings JSON (default: stdin); import: the session or log to import")
     rv.add_argument("--ticket", help="save/run: the Linear ticket the PR belongs to; list: only that ticket")

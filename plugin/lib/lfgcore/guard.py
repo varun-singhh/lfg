@@ -1264,6 +1264,8 @@ def _lfg(argv):
         _block("13", "`lfg prefs set --by-user` loosens your rules; only you run it, in your own terminal", hard=True)
     if sub == "review" and "post" in rest and "--dry-run" not in argv:
         _block("2", "`lfg review post` publishes a review on GitHub; run it yourself (or use lfg ui)")
+    if sub == "review" and "ask" in rest:
+        _block("2", "`lfg review ask` posts a question on the PR on GitHub; ask it yourself (or use lfg ui)")
     if sub == "review" and "fix" in rest:
         _block("2", "`lfg review fix` commits and pushes to your PR; start it yourself (or use lfg ui)")
     if sub == "sessions" and rest[:1] in (["skill"], ["run"]):
@@ -1474,6 +1476,8 @@ SELFTEST = [
     ("Bash", {"command": "lfg review post 12 --event approve"}, True),
     ("Bash", {"command": "lfg review --event approve post 12"}, True),
     ("Bash", {"command": "lfg review post 12 --event comment --dry-run"}, False),
+    ("Bash", {"command": "lfg review ask 12 q1 --pass 1"}, True),
+    ("Bash", {"command": "lfg review replies 12"}, False),
     ("Bash", {"command": "lfg review fix 12"}, True),
     ("Bash", {"command": "lfg review mark 12 1.1 --drop"}, False),
     ("Bash", {"command": "lfg review run 12"}, True),

@@ -2594,3 +2594,11 @@ body.sg-open { overflow: hidden; }
 .ss-q-done { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--line-2); box-sizing: border-box; }
 .ss-q-tab.done .ss-q-done { border-color: var(--blue); background: var(--blue) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 12.5l4 4 8-9'/%3E%3C/svg%3E") center / 10px no-repeat; }
 .ss-q[hidden] { display: none; }
+/* a question asked on GitHub for the PR's author, and their replies */
+.pr-ask-gh { margin: 6px 0; }
+.pr-ask-gh > summary { list-style: none; display: inline-block; }
+.pr-ask-gh > summary::-webkit-details-marker { display: none; }
+.pr-ask-gh[open] > summary { margin-bottom: 6px; }
+.pr-asked { margin: 6px 0; display: grid; gap: 6px; justify-items: start; }
+.pr-gh-reply { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; width: 100%; }
+.pr-gh-reply .md p:last-child { margin-bottom: 0; }

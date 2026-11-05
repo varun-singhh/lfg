@@ -89,6 +89,11 @@ preflight: graphs
      `open`. `file_changed` and `outdated` are hints only; the code decides. Do the same for each row in
      `threads.unposted` (kept or never decided, and never posted; `fixed_in` is the commit LFG's Fix made):
      `fixed`, `ignored` or `open`, with no thread to read. Both go in `prior`.
+   - **Questions asked on GitHub.** `threads.asked` lists questions the user posted for the author, with the
+     author's `replies`. A reply is the author's answer: let it settle the findings it bears on (update or withdraw
+     them in `prior`, or file what it reveals), the same as an answer in `answered`. If it doesn't settle the
+     question, ask what is still open in `questions`, saying what the author said; never ask the same thing again
+     unchanged. No reply yet: leave it, it stays open.
    - **Settled.** `threads.settled` lists findings the user dropped on this PR, and step 4's `settled` what they
      decided before. They decided; never raise one again in any pass, in other words or at another line. Only if later
      commits made that exact problem worse, file it with `since: "new"` and say in `body` what changed since it was
@@ -114,7 +119,9 @@ preflight: graphs
    their voice (one or two sentences: why not, or what was done instead). `body` stays your own read of it.
 10. **Questions.** Anything you couldn't settle from the code, the ticket or the sources and that would change a
    finding (intent, a product decision, whether a caller exists elsewhere) goes in `questions`, at most five, each
-   with `why` it matters. Don't ask what the code can answer. `lfg review context` lists in `answered` every
+   with `why` it matters. Don't ask what the code can answer. Give `file` and `line` when a question is about one
+   place in the code: the user can post it there for the PR's author, so write `ask` so the author can answer it
+   (plain, no finding ids) and keep `why` for the user. `lfg review context` lists in `answered` every
    question the user already answered about this PR, from any earlier review: take each answer as a fact, never ask
    it again (in other words either), and let it settle the findings it bears on. Fresh eyes too: answers aren't an
    earlier review's opinion. Also check `settled.decisions` and `settled.notes` before asking; a saved one is an answer.
@@ -143,7 +150,7 @@ The file passed to `lfg review save`:
             "read_ticket": true, "read_description": true, "delivers": "all|most|part|unclear",
             "note": "one or two sentences: what the ticket asked, what the PR does of it, and what is off in either"},
  "questions": [{"ask": "is the old export endpoint still called by the mobile app?", "why": "if so, 1.2 is a blocker",
-                "costs": 12}],
+                "costs": 12, "file": "src/export.ts", "line": 88}],
  "prior": [{"id": "1.3", "state": "fixed|replied|withdrawn|resolved-unchanged|ignored|open", "note": "why"}]}
 ```
 

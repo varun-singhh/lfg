@@ -326,6 +326,13 @@ def api(view, q):
             return R.session_history(_arg(q, "id"), limit=int(_arg(q, "limit") or 20))
         except (R.ReviewError, ValueError) as e:
             return {"available": False, "why": str(e)}
+    if view == "prreplies":  # the author's replies to questions asked on GitHub (read from GitHub every 2 minutes)
+        from . import review as R
+        try:
+            rec = R.question_replies(*R.parse_pr(_arg(q, "pr")))
+        except R.ReviewError as e:
+            return {"available": False, "why": str(e)}
+        return {"questions": {"%d:%s" % (p["n"], x["id"]): x.get("replies") or [] for p, x in R.asked_questions(rec)}}
     if view in ("prreviews", "prreview", "prreviewlog", "prsnippet", "prscores"):
         from . import review as R
         from . import sessions as SS
@@ -735,6 +742,8 @@ def review_action(what, body):
             return RC.say(rid, root, repo, number, body.get("pass"), body.get("text"),
                           fid=str(body.get("finding") or ""), qid=str(body.get("question") or ""),
                           sid=str(body.get("session") or ""), attachments=body.get("attachments"))
+        if what == "review_ask":  # a question, posted on the PR for its author
+            return R.ask_author(repo, number, body.get("pass"), str(body.get("id") or ""), body.get("text"))
         if what == "review_reply":
             return R.post_reply(repo, number, str(body.get("id") or ""), body.get("body"))
         if what == "review_fix":

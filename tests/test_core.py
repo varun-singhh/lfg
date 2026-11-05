@@ -5739,6 +5739,58 @@ class ReviewTest(unittest.TestCase):
         skill = C.read_text(os.path.join(C.PLUGIN_ROOT, "skills", "review", "SKILL.md"))
         self.assertIn("`answered`", skill)
 
+    def test_a_question_is_asked_on_github_and_the_authors_reply_comes_back(self):
+        q = [{"ask": "Is the old endpoint still called?", "why": "if so 1.1 is a blocker", "file": "app.py", "line": 3},
+             {"ask": "Is this behind a flag?", "why": "w"}]
+        with mock.patch.object(R, "pr_meta", return_value=self.META):
+            R.save("o/r", 7, {"summary": "s", "findings": [self.finding()], "questions": q})
+        qs = R.load("o/r", 7)["passes"][0]["questions"]
+        self.assertEqual([(x.get("file"), x.get("line")) for x in qs], [("app.py", 3), (None, None)])
+        sent = []
+
+        def gh(args, stdin=None, **kw):
+            sent.append((args[3] if len(args) > 3 else args, json.loads(stdin) if stdin else None))
+            if "pulls/7/comments" in " ".join(args):
+                return {"id": 501, "html_url": "u1", "created_at": "2026-11-05T10:00:00Z"}
+            return {"id": 502, "html_url": "u2", "created_at": "2026-11-05T10:05:00Z"}
+        with mock.patch.object(R, "gh_json", side_effect=gh):
+            R.ask_author("o/r", 7, 1, "q1", "Is /v1/export still called by the mobile app?", lines={"app.py": {3}})
+            R.ask_author("o/r", 7, 1, "q2", "", lines={})  # no line: a PR comment, worded as the review asked it
+            with self.assertRaisesRegex(R.ReviewError, "already asked"):
+                R.ask_author("o/r", 7, 1, "q2", "again", lines={})
+        self.assertEqual(sent[0], ("repos/o/r/pulls/7/comments", {"body": "Is /v1/export still called by the mobile "
+                                   "app?", "commit_id": "a" * 40, "path": "app.py", "line": 3, "side": "RIGHT"}))
+        self.assertEqual(sent[1], ("repos/o/r/issues/7/comments", {"body": "Is this behind a flag?"}))
+        thread = [{"comments": {"nodes": [{"databaseId": 501, "author": {"login": "me"}, "body": "q", "createdAt": "a"},
+                                          {"databaseId": 9, "author": {"login": "dev"}, "body": "Yes, until v3.",
+                                           "createdAt": "2026-11-05T11:00:00Z"}]}}]
+        later = [{"id": 502, "user": {"login": "me"}, "body": "Is this behind a flag?",
+                  "created_at": "2026-11-05T10:05:00Z"},
+                 {"id": 7, "user": {"login": "dev"}, "body": "No flag.", "created_at": "2026-11-05T12:00:00Z",
+                  "html_url": "u3"},
+                 {"id": 6, "user": {"login": "dev"}, "body": "before it", "created_at": "2026-11-05T09:00:00Z"}]
+        with mock.patch.object(R, "_threads", return_value=thread), mock.patch.object(R, "me", return_value="me"), \
+                mock.patch.object(R, "gh_json", return_value=later) as g:
+            rec = R.question_replies("o/r", 7)
+            R.question_replies("o/r", 7)  # read a moment ago: GitHub isn't asked again
+        self.assertEqual(g.call_count, 1)
+        got = {q["id"]: [(r["by"], r["body"]) for r in q["replies"]] for _, q in R.asked_questions(rec)}
+        self.assertEqual(got, {"q1": [("dev", "Yes, until v3.")], "q2": [("dev", "No flag.")]})
+        self.assertEqual(ui.api("prreplies", {"pr": ["o/r#7"]})["questions"]["1:q1"][0]["body"], "Yes, until v3.")
+        # a re-review reads them, and the skill says what to do with them
+        with mock.patch.object(R, "pr_meta", return_value=self.META), \
+                mock.patch.object(R, "_threads", return_value=thread), \
+                mock.patch.object(R, "me", return_value="me"), mock.patch.object(R, "gh_json", return_value=later):
+            t = R.threads("o/r", 7)
+        self.assertEqual([(x["id"], len(x["replies"])) for x in t["asked"]], [("q1", 1), ("q2", 1)])
+        skill = C.read_text(os.path.join(C.PLUGIN_ROOT, "skills", "review", "SKILL.md"))
+        self.assertIn("`threads.asked`", skill)
+        self.assertIsNotNone(bash("lfg review ask 7 q1 --pass 1"))  # posting is yours
+        self.assertIsNone(bash("lfg review replies 7"))
+        js = C.read_text(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js"))
+        for s_ in ("data-pr-ghask", "data-pr-usereply", 'api("prreplies"'):
+            self.assertIn(s_, js)
+
     def test_a_re_review_follows_up_findings_you_never_decided_on(self):
         f = self.finding
         with mock.patch.object(R, "pr_meta", return_value=self.META):

@@ -534,7 +534,8 @@ def save(repo, number, data, ticket=None, meta=None):
         "approach_notes": [_text(x, "approach note", 4000) for x in data.get("approach_notes") or []],
         "questions": [{"id": "q%d" % k, "ask": _text(q.get("ask"), "question", 1000), "why": _text(q.get("why"), "why",
                                                                                                     1000),
-                       "answer": None, "costs": q["costs"] if q.get("costs") in (4, 12, 25) else 0}
+                       "answer": None, "costs": q["costs"] if q.get("costs") in (4, 12, 25) else 0,
+                       **_where(q)}
                       for k, q in enumerate([q for q in data.get("questions") or []
                                                                if isinstance(q, dict) and q.get("ask")][:10], 1)],
         "findings": found, "prior": prior, "posted": None, **({"intent": intent} if intent else {})})
@@ -735,9 +736,16 @@ def threads(repo, number):
                          "inline": bool(t), "resolved": bool(t and t["isResolved"]),
                          "outdated": bool(t and t["isOutdated"]), "replies": replies,
                          "file_changed": None if files is None else (f["file"] in files if f["file"] else None)})
+    try:
+        rec = question_replies(repo, number, max_age=0)
+    except ReviewError:
+        pass  # GitHub didn't answer: the replies read last time
+    asked = [{"pass": p["n"], "id": q["id"], "ask": q["ask"], "asked": q["asked"].get("body"),
+              "url": q["asked"].get("url"), "answer": q.get("answer"), "replies": q.get("replies") or []}
+             for p, q in asked_questions(rec)]
     return {"repo": repo, "number": number, "head_sha": meta["head_sha"], "last_reviewed_sha": last["head_sha"],
             "new_commits": meta["head_sha"] != last["head_sha"], "posted": rows, "unposted": unposted,
-            "settled": settled}
+            "settled": settled, "asked": asked}
 
 
 # ---------------------------------------------------------------- what the review reads
@@ -1714,6 +1722,103 @@ def _review_now(rec, p):
     return json.dumps({"pr": ref(rec["repo"], rec["number"]), "summary": p.get("summary"),
                        "findings": [{k: f.get(k) for k in ("id", "severity", "status", "title", "file", "line", "body",
                                                            "reply") if f.get(k) is not None} for f in p["findings"]]})
+
+
+def _where(q):
+    """A question's place in the code, when it has one: {"file", "line"} (both optional)."""
+    f = str(q.get("file") or "").strip()[:500]
+    line = q.get("line") if isinstance(q.get("line"), int) and q["line"] > 0 else None
+    return {k: v for k, v in (("file", f), ("line", line if f else None)) if v}
+
+
+def _question(rec, n, qid):
+    p = next((x for x in rec["passes"] if x["n"] == int(n or 0)), None)
+    qq = next((x for x in (p or {}).get("questions") or [] if x["id"] == qid), None)
+    if not qq:
+        raise ReviewError("no question %s on review %s" % (qid, n))
+    return p, qq
+
+
+# ---------------------------------------------------------------- asking the author (user-only: guard blocks agents)
+
+def ask_author(repo, number, n, qid, text=None, lines=None):
+    """Post a review's question on the PR for its author: an inline comment on the question's line when GitHub takes
+    one there, else a comment on the PR (naming the file and line). Their replies come back with `question_replies`.
+    text: the comment as you want it to read (default: the question)."""
+    rec = need(repo, number)
+    p, qq = _question(rec, n, qid)
+    if qq.get("asked"):
+        raise ReviewError("already asked on GitHub: %s" % qq["asked"].get("url"))
+    body = _text(text if str(text or "").strip() else qq["ask"], "question", 4000)
+    if qq.get("file") and qq.get("line") and lines is None:
+        lines = diff_lines(repo, rec["base"], p["head_sha"])
+    if qq.get("file") and qq.get("line") and qq["line"] in (lines or {}).get(qq["file"], ()):
+        out = gh_json(["api", "-X", "POST", "repos/%s/pulls/%d/comments" % (repo, number), "--input", "-"],
+                      stdin=json.dumps({"body": body, "commit_id": p["head_sha"], "path": qq["file"],
+                                        "line": qq["line"], "side": "RIGHT"}), timeout=60)
+        kind = "inline"
+    else:
+        where = "`%s%s`: " % (qq["file"], ":%d" % qq["line"] if qq.get("line") else "") if qq.get("file") else ""
+        out = gh_json(["api", "-X", "POST", "repos/%s/issues/%d/comments" % (repo, number), "--input", "-"],
+                      stdin=json.dumps({"body": where + body}), timeout=60)
+        kind = "comment"
+    rec = need(repo, number)
+    _, qq = _question(rec, n, qid)
+    qq["asked"] = {"kind": kind, "comment_id": out.get("id"), "url": out.get("html_url"), "body": body,
+                   "at": out.get("created_at") or C.now_iso()}
+    store(rec)
+    C.audit("review_ask", {"pr": "%s#%d" % (repo, number), "pass": int(n), "question": qid, "kind": kind})
+    return qq
+
+
+REPLIES_TTL = 120  # seconds: how long the replies read from GitHub are reused before asking again
+
+
+def asked_questions(rec):
+    """Every question asked on GitHub, in any review of the PR: [(pass, question)]."""
+    return [(p, q) for p in rec.get("passes") or [] for q in p.get("questions") or [] if q.get("asked")]
+
+
+def question_replies(repo, number, max_age=REPLIES_TTL):
+    """Read the replies to the questions asked on GitHub and keep them on each question (`replies`: who, body, at,
+    url). An inline question's replies are its thread; a PR comment's are the later PR comments by anyone but you.
+    Asks GitHub at most once every max_age seconds. Returns the record."""
+    rec = need(repo, number)
+    asked = asked_questions(rec)
+    if not asked:
+        return rec
+    now = time.time()
+    if all(now - (q["asked"].get("checked") or 0) < max_age for _, q in asked):
+        return rec
+    mine = me()
+    found = {}
+    if any(q["asked"]["kind"] == "inline" for _, q in asked):
+        for t in _threads(repo, number):
+            nodes = t["comments"]["nodes"]
+            if nodes:
+                found[nodes[0]["databaseId"]] = [{"by": (c.get("author") or {}).get("login", ""),
+                                                  "body": c["body"][:4000], "at": c["createdAt"]} for c in nodes[1:]]
+    later = []
+    if any(q["asked"]["kind"] == "comment" for _, q in asked):
+        later = [{"by": (c.get("user") or {}).get("login", ""), "body": (c.get("body") or "")[:4000],
+                  "at": c.get("created_at") or "", "url": c.get("html_url") or "", "id": c.get("id")}
+                 for c in gh_json(["api", "--paginate", "repos/%s/issues/%d/comments" % (repo, number)]) or []]
+    asks = sorted((q["asked"]["at"], q["asked"]["comment_id"]) for _, q in asked if q["asked"]["kind"] == "comment")
+    rec = need(repo, number)
+    for _, q in asked_questions(rec):
+        a = q["asked"]
+        if a["kind"] == "inline":
+            got = found.get(a["comment_id"])
+            if got is not None:
+                q["replies"] = [r for r in got if r["by"] != mine] or []
+        else:  # PR comments after it and before the next question asked this way
+            nxt = next((at for at, cid in asks if at > a["at"] and cid != a["comment_id"]), None)
+            q["replies"] = [{k: c[k] for k in ("by", "body", "at", "url")} for c in later
+                            if c["at"] > a["at"] and (not nxt or c["at"] < nxt) and c["by"] != mine
+                            and c["id"] != a["comment_id"]]
+        a["checked"] = now
+    store(rec)
+    return rec
 
 
 def record_answer(repo, number, n, qid, text):

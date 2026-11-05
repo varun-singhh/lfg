@@ -4336,6 +4336,23 @@ function replyBox(f, pr, unlocked) {
     <div class="set-actions"><button class="btn small" data-pr-reply='${esc(JSON.stringify([pr, f.id]))}' ${unlocked ? "" : "disabled"}>Post reply on GitHub</button><span class="save-msg"></span></div></div>`;
 }
 /* Questions the review couldn't settle from the code: your answer goes to its conversation, which can change it. */
+/* A question for the PR's author: post it on GitHub (inline on its line, else a PR comment), then their replies. A
+   reply can be used as your answer: it goes to the review's chat like one you typed. */
+function askAuthor(pr, p, q, unlocked) {
+  const a = q.asked;
+  if (!a) {
+    if (q.answer) return "";
+    const where = q.file && q.line ? `on ${q.file}:${q.line} if that line is in the diff, else as a comment on the PR` : "as a comment on the PR";
+    return `<details class="pr-ask-gh" data-keep="open"><summary class="btn small" title="Post this question on GitHub for the PR's author, ${esc(where)}">Ask the author on GitHub…</summary>
+      <div class="pr-compose"><textarea data-grow rows="2" data-pr-ghasktext ${unlocked ? "" : "disabled"}>${esc(q.ask)}</textarea><button class="btn small primary" data-pr-ghask='${esc(JSON.stringify([pr, p.n, q.id]))}' ${unlocked ? "" : "disabled"}>Post on GitHub</button></div>
+      <div class="muted small">Posted ${esc(where)}, as it reads above: edit it first if it needs to read better for them. Their reply shows here.</div></details>`;
+  }
+  const reps = q.replies || [];
+  const head = `<div class="muted small">${dot(reps.length ? "on" : "")}<a href="${esc(a.url || "#")}" target="_blank" rel="noopener noreferrer">Asked on GitHub ↗</a> ${a.kind === "inline" ? "on its line" : "as a PR comment"} · ${ago(a.at)}${reps.length ? "" : " · no reply yet"}</div>`;
+  const list = reps.map(r => `<div class="pr-gh-reply"><b>${esc(r.by)}</b> <span class="muted small">${ago(r.at)}</span><div class="md">${md(r.body)}</div></div>`).join("");
+  const use = reps.length && !q.answer && unlocked ? `<button class="btn small primary" data-pr-usereply='${esc(JSON.stringify([pr, p.n, q.id]))}' title="Send their reply to the review's chat as the answer: Claude changes the review if it settles something">Use their reply as the answer</button>` : "";
+  return `<div class="pr-asked">${head}${list}${use}</div>`;
+}
 function questionsBox(pr, p, unlocked) {
   const qs = p.questions || [];
   if (!qs.length) return "";
@@ -4344,7 +4361,7 @@ function questionsBox(pr, p, unlocked) {
   return `<div class="panel pr-questions"><div class="k" style="margin-top:0">${open ? `${plural(open, "question")} for you` : "Questions, answered"}</div><p class="muted small">Your answer goes to the review's chat. Claude replies here and changes the review if your answer settles something.</p>${qs.map(q => {
     const key = `q:${pr}:${p.n}:${q.id}`, waiting = pend[key];
     const said = q.answer || waiting;
-    return `<div class="pr-question" id="q-${esc(q.id)}" data-ask="${esc(q.ask)}"><div class="pr-ask">${q.costs ? `<span class="pts q-pts ${q.answer ? "off" : ""}" title="${q.answer ? `Cost ${q.costs} points until you answered it` : `This question costs ${q.costs} points until it's answered: it could become a finding that holds the merge back`}">−${q.costs}</span>` : ""}<button class="btn tiny pr-q-copy" data-copy="${esc(q.ask + (q.why ? "\n\nWhy it matters: " + q.why : ""))}" title="Copy the question, and why it matters">Copy</button>${txt(q.ask)}${q.why ? `<div class="muted small">${txt(q.why)}</div>` : ""}</div>${said
+    return `<div class="pr-question" id="q-${esc(q.id)}" data-ask="${esc(q.ask)}"><div class="pr-ask">${q.costs ? `<span class="pts q-pts ${q.answer ? "off" : ""}" title="${q.answer ? `Cost ${q.costs} points until you answered it` : `This question costs ${q.costs} points until it's answered: it could become a finding that holds the merge back`}">−${q.costs}</span>` : ""}<button class="btn tiny pr-q-copy" data-copy="${esc(q.ask + (q.why ? "\n\nWhy it matters: " + q.why : ""))}" title="Copy the question, and why it matters">Copy</button>${txt(q.ask)}${q.why ? `<div class="muted small">${txt(q.why)}</div>` : ""}${q.file ? `<div class="muted small mono">${esc(q.file)}${q.line ? ":" + esc(q.line) : ""}</div>` : ""}</div>${askAuthor(pr, p, q, unlocked)}${said
       ? `<div class="pr-chat-thread">${chatTurn({ q: said, a: waiting ? null : q.reply || (q.answer ? "" : null), changed: q.changed }, pr).replace('<div class="bubble md"></div>', '<div class="bubble md muted">Sent to the review\'s chat. Answers from before this update show their reply there.</div>')}</div>${q.answer ? rememberRow(pr, p.n, q, unlocked) : ""}`
       : `<div class="pr-compose"><textarea data-grow rows="2" data-pr-answer placeholder="Your answer" ${unlocked ? "" : "disabled"}></textarea><button class="btn small primary" data-pr-answergo='${esc(JSON.stringify([pr, p.n, q.id]))}' ${unlocked ? "" : "disabled"}>Answer</button>${((state.prSessions || {})[pr] || []).length ? `<button class="btn small" data-pr-qsession='${esc(JSON.stringify([pr, q.id]))}' ${unlocked ? "" : "disabled"} title="Ask a session about this PR, such as the one where you built it. Its answer comes back in the chat">Ask a session…</button>` : ""}</div>`}</div>`;
   }).join("")}</div>`;
@@ -4524,6 +4541,18 @@ function followRepo(full) {
   const sel = $("#repo"); if (sel) sel.value = state.repo;
   loadBranches();
 }
+/* Questions asked on GitHub: read the author's replies behind the page (GitHub is asked at most every 2 minutes), and
+   redraw when one came in. */
+const prReplying = new Set();
+function prRepliesSoon(pr, arg, rec) {
+  const asked = ((rec || {}).passes || []).flatMap(p => (p.questions || []).filter(q => q.asked && !q.answer).map(q => [p.n, q]));
+  if (!asked.length || prReplying.has(pr)) return;
+  prReplying.add(pr);
+  api("prreplies", { pr }).then(d => {
+    const now = (d && d.questions) || {};
+    if (asked.some(([n, q]) => JSON.stringify(now[`${n}:${q.id}`] || []) !== JSON.stringify(q.replies || [])) && location.hash === `#prs/${arg}`) softRoute();
+  }).catch(() => {}).finally(() => setTimeout(() => prReplying.delete(pr), 120e3));
+}
 async function prDetail(arg) {
   const m = /^([\w.-]+\/[\w.-]+)\/(\d+)$/.exec(arg);
   if (!m) return unavailable({ why: "Not a PR address." });
@@ -4533,6 +4562,8 @@ async function prDetail(arg) {
   if (d.available === false) return unavailable(d);
   prFillIn(pr, arg, d.pending);
   const rec = d.record, j = d.job;
+  (state.prRecord || (state.prRecord = {}))[pr] = rec;
+  prRepliesSoon(pr, arg, rec);
   crumbs("prs", pr);
   prTabOpen(pr, (rec && rec.title) || (d.gh && d.gh.title) || "");
   const running = j && j.status === "running";
@@ -4971,6 +5002,29 @@ function wirePrs(root) {
     };
     b.onclick = go;
     input.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } };
+  });
+  $$("[data-pr-ghask]", root).forEach(b => b.onclick = async () => {
+    const [pr, n, id] = JSON.parse(b.dataset.prGhask), input = $("[data-pr-ghasktext]", b.closest(".pr-ask-gh"));
+    const text = input.value.trim();
+    if (!text) return input.focus();
+    b.disabled = true; b.textContent = "Posting…";
+    const d = await save("review_ask", { pr, pass: n, id, text });
+    if (!d.ok) { b.disabled = false; b.textContent = "Post on GitHub"; return prefToast(d.error || d.why || "Couldn't post the question", true); }
+    prefToast("Asked on GitHub");
+    softRoute();
+  });
+  $$("[data-pr-usereply]", root).forEach(b => b.onclick = async () => {
+    const [pr, n, id] = JSON.parse(b.dataset.prUsereply), rec = (state.prRecord || {})[pr];
+    const q = rec && (rec.passes.find(x => x.n === n) || {}).questions.find(x => x.id === id);
+    if (!q || !(q.replies || []).length) return;
+    const text = `The author replied on GitHub:\n\n${q.replies.map(r => `${r.by}: ${r.body}`).join("\n\n")}`;
+    b.disabled = true; b.textContent = "Sending…";
+    const d = await save("review_answer", { repo: state.repo, pr, pass: n, id, answer: text });
+    if (!d.ok) { b.disabled = false; b.textContent = "Use their reply as the answer"; return prefToast(d.error || d.why || "Couldn't send it", true); }
+    (state.chatAbout || (state.chatAbout = {}))[pr] = ""; (state.chatTo || (state.chatTo = {}))[pr] = "";
+    if (chatMode() === "hidden") localStorage.setItem("lfg.chat", "side");
+    chatRedraw(pr);
+    softRoute();
   });
   $$("[data-pr-remember]", root).forEach(b => b.onclick = async () => {
     const [pr, n, id, to] = JSON.parse(b.dataset.prRemember);
