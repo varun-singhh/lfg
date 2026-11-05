@@ -1,12 +1,21 @@
 {
   "name": "lfg",
   "displayName": "LFG",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "An engineering pipeline for Claude Code: grill, plan, build, check, secure, review and ship from code graphs, with a safety guard. Off until you turn it on for a repo; never commits, pushes or deploys. Optional LFG Dictate: on-device speech-to-text anywhere on your Mac.",
-  "author": { "name": "Varun Singh", "url": "https://github.com/varun-singhh" },
+  "author": {
+    "name": "Varun Singh",
+    "url": "https://github.com/varun-singhh"
+  },
   "homepage": "https://github.com/varun-singhh/lfg",
   "repository": "https://github.com/varun-singhh/lfg",
   "license": "MIT",
-  "keywords": ["pipeline", "tdd", "security", "code-review", "graphs"],
+  "keywords": [
+    "pipeline",
+    "tdd",
+    "security",
+    "code-review",
+    "graphs"
+  ],
   "defaultEnabled": false
 }

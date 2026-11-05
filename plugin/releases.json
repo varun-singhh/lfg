@@ -3,7 +3,7 @@
   "releases": [
     {
       "version": "0.4.0",
-      "title": "Corrections, pinned tabs, Studio tabs and review combos",
+      "title": "Corrections, tabs, review combos and plugins",
       "items": [
         {
           "title": "Corrections",
@@ -44,8 +44,14 @@
           "sel": "[data-method-pick]"
         },
         {
+          "title": "Claude Code plugins, from LFG",
+          "text": "Integrations now lists your Claude Code plugins, each with an on/off switch that keeps it installed, and Remove. Search the marketplaces and install one, such as superpowers, without the terminal. Claude can't install plugins on its own any more: only you can.",
+          "page": "integrations",
+          "sel": "#plg-box"
+        },
+        {
           "title": "What's new, after every update",
-          "text": "This walkthrough shows once after each update. Help → What's new lists every release, and replays any of them.",
+          "text": "Updates now come as numbered releases rather than every change, and this walkthrough shows once after each one. Help → What's new lists every release and replays any of them. Settings → General → Updates switches back to every change if you prefer.",
           "page": "help",
           "sel": "#hp-news"
         }

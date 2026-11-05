@@ -3047,6 +3047,29 @@ class UpdatesTest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.co, "new.txt")))
         self.assertEqual(self.git(self.co, "rev-parse", "origin/main").strip(), self.head())  # pushed to the fork
 
+    def test_with_a_release_tag_update_brings_in_the_release_not_what_merged_after(self):
+        self.fork_commit("released.txt", "in 0.4.0")
+        self.git(self.forkwork, "tag", "v0.4.0")
+        self.git(self.forkwork, "push", "-q", "origin", "v0.4.0")
+        self.fork_commit("later.txt", "merged after the release")
+        d = self.U.check(max_age=0)
+        self.assertEqual((d["channel"], d["release"]), ("releases", {"tag": "v0.4.0", "version": "0.4.0"}))
+        self.assertEqual(d["remotes"]["origin"]["new"], 1)  # the release, not the merge after it
+        j = self.run_apply()
+        self.assertEqual(j["status"], "done", j.get("why"))
+        self.assertTrue(os.path.exists(os.path.join(self.co, "released.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.co, "later.txt")))
+        self.U._CACHE.update(ts=0, data=None)
+        self.assertEqual(self.U.check(max_age=0)["remotes"]["origin"]["new"], 0)  # nothing new until the next tag
+        with mock.patch.object(C, "config", return_value={"updates": {"channel": "main"}}):
+            self.U._CACHE.update(ts=0, data=None)
+            self.assertEqual(self.U.check(max_age=0)["remotes"]["origin"]["new"], 1)  # every merge, if you ask
+
+    def test_a_fork_with_no_release_yet_follows_main(self):
+        self.fork_commit("x.txt", "x")
+        d = self.U.check(max_age=0)
+        self.assertEqual((d["release"], d["remotes"]["origin"]["new"]), (None, 1))
+
     def test_failing_tests_undo_the_update(self):
         before = self.head()
         self.upstream_commit("tests/test_bad.py", "import unittest\nclass T(unittest.TestCase):\n"
@@ -6555,6 +6578,51 @@ class LockedNoteTest(unittest.TestCase):
         js = C.read_text(os.path.join(os.path.dirname(ui.__file__), "ui_assets", "app.js"))
         self.assertNotIn("it opens this page unlocked", js)
         self.assertIn("lfg ui --unlock --port", js)
+
+
+class ReleasePrepareTest(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.root, True)
+        os.makedirs(os.path.join(self.root, "plugin", ".claude-plugin"))
+        C.write_json(os.path.join(self.root, "plugin", ".claude-plugin", "plugin.json"), {"name": "lfg",
+                                                                                          "version": "0.4.0"})
+        C.write_json(os.path.join(self.root, "plugin", "releases.json"), {"releases": [
+            {"version": "unreleased", "title": "", "items": [{"title": "Combos", "text": "Pick a set."}]},
+            {"version": "0.4.0", "title": "Tabs", "items": [{"title": "Pin", "text": "Hover."}]}]})
+        C.write_text(os.path.join(self.root, "CHANGELOG.md"),
+                     "# Changelog\n\n## Unreleased\n\n### Added\n- Combos.\n\n## 0.4.0 (2026-11-05)\n- Tabs.\n")
+
+    def test_names_the_unreleased_notes_and_bumps_the_version(self):
+        from lfgcore import control as K
+        from lfgcore import release as RL
+        r = RL.prepare(self.root, "0.5.0", title="Combos", today="2026-12-01")
+        self.assertEqual((r["from"], r["to"], r["notes"]), ("0.4.0", "0.5.0", []))
+        self.assertEqual(C.read_json(os.path.join(self.root, "plugin", ".claude-plugin", "plugin.json"))["version"],
+                         "0.5.0")
+        rel = C.read_json(os.path.join(self.root, "plugin", "releases.json"))["releases"]
+        self.assertEqual([(x["version"], x["title"]) for x in rel], [("0.5.0", "Combos"), ("0.4.0", "Tabs")])
+        log = C.read_text(os.path.join(self.root, "CHANGELOG.md"))
+        self.assertIn("## Unreleased\n\n## 0.5.0 (2026-12-01)\n\n### Added\n- Combos.", log)
+        for bad in ("0.5.0", "0.3.9", "1.0", "v0.6.0"):
+            with self.assertRaises(ValueError):
+                RL.prepare(self.root, bad)
+        r = RL.prepare(self.root, "0.5.1", today="2026-12-02")  # nothing unreleased: it says so
+        self.assertTrue(any("no unreleased notes" in n for n in r["notes"]))
+        self.assertTrue(any("Unreleased section is empty" in n for n in r["notes"]))
+        with mock.patch.object(K.C, "PLUGIN_ROOT", os.path.join(self.root, "plugin")):
+            C.write_json(os.path.join(self.root, "plugin", "releases.json"), {"releases": [
+                {"version": "unreleased", "title": "x", "items": [{"title": "a", "text": "b"}]}]})
+            self.assertEqual(K.releases(), [])  # not released yet: never shown to users
+
+    def test_the_real_notes_are_released_and_say_what_users_see(self):
+        from lfgcore import control as K
+        rels = K.releases()
+        self.assertEqual(rels[0]["version"], C.VERSION)  # the installed version has its What's new
+        for r in rels:
+            for i in r["items"]:
+                self.assertTrue(i["title"] and i["text"], i)
+        self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(C.PLUGIN_ROOT), "CLAUDE.md")))
 
 
 class UpdatePickTest(unittest.TestCase):

@@ -1155,6 +1155,16 @@ def cmd_plugins(a):
     return 0
 
 
+def cmd_release(a):
+    from . import release as RL
+    root = C.repo_root() or os.getcwd()
+    try:
+        _print(RL.prepare(root, a.version, title=a.title or ""))
+    except ValueError as e:
+        C.die(str(e), 2)
+    return 0
+
+
 def cmd_update(a):
     from . import updates as U
     if a.action in ("apply", "fix"):
@@ -1787,6 +1797,10 @@ def main(argv=None):
     pl.add_argument("action", nargs="?", default="list", choices=["list", "install", "enable", "disable", "uninstall"])
     pl.add_argument("id", nargs="*", help="name@marketplace; list: words to search the marketplaces for")
     pl.add_argument("--json", action="store_true")
+    rl = sp.add_parser("release", help="in your LFG checkout: bump the version and name the unreleased notes after it")
+    rl.add_argument("action", choices=["prepare"])
+    rl.add_argument("version", help="e.g. 0.5.0")
+    rl.add_argument("--title", help="what the release is, in a few words (What's new shows it)")
     up = sp.add_parser("update", help="is there newer LFG (your fork, the original project)? apply installs it; fix "
                                       "has Claude fix a stopped update, then applies")
     up.add_argument("action", nargs="?", default="check", choices=["check", "apply", "fix"])
@@ -1924,6 +1938,7 @@ def main(argv=None):
             "pentest": cmd_pentest, "shipcheck": cmd_shipcheck, "watch": cmd_watch, "feedback": cmd_feedback,
             "usage": cmd_usage, "sessions": cmd_sessions, "update": cmd_update, "knowledge": cmd_knowledge,
             "prefs": cmd_prefs,
+            "release": cmd_release,
             "plugins": cmd_plugins,
             "corrections": cmd_corrections,
             "vendor": cmd_vendor,

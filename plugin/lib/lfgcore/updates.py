@@ -71,6 +71,31 @@ def _log(root, a, b, *also, n=8):
     return _lines(cp)
 
 
+TAG_RX = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+
+def channel():
+    """releases (the default): Update offers your fork's newest release, the newest v<x.y.z> tag on its main. main:
+    every commit merged to your fork's main, as before releases. A fork with no release tags yet follows main."""
+    return "main" if (C.config().get("updates") or {}).get("channel") == "main" else "releases"
+
+
+def release(root):
+    """Your fork's newest release: the highest v<x.y.z> tag that its main contains. None without one."""
+    cp = _git(root, "tag", "--merged", "origin/" + BRANCH, "--list", "v*")
+    tags = [t for t in _lines(cp) if TAG_RX.match(t)]
+    if not tags:
+        return None
+    t = max(tags, key=lambda x: tuple(int(n) for n in TAG_RX.match(x).groups()))
+    return {"tag": t, "version": t[1:]}
+
+
+def target(root):
+    """What Update brings in from your fork: its newest release, else its main."""
+    r = release(root) if channel() == "releases" else None
+    return ("refs/tags/" + r["tag"]) if r else "origin/" + BRANCH
+
+
 def _lines(cp):
     return [ln for ln in (cp.stdout or "").splitlines() if ln]
 
@@ -302,7 +327,7 @@ def check(max_age=60, fetch=True):
     remotes = [r for r in ("origin", "upstream") if _remote_url(root, r)]
     if fetch:
         for r in remotes:
-            cp = _git(root, "fetch", "-q", r, BRANCH, timeout=60)
+            cp = _git(root, "fetch", "-q", *(["--tags"] if r == "origin" else []), r, BRANCH, timeout=60)
             if cp.returncode:
                 out["errors"].append(_unreachable(r, cp))
     installed = (C.read_json(_state_path(), {}) or {}).get("installed_head") or ""
@@ -310,20 +335,22 @@ def check(max_age=60, fetch=True):
     for r in remotes:
         # Each commit counts once: upstream's are the ones your fork doesn't have yet either, so an upstream merge
         # already made on the fork shows as the fork's, not as both.
-        ref = "%s/%s" % (r, BRANCH)
+        ref = target(root) if r == "origin" else "%s/%s" % (r, BRANCH)
         also = ["origin/" + BRANCH] if r == "upstream" and "origin" in remotes else []
         url = _remote_url(root, r)
         out["remotes"][r] = {"url": url, "name": _repo_name(url), "new": _count(root, BRANCH, ref, *also),
                              "commits": _log(root, BRANCH, ref, *also)}
     out["upstream"] = pending(root, remotes)
     # against what Update builds on: main, moved up to your fork's main first when the fork is ahead
-    base = "origin/" + BRANCH if "origin" in remotes and _count(root, BRANCH, "origin/" + BRANCH) else BRANCH
+    goal = target(root) if "origin" in remotes else ""
+    base = goal if goal and _count(root, BRANCH, goal) else BRANCH
     for c in out["upstream"]:
         c["conflicts"] = _conflicts(root, c["sha"], base)
     if "upstream" in remotes:  # Skip and Later aren't part of this update; Later stays listed for another day
         keep = [c for c in out["upstream"] if c["verdict"] == "keep"]
         out["remotes"]["upstream"].update(new=len(keep), commits=["%s %s" % (c["short"], c["subject"]) for c in keep])
     out["sources"] = [r for r in ("upstream", "origin") if r in remotes and out["remotes"][r]["new"]]
+    out["channel"], out["release"] = channel(), release(root) if "origin" in remotes else None
     out["held"] = held(root)
     out["not_installed"] = _count(root, installed, BRANCH) if installed and head else 0
     out["not_installed_commits"] = _log(root, installed, BRANCH) if out["not_installed"] else []
@@ -425,12 +452,14 @@ def apply(log=print):
         if not _remote_url(root, r):
             continue
         say("Getting %s's latest" % r)
-        cp = _git(root, "fetch", "-q", r, BRANCH, timeout=120)
+        cp = _git(root, "fetch", "-q", *(["--tags"] if r == "origin" else []), r, BRANCH, timeout=120)
         if cp.returncode:
             return fail(_unreachable(r, cp))
-    if _remote_url(root, "origin") and _count(root, BRANCH, "origin/" + BRANCH):
-        say("Bringing in your fork's new commits")
-        if _git(root, "merge", "--ff-only", "-q", "origin/" + BRANCH).returncode:
+    goal = target(root) if _remote_url(root, "origin") else ""
+    if goal and _count(root, BRANCH, goal):
+        say("Bringing in %s" % ("release " + goal.split("/")[-1] if goal.startswith("refs/tags/")
+                                else "your fork's new commits"))
+        if _git(root, "merge", "--ff-only", "-q", goal).returncode:
             return fail("your checkout and your fork have both moved on; merge them by hand once")
     for x in list(_held_all(root)):
         if x["state"] == "ready" and not x["ahead"]:

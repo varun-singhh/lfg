@@ -23,6 +23,12 @@ claude plugin validate plugin         # if you have Claude Code
 
 CI runs the same checks on macOS.
 
+## Releases
+
+Changes reach users as numbered releases, not every merge: each pull request adds its notes under "unreleased" in
+`CHANGELOG.md` and `plugin/releases.json`, and a release PR (`plugin/bin/lfg release prepare <x.y.z>`) names them and
+bumps the version. Once merged, the merge commit is tagged `v<x.y.z>`. The details are in `CLAUDE.md`.
+
 ## Ground rules
 
 - **Do no harm to the user's setup.** Any write outside `~/.lfg` must go through `plugin/lib/lfgcore/claudecfg.py`, so it is backed up, recorded in the ledger and undoable, and it must only happen after the user agreed (`lfg setup` plan, `lfg enable`, `lfg add`, or the dashboard with the edit key). Add a row to the *Footprint* table in `CONTRACT.md` and a test that undo restores the file.

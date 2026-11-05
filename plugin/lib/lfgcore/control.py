@@ -305,7 +305,8 @@ def releases():
     """What's new in each release, newest first (plugin/releases.json): told to the user, one item per walkthrough
     step."""
     d = C.read_json(os.path.join(C.PLUGIN_ROOT, "releases.json"), {}) or {}
-    return [r for r in d.get("releases") or [] if isinstance(r, dict) and r.get("version") and r.get("items")]
+    return [r for r in d.get("releases") or [] if isinstance(r, dict) and r.get("items")
+            and re.match(r"^\d+\.\d+\.\d+$", str(r.get("version") or ""))]  # notes not released yet aren't shown
 
 
 def _version_state():

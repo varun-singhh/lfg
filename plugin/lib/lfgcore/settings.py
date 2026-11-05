@@ -58,6 +58,9 @@ MODELS = ("haiku", "sonnet", "opus")
 LOOPBACK_URL = re.compile(r"^http://(127\.0\.0\.1|localhost)(:\d{1,5})?/?$")
 # (dotted key, label, type, help, extra). Types: str, int (min, max), bool, choice (options), list, url.
 FIELDS = [
+    ("updates.channel", "Updates bring in", "choice", "releases (default): only numbered releases, with a What's "
+                                                      "new for each; main: every change merged to your fork's main, "
+                                                      "as soon as it lands.", ("releases", "main")),
     ("linear.team", "Linear team key", "str", "Team /inbox reads, e.g. ACME.", None),
     ("linear.workspace", "Linear workspace slug", "slug", "From linear.app/<slug>/; used for issue links.", None),
     ("headroom.mode", "Headroom mode", "choice", "cache (default) keeps earlier turns byte-identical so Claude "

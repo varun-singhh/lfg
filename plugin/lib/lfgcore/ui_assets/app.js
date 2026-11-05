@@ -779,6 +779,7 @@ const SET_GROUPS = [
   ["How LFG works", "What Claude may do, how big a change can be for each lane, and the line LFG adds to replies.", k => /^(guard|lanes|replies|graphs)\./.test(k)],
   ["Agent models", "Which Claude model each of LFG's agents uses.", k => k.startsWith("models.")],
   ["Dashboard and disk space", "", k => /^(ui|storage)\./.test(k)],
+  ["Updates", "What the Update button brings in.", k => k.startsWith("updates.")],
 ];
 const settingRow = (f, unlocked) => `<label class="set-row" for="cfg-${esc(f.key)}"><div><div class="set-label">${esc(f.label.replace(/^Model:\s*/, "").replace(/-/g, " ").replace(/^./, c => c.toUpperCase()))}</div>${f.help ? `<div class="set-help">${esc(f.help)}</div>` : ""}</div><div class="set-input">${fieldInput(f, !unlocked)}</div></label>`;
 function settingsGroups(cfg, unlocked) {

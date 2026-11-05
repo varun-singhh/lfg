@@ -4,43 +4,23 @@ All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.j
 
 ## Unreleased
 
+## 0.4.0 (2026-11-05)
+
 A repo's LFG knowledge now lives in the repo, in `.lfg/`, committed with the work, so a teammate who checks out a branch gets the same context and their additions flow back. See `docs/team-knowledge.md`.
 
 ### Added
+- **Corrections** (dashboard page, `lfg corrections`): when you correct Claude, LFG queues it (off until you switch it on). Approve one as a rule, with a why and an example, for every repo or one; merge it into a rule that already says much the same; save it to second-brain; or discard it. Only you decide; the guard blocks Claude from approving. A Stop hook in your Preferences hooks captures them.
+- **Tabs**: Studio sessions open as tabs like PR reviews, above the page and in the sidebar, and drag to reorder. **Pin** a tab, on either page, to keep it at the front.
+- **What's new**: a walkthrough of each release, once after you update, page by page; Help → What's new lists every release. Notes live in `plugin/releases.json`.
+- **Review combos**: save sets of review methods under a name and pick one in a click; the star makes one your default. The Method picker lists review skills from your installed plugins (e.g. superpowers).
+- **Claude Code plugins** (Integrations, `lfg plugins`): install from the marketplaces, turn on and off, remove; each install is undoable from the change list.
+- **Releases**: Update installs numbered releases (`v<x.y.z>` tags on your fork) instead of every merge (`updates.channel`: `releases` or `main`). `lfg release prepare <version>` cuts one.
 - `.lfg/` in each repo: runs (`runs/<run-id>/`), glossary and ADRs (`docs/`), `commands.json`, `shipcheck.json`, and the shared dev-graph nodes as one markdown file each (`nodes/<Type>/<slug>.md`). `.lfg/.gitignore` keeps machine-only files and all security reports out of git.
 - `.lfg/repo-id`: the repo id is stored once, so adding or changing a remote no longer orphans runs and docs.
 - dev-graph keeps each checkout on its own branch (`repo/<repo-id>`, `repo/<repo-id>--wt-<hash>` for worktrees); the MCP server is pinned to it.
 - `lfg knowledge sync | status | migrate [--dry-run] [--take-main-nodes]`. Sync runs in the background at session start and after every turn.
 - `lfg run use <run-id>` to pick up a teammate's run; session start offers unfinished runs on the checked-out branch.
 - `lfg run scratch`: this machine's folder for `/build` worktrees, `/spike` prototypes and `/secure audit` reports.
-
-### Changed
-- `lfg enable` no longer hides `.lfg/` from git; `lfg knowledge migrate` takes back the line older versions added.
-- New free-text issues get a short random suffix (`iss-fix-login-3f2a`) so two people's issues never merge.
-- The guard protects `.lfg/repo-id` and `.lfg/.gitignore` and blocks a recursive delete of a repo's `.lfg/`.
-- CI installs the Omnigraph CLI so the knowledge-sync tests run.
-- Headroom runs in `cache` mode by default. `token` mode rewrote earlier turns, so about one call in nine on a long session sent the whole conversation again at full price, costing more than the compression saved. A `headroom.mode` you set yourself is kept.
-- "Is it fixed?", rewriting a comment, turning a session into a review, knowledge questions and a review chat with no session start Claude with no tools, MCP servers or slash commands: about 2k tokens a call instead of about 230k.
-- Headroom runs with `--lossless`: it no longer adds retrieval markers, which switched calls between streamed and unstreamed and made about half of those switches send the whole conversation again.
-
-### Fixed
-- Runs started in a repo with no commits recorded their branch as `detached@`.
-
-### Upgrading
-Install this version first, then run `lfg knowledge migrate --dry-run` in each repo, then without `--dry-run`. Until a repo is migrated, its old runs stay in `~/.lfg` and session start says so.
-
-### Changed
-
-- Todos: **Create Linear ticket** now writes the title and description with your `/linear-ticket` skill first (a read-only Claude run with no Linear connection; `todos.ticket_skill` in config names another skill). You check and change the preview, and only **Create** plus the confirm files it. **Write it again** asks the skill for a new draft.
-- PR reviews show the notes you started a review with: on the running review, and on the finished review, with **Edit for the next review** to change or reuse them. The start buttons say "with your notes" when the notes box has text.
-- PR review chat takes any file, not only images: drop, paste or attach (paperclip) CSVs, documents, text and code files, up to 10 at a time. Files show as chips with their names, and several that can't be added say why in one message.
-
-### From upstream (varun-singhh/lfg)
-
-### Fixed
-- Clicking an option in Claude's questions could scroll the page into empty space (a black screen) and miss the click: each option's hidden checkbox was placed against the page instead of its own row, which also made the Studio page taller than the window.
-
-### Added
 - Studio's background-work panel is an accordion: the panel folds to its header (remembered in this browser), and each subagent or command is one line that opens to its details; what's open survives the page's refreshes.
 - **Claude's questions and plans in Studio**: when Claude asks (AskUserQuestion), the session shows each question with its options to pick (several for multi-select, 1-9 keys, or your own answer) and Send or Skip, instead of an Allow/Deny prompt with the raw JSON. Answers go back the way Claude Code's own picker sends them. A plan (ExitPlanMode) shows as a document with Approve plan or Keep planning (with what to change). Neither is ever auto-allowed by "Allow for this session", which used to let later questions through unanswered. Several questions in one ask show as tabs in one card (Next, Back, a tick on each answered tab), so the card stays one question tall. Answered questions show what you picked.
 - Toasts are one short line with a dot in your accent colour (red when something failed), gone after 6 seconds; the details stay in the bell. Bell icons use the accent colour too.
@@ -73,6 +53,28 @@ Install this version first, then run `lfg knowledge migrate --dry-run` in each r
 - First setup in a terminal offers to open the dashboard, which starts on Welcome.
 - Fix detection (hotspots, history, recent fixes, regression ideas) no longer counts release roll-ups like "LFG 0.3.0: … fixes" as bug fixes.
 - **/lfg:explain5**, **/lfg:review-coach**, **/lfg:suggest-tests** (and `lfg explain5`, `lfg review-coach`, `lfg suggest-tests`): quick heuristic first passes (a file in plain terms; secrets, eval, swallowed errors and queries in loops at `file:line` across the branch's changes; test ideas per function with the case each targets). The skills tell Claude to check every finding in the code before repeating it.
+
+### Changed
+- The guard blocks agents from installing, removing or switching Claude Code plugins and marketplaces, and from adding MCP servers.
+- `lfg enable` no longer hides `.lfg/` from git; `lfg knowledge migrate` takes back the line older versions added.
+- New free-text issues get a short random suffix (`iss-fix-login-3f2a`) so two people's issues never merge.
+- The guard protects `.lfg/repo-id` and `.lfg/.gitignore` and blocks a recursive delete of a repo's `.lfg/`.
+- CI installs the Omnigraph CLI so the knowledge-sync tests run.
+- Headroom runs in `cache` mode by default. `token` mode rewrote earlier turns, so about one call in nine on a long session sent the whole conversation again at full price, costing more than the compression saved. A `headroom.mode` you set yourself is kept.
+- "Is it fixed?", rewriting a comment, turning a session into a review, knowledge questions and a review chat with no session start Claude with no tools, MCP servers or slash commands: about 2k tokens a call instead of about 230k.
+- Headroom runs with `--lossless`: it no longer adds retrieval markers, which switched calls between streamed and unstreamed and made about half of those switches send the whole conversation again.
+- Todos: **Create Linear ticket** now writes the title and description with your `/linear-ticket` skill first (a read-only Claude run with no Linear connection; `todos.ticket_skill` in config names another skill). You check and change the preview, and only **Create** plus the confirm files it. **Write it again** asks the skill for a new draft.
+- PR reviews show the notes you started a review with: on the running review, and on the finished review, with **Edit for the next review** to change or reuse them. The start buttons say "with your notes" when the notes box has text.
+- PR review chat takes any file, not only images: drop, paste or attach (paperclip) CSVs, documents, text and code files, up to 10 at a time. Files show as chips with their names, and several that can't be added say why in one message.
+
+### Fixed
+- The first-run setup guide can be skipped (Skip, or Escape).
+- The install tests no longer rewrite your real `~/.claude/lfg-preferences.md`.
+- Runs started in a repo with no commits recorded their branch as `detached@`.
+- Clicking an option in Claude's questions could scroll the page into empty space (a black screen) and miss the click: each option's hidden checkbox was placed against the page instead of its own row, which also made the Studio page taller than the window.
+
+### Upgrading
+Install this version first, then run `lfg knowledge migrate --dry-run` in each repo, then without `--dry-run`. Until a repo is migrated, its old runs stay in `~/.lfg` and session start says so.
 
 ## 0.3.0 (2026-10-20)
 
