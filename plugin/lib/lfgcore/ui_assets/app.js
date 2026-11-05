@@ -1861,8 +1861,8 @@ function setupGuide(first) {
     }
     return null;
   };
-  const keys = e => {  // no way out but through; Tab stays inside the card
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); }
+  const keys = e => {  // Esc skips it, like Skip; Tab stays inside the card
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(); }
     if (e.key === "Tab") { const f = $$("button, a[href]", card); if (f.length && !card.contains(document.activeElement)) { e.preventDefault(); f[0].focus(); } }
   };
   const timer = setInterval(place, 250);
@@ -1874,10 +1874,11 @@ function setupGuide(first) {
     if (s.page && (location.hash.slice(1).split("/")[0] || "") !== s.page) location.hash = "#" + s.page;
     card.innerHTML = `<div class="sg-dots" aria-hidden="true">${SG_STEPS.map((_, k) => `<i class="${k === i ? "on" : k < i ? "done" : ""}"></i>`).join("")}</div>
       <h2 id="sg-t">${s.title}</h2><div class="sg-b">${s.body()}</div>
-      <div class="sg-a">${i ? '<button class="btn" data-sg="back">Back</button>' : ""}<span class="grow"></span><span class="muted small">${i + 1} of ${SG_STEPS.length}</span><button class="btn primary" data-sg="next">${s.next || "Next"}</button></div>`;
+      <div class="sg-a"><button class="link" data-sg="skip" title="Close the guide. The ⓘ button in the top bar opens it again.">Skip</button>${i ? '<button class="btn" data-sg="back">Back</button>' : ""}<span class="grow"></span><span class="muted small">${i + 1} of ${SG_STEPS.length}</span><button class="btn primary" data-sg="next">${s.next || "Next"}</button></div>`;
     place(); card.focus();
     if (s.live) live = s.live(card);
     const bk = $('[data-sg="back"]', card); if (bk) bk.onclick = () => show(i - 1);
+    $('[data-sg="skip"]', card).onclick = () => finish();
     $('[data-sg="next"]', card).onclick = () => i < SG_STEPS.length - 1 ? show(i + 1) : finish();
     $$("a[href^='#']", card).forEach(a => a.onclick = e => e.preventDefault());  // links are pointers here, not exits
     if (!s.target) return;
