@@ -6867,6 +6867,21 @@ function runningMsg(j) {
 /* Tabs tell each other when an update starts or ends, so none keeps offering an Update button meanwhile. */
 const updateTabs = "BroadcastChannel" in window ? new BroadcastChannel("lfg-update") : null;
 if (updateTabs) updateTabs.onmessage = () => watchUpdate();
+/* A tab left open across an Update still runs the old script (only the tab you pressed Update in reloads). When the
+   server's files differ from the ones this tab loaded, reload it: at once, or, while you're typing, from a banner. */
+const PAGE_BUILD = (document.querySelector('meta[name="lfg-build"]') || {}).content || "";
+function staleTab(d, j) {
+  if (!PAGE_BUILD || !d.build || d.build === PAGE_BUILD || (j && j.status === "running")) return false;
+  const el = document.activeElement, typing = el && /^(TEXTAREA|INPUT)$/.test(el.tagName) && el.value;
+  if (!typing) { location.reload(); return true; }
+  const box = $("#update-banner");
+  box.hidden = false;
+  box.className = "callout";
+  morph(box, `${dot("on")}LFG was updated. <button class="btn small primary" data-reload-now>Reload</button> to use the new version.`);
+  const b = $("[data-reload-now]", box);
+  if (b) b.onclick = () => location.reload();
+  return true;
+}
 async function checkUpdate(fresh) {
   const box = $("#update-banner");
   if (!box) return;
@@ -6878,6 +6893,7 @@ async function checkUpdate(fresh) {
     setTimeout(checkUpdate, 5000);
   }
   const j = d.job;
+  if (staleTab(d, j)) return;
   if (j && j.status === "running") {
     box.hidden = false;
     box.className = "callout";

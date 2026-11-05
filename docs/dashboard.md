@@ -55,6 +55,10 @@ chat stays at its end only if you were at its end. For anyone changing `app.js`:
 - Wiring runs again on elements a redraw kept: use `el.onclick = ...`, or guard `addEventListener` with
   `once(el, "what")`. Page timers go through `pageTimer(name, ms, fn)`, one pending per name.
 
+After an Update, every open dashboard tab moves to the new version, not only the one you pressed Update in. The page
+carries a fingerprint of the dashboard's files it loaded (`<meta name="lfg-build">`), and `GET /api/update` returns
+the installed one (`build`). When they differ, the tab reloads itself, or, while you're typing, shows a Reload button.
+
 ## Code map
 
 The code map can be built, updated or rebuilt from scratch, and its docs refreshed, from the side menu, Home and Code. This uses `POST /api/save/graphs_build`, the same background job the hooks start. It needs no edit key, but it does need the same Origin, Host and header checks.

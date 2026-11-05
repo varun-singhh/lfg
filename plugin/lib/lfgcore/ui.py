@@ -26,6 +26,21 @@ from . import dash
 from . import settings as S
 
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui_assets")
+
+
+def build_id():
+    """Which version of the dashboard's own files is installed: a short fingerprint of index.html, app.js and app.css.
+    Each page carries the one it loaded (meta lfg-build); a tab whose differs from the server's reloads itself, so a
+    tab left open across an Update doesn't keep running the old script."""
+    import hashlib
+    h = hashlib.sha1()
+    for name in ("index.html", "app.js", "app.css"):
+        try:
+            with open(os.path.join(ASSETS, name), "rb") as fh:
+                h.update(fh.read())
+        except OSError:
+            pass
+    return h.hexdigest()[:12]
 ASSET_TYPES = {"html": "text/html", "js": "text/javascript", "css": "text/css", "svg": "image/svg+xml"}
 
 # The dashboard itself loads nothing from outside 127.0.0.1.
@@ -217,7 +232,7 @@ def api(view, q):
             dash.forget("update")
             d = dash.in_background("update", 60, lambda: U.check(max_age=0), "checking for updates")
         # the jobs even while the check is still running, e.g. right after a restart
-        return dict(d, job=U.job(), fix=U.fix_job())
+        return dict(d, job=U.job(), fix=U.fix_job(), build=build_id())
     if view == "sessions":
         from . import sessions as SS
         return SS.listing(hidden=_arg(q, "hidden") == "1", only=_only(q), loose=_arg(q, "loose") == "1")
@@ -934,7 +949,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # make changes without `lfg ui --unlock`. Only this dashboard's own address gets the page (the Host check
             # above), and another site can't read it: browsers keep a page's content from other origins.
             page = C.read_text(os.path.join(ASSETS, "index.html")).replace(
-                "<head>", '<head>\n<meta name="lfg-key" content="%s">' % html.escape(S.edit_key()), 1)
+                "<head>", '<head>\n<meta name="lfg-key" content="%s">\n<meta name="lfg-build" content="%s">'
+                % (html.escape(S.edit_key()), build_id()), 1)
             return self._send(200, page, "text/html; charset=utf-8")
         if u.path.startswith("/assets/"):
             return self._asset(u.path[len("/assets/"):])

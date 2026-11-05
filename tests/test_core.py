@@ -1531,8 +1531,12 @@ class RepoGraphsAndWorktreesTest(unittest.TestCase):
 class RepoNameTest(unittest.TestCase):
     def test_repos_show_folder_name_not_id(self):
         from lfgcore import dash
+        import shutil
         root = tempfile.mkdtemp(prefix="lfg-test-names-")
+        self.addCleanup(shutil.rmtree, root, True)
         for rid, sub in (("api-aaaaaaaa", "one/api"), ("api-bbbbbbbb", "two/api"), ("web-cccccccc", None)):
+            if sub:
+                os.makedirs(os.path.join(root, sub))  # a repo whose folder is gone isn't listed
             st = {"repo_root": os.path.join(root, sub)} if sub else {}
             C.write_json(C.lfg_path("graphs", rid, "state.json"), st)
         with mock.patch.object(dash, "repo_ids", lambda: ["api-aaaaaaaa", "api-bbbbbbbb", "web-cccccccc"]):
@@ -6199,6 +6203,36 @@ console.log(JSON.stringify({today: msgStamp(today.toISOString()), old: msgStamp(
         self.assertIn('<div class="ss-msg-a">${msgStamp(it.ts)}', js)  # yours, in Studio and the review chat
         self.assertIn('Copy</button>${msgStamp(it.ts)}</div>', js)  # Claude's
         self.assertIn('<div class="msg-at">${msgStamp(x.at)}</div>', js)  # older saved review chats
+
+    def test_a_tab_left_open_across_an_update_reloads_itself(self):
+        import http.client
+        import threading
+        import http.server
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ui.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            def get(path):
+                c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+                c.request("GET", path, headers={"Host": "127.0.0.1", "X-LFG": "1"})
+                r = c.getresponse()
+                return r.status, r.read().decode()
+            page = get("/")[1]
+            self.assertIn('<meta name="lfg-build" content="%s">' % ui.build_id(), page)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        self.assertRegex(ui.build_id(), r"^[0-9a-f]{12}$")
+        with mock.patch.object(ui.dash, "in_background", return_value={}):
+            self.assertEqual(ui.api("update", {})["build"], ui.build_id())
+        js = C.read_text(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js"))
+        self.assertIn("if (staleTab(d, j)) return;", js)
+
+    def test_a_repo_whose_folder_is_gone_is_not_listed(self):
+        root, rid = git_repo("lfg-gone-")
+        self.assertIn(rid, [r["id"] for r in dash.repos()["repos"]])
+        import shutil
+        shutil.rmtree(root)
+        self.assertNotIn(rid, [r["id"] for r in dash.repos()["repos"]])
 
     def test_the_browser_tab_says_repo_page_and_what_is_open(self):
         node = C.which("node")

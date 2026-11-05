@@ -100,7 +100,7 @@ def repos():
     for rid in repo_ids():
         st = C.read_json(C.lfg_path("graphs", rid, "state.json"), {}) or {}
         root = st.get("repo_root")
-        if not root:  # never set up (`lfg init`), only an empty runs folder: nothing to scope pages to
+        if not root or not os.path.isdir(root):  # never set up (`lfg init`), or its folder is gone: nothing to scope to
             continue
         out.append({"id": rid, "root": root, "synced_at": st.get("synced_at"), "error": bool(st.get("last_error")),
                     "name": os.path.basename((root or "").rstrip("/")) or re.sub(r"-[0-9a-f]{8}$", "", rid),
