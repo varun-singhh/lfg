@@ -1236,6 +1236,9 @@ def _lfg(argv):
             or (sub == "dictate" and rest[:1] in (["cleanup"], ["insert"], ["shortcut"])):
         _block("13", "`lfg %s` changes your setup; run it yourself (or use lfg ui)" % " ".join(args[:2]),
                hard=True)
+    if sub == "corrections" and rest[:1] and rest[0] in ("approve", "merge", "discard", "brain", "on", "off"):
+        _block("13", "`lfg corrections %s` decides what becomes your rule; only you run it (lfg ui → Corrections)"
+               % rest[0], hard=True)
     if sub == "prefs" and "--by-user" in argv:
         _block("13", "`lfg prefs set --by-user` loosens your rules; only you run it, in your own terminal", hard=True)
     if sub == "review" and "post" in rest and "--dry-run" not in argv:
@@ -1470,6 +1473,8 @@ SELFTEST = [
     ("Bash", {"command": "rm -rf .lfg/runs/x/scratch"}, False),
     ("Edit", {"file_path": "~/.lfg/state/ledger.json"}, True),
     ("Bash", {"command": "lfg prefs set rule_1 ask --by-user"}, True),
+    ("Bash", {"command": "lfg corrections approve c-1 --text x"}, True),
+    ("Bash", {"command": "lfg corrections add \"no, use pnpm\""}, False),
     ("Bash", {"command": "git merge --ff-only origin/main"}, True),
     ("Bash", {"command": "gh repo edit o/r --default-branch main"}, True),
     ("Bash", {"command": "git config --global user.name x"}, True),

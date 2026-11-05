@@ -182,6 +182,14 @@ def api(view, q):
         return {"catalog": P.catalog(d), "defaults": P.effective(None, d), "values": P.effective(sid, d),
                 "overrides": d["sessions"].get(sid or "", {}), "session": sid, "installed": P.installed(),
                 "file": P.PREFS_MD, "sessions_with_changes": len(d["sessions"])}
+    if view == "corrections":
+        from . import corrections as CR
+        from . import prefs as P
+        pend = CR.items("pending")
+        for x in pend:
+            x["similar"] = CR.similar(x["said"] + " " + (x.get("note") or ""))
+        return {"enabled": CR.enabled(), "pending": pend, "done": CR.items("all")[:40], "rules": CR.rules(),
+                "installed": P.installed(), "file": P.PREFS_MD}
     if view == "mylibrary":
         return S.personal_library()
     if view == "myfile":
@@ -477,6 +485,27 @@ def save(what, body):
         return run_checks(_rid({"repo": [str(body.get("repo") or "")]}), body.get("run"))
     if what == "graphs_build":
         return build_graphs(body.get("repo"), body.get("what"))
+    if what in ("corr_toggle", "corr_approve", "corr_merge", "corr_discard", "corr_brain", "corr_rule_edit"):
+        from . import corrections as CR
+        from . import prefs as P
+        try:
+            if what == "corr_toggle":
+                return CR.set_enabled(bool(body.get("on")))
+            if what == "corr_approve":
+                return CR.approve(str(body.get("id") or ""), body.get("text"), title=body.get("title") or "",
+                                  why=body.get("why") or "", example=body.get("example") or "",
+                                  scope=body.get("scope") or "global")
+            if what == "corr_merge":
+                return CR.merge(str(body.get("id") or ""), str(body.get("rule") or ""), text=body.get("text") or "",
+                                why=body.get("why") or "", example=body.get("example") or "")
+            if what == "corr_brain":
+                return CR.to_brain(str(body.get("id") or ""), body.get("title") or "", body.get("text") or "")
+            if what == "corr_discard":
+                return CR.discard([str(x) for x in (body.get("ids") or [])])
+            return P.update_custom(str(body.get("id") or ""), text=body.get("text"), why=body.get("why"),
+                                   example=body.get("example"), title=body.get("title"))
+        except (ValueError, PermissionError) as e:
+            raise S.Invalid(str(e)) from None
     if what in ("pref_set", "pref_clear", "prefs_install", "pref_add", "pref_remove", "pref_remind", "pref_text"):
         from . import prefs as P
         try:

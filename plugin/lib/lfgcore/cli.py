@@ -1074,6 +1074,59 @@ def cmd_prefs(a):
     return 0
 
 
+def cmd_corrections(a):
+    from . import corrections as CR
+    act, args = a.action, list(a.args or [])
+    try:
+        if act in ("on", "off"):
+            _print(CR.set_enabled(act == "on"))
+        elif act == "status":
+            _print(CR.summary())
+        elif act == "add":
+            if not args:
+                C.die('usage: lfg corrections add "<what the user said>" [--did ...] [--note ...]', 2)
+            _print(CR.add(" ".join(args), did=a.did or "", note=a.note or ""))
+        elif act == "show":
+            if not args:
+                C.die("usage: lfg corrections show <id>", 2)
+            x = CR.get(args[0])
+            _print(dict(x, similar=CR.similar(x["said"] + " " + x.get("note", ""))))
+        elif act == "approve":
+            if not args or not a.text:
+                C.die('usage: lfg corrections approve <id> --text "<the rule>" [--title] [--why] [--example] '
+                      '[--scope global|project]', 2)
+            _print(CR.approve(args[0], a.text, title=a.title or "", why=a.why or "", example=a.example or "",
+                              scope=a.scope))
+        elif act == "merge":
+            if len(args) < 2:
+                C.die("usage: lfg corrections merge <id> <rule-id> [--text] [--why] [--example]", 2)
+            _print(CR.merge(args[0], args[1], text=a.text or "", why=a.why or "", example=a.example or ""))
+        elif act == "brain":
+            if not args:
+                C.die('usage: lfg corrections brain <id> [--title] [--text]', 2)
+            _print(CR.to_brain(args[0], a.title or "", a.text or ""))
+        elif act == "discard":
+            if not args:
+                C.die("usage: lfg corrections discard <id> [<id>…]", 2)
+            _print(CR.discard(args))
+        elif act == "rules":
+            for p in CR.rules():
+                print("%-3s %-40s %s%s" % ("on" if p["on"] else "off", p["id"], p["title"],
+                                          " (only %s)" % os.path.basename(p["repo"]) if p.get("repo") else ""))
+        else:
+            xs = CR.items("all" if a.all else "pending")
+            if a.json:
+                _print({"enabled": CR.enabled(), "items": xs})
+                return 0
+            print("Corrections are %s. %d to review." % ("on" if CR.enabled() else "off",
+                                                        len(CR.items("pending"))))
+            for x in xs:
+                print("%-11s %-10s %-11s %s" % (x["id"], x["status"], x["kind"], x["said"][:90]))
+    except ValueError as e:
+        C.die(str(e), 2)
+    return 0
+
+
 def cmd_update(a):
     from . import updates as U
     if a.action in ("apply", "fix"):
@@ -1683,10 +1736,25 @@ def main(argv=None):
     pf.add_argument("action", nargs="?", default="list",
                     choices=["list", "set", "clear", "remind", "install", "status", "hook"])
     pf.add_argument("id", nargs="?",
-                    help="set: the preference; remind: a session id; hook: session-start|prompt|pre-tool")
+                    help="set: the preference; remind: a session id; hook: session-start|prompt|pre-tool|stop")
     pf.add_argument("value", nargs="?", help="set: on/off, or one of the choices")
     pf.add_argument("--session", help="one session (its id from lfg sessions); default: the defaults")
     pf.add_argument("--by-user", action="store_true", help="allow loosening (your own terminal only)")
+    cr = sp.add_parser("corrections", help="what you correct Claude on, queued for you to turn into rules")
+    cr.add_argument("action", nargs="?", default="list",
+                    choices=["list", "show", "add", "approve", "merge", "discard", "brain", "rules", "on", "off",
+                             "status"])
+    cr.add_argument("args", nargs="*", help="show/approve/discard: the id(s); merge: id and rule id; add: the words")
+    cr.add_argument("--did", help="add: what Claude had done")
+    cr.add_argument("--note", help="add: the lesson, one sentence")
+    cr.add_argument("--text", help="approve/merge: the rule, what Claude should do from now on")
+    cr.add_argument("--title", help="approve: a short name for the rule")
+    cr.add_argument("--why", help="approve/merge: why it matters, told to Claude with the rule")
+    cr.add_argument("--example", help="approve/merge: a real time it went wrong, told to Claude with the rule")
+    cr.add_argument("--scope", default="global", choices=["global", "project"],
+                    help="approve: every repo, or only the repo it was said in")
+    cr.add_argument("--all", action="store_true", help="list: resolved ones too")
+    cr.add_argument("--json", action="store_true")
     up = sp.add_parser("update", help="is there newer LFG (your fork, the original project)? apply installs it; fix "
                                       "has Claude fix a stopped update, then applies")
     up.add_argument("action", nargs="?", default="check", choices=["check", "apply", "fix"])
@@ -1824,6 +1892,7 @@ def main(argv=None):
             "pentest": cmd_pentest, "shipcheck": cmd_shipcheck, "watch": cmd_watch, "feedback": cmd_feedback,
             "usage": cmd_usage, "sessions": cmd_sessions, "update": cmd_update, "knowledge": cmd_knowledge,
             "prefs": cmd_prefs,
+            "corrections": cmd_corrections,
             "vendor": cmd_vendor,
             "omnigraph": cmd_omnigraph, "sonar": cmd_sonar,
             "headroom": cmd_headroom,

@@ -4,7 +4,8 @@ Each preference is a switch or a pick-one choice. Defaults go into ~/.claude/lfg
 imports (`@~/.claude/lfg-preferences.md`), so every session reads them the normal way. A session can differ from the
 defaults: its changes are kept here and told to it by two hooks in ~/.claude/settings.json, on SessionStart and on each
 message. Preferences marked `enforce` are also checked by a PreToolUse hook before every command, so a session can't
-break them by mistake.
+break them by mistake. A Stop hook queues what you correct Claude on, while corrections are on
+(corrections.py).
 
 Only you can loosen a rule. `lfg prefs set` run by Claude may only make a session stricter; loosening is the
 dashboard's (with its edit key) or yours in your own terminal (`! lfg prefs set …`, which runs without hooks).
@@ -428,7 +429,14 @@ def _text(p, value, values=None):
     if p["kind"] == "number":
         return None  # shown inside the choice it belongs to
     if p["kind"] == "switch":
-        return p.get("text") if value else p.get("off_text")
+        if not value:
+            return p.get("off_text")
+        t = p.get("text")
+        if t and p.get("why"):
+            t += " Why: %s" % p["why"]
+        if t and p.get("example"):
+            t += " For example: %s" % p["example"]
+        return t
     o = next((o for o in p["options"] if o["value"] == value), None)
     t = o and o["text"]
     return t.format(**(values or {})) if t and "{" in t else t
@@ -471,8 +479,9 @@ def clear_session(session):
     return {"session": session, "cleared": True}
 
 
-def add_custom(pid, group, title, text, off_text="", default=True):
-    """One of your own rules as a switch (e.g. split out of CLAUDE.md). Instruction only, never enforced."""
+def add_custom(pid, group, title, text, off_text="", default=True, why="", example="", repo="", source=""):
+    """One of your own rules as a switch (e.g. split out of CLAUDE.md, or approved from a correction). Instruction
+    only, never enforced. why and example are told to Claude with it; repo limits it to that repo's sessions."""
     if not re.match(r"^[a-z0-9][a-z0-9_-]{1,60}$", pid or ""):
         raise ValueError("id is lowercase letters, digits, - and _")
     if pid in {b["id"] for b in BUILTIN}:
@@ -480,7 +489,36 @@ def add_custom(pid, group, title, text, off_text="", default=True):
     d = load()
     d["catalog"] = [x for x in d["catalog"] if x.get("id") != pid] + [
         {"id": pid, "group": group or "Yours", "title": title, "kind": "switch", "default": bool(default),
-         "text": text.strip(), "off_text": (off_text or "").strip(), "custom": True}]
+         "text": text.strip(), "off_text": (off_text or "").strip(), "custom": True,
+         **{k: v for k, v in (("why", str(why or "").strip()), ("example", str(example or "").strip()),
+                              ("repo", str(repo or "")), ("sources", [source] if source else [])) if v}}]
+    _save(d)
+    write_defaults_file(d)
+    return {"id": pid}
+
+
+def update_custom(pid, text=None, why=None, example=None, title=None, add_source=""):
+    """Change one of your own rules: None leaves a part as it is, "" clears why or example."""
+    d = load()
+    x = next((x for x in d["catalog"] if x.get("id") == pid), None)
+    if not x:
+        raise ValueError("%s is not one of your own rules" % pid)
+    if text is not None:
+        if not str(text).strip():
+            raise ValueError("a rule of your own needs some wording")
+        if len(str(text)) > 4000:
+            raise ValueError("keep a rule under 4000 characters")
+        x["text"] = str(text).strip()
+    if title is not None and str(title).strip():
+        x["title"] = str(title).strip()
+    for k, v in (("why", why), ("example", example)):
+        if v is not None:
+            if str(v).strip():
+                x[k] = str(v).strip()
+            else:
+                x.pop(k, None)
+    if add_source and add_source not in (x.get("sources") or []):
+        x["sources"] = list(x.get("sources") or []) + [add_source]
     _save(d)
     write_defaults_file(d)
     return {"id": pid}
@@ -499,12 +537,15 @@ def remove_custom(pid):
 
 # ---------------------------------------------------------------- what Claude reads
 
-def render(values, d, only=None, header="Your rules"):
+def render(values, d, only=None, header="Your rules", repo=None):
+    """Rules limited to one repo are left out unless repo is that repo."""
     groups = {}
     if only is not None and "rewrite_lines" in only:
         only = set(only) | {"rewrite"}
     for p in catalog(d):
         if only is not None and p["id"] not in only:
+            continue
+        if p.get("repo") and p["repo"] != repo:
             continue
         t = _text(p, values[p["id"]], values)
         if t:
@@ -765,6 +806,11 @@ def check_command(cmd, values, cwd=None):
                     return "your rule is to delete the PR's branch (%s) after merging: add --delete-branch" % head
         if base == "lfg" and argv[1:3] == ["prefs", "set"] and "--by-user" in argv:
             return "--by-user is only for your own terminal"
+        if base == "lfg" and argv[1:2] == ["corrections"] and len(argv) > 2:
+            from . import corrections as CR
+            if argv[2] in CR.USER_ONLY:
+                return "`lfg corrections %s` is yours: you decide what becomes a rule (lfg ui → Corrections, or " \
+                       "`! lfg corrections %s` in Claude Code)" % (argv[2], argv[2])
     return None
 
 
@@ -780,11 +826,15 @@ def _seen():
 
 
 def hook(event):
-    """Entry for the three hooks. Never breaks a session: on an internal error it lets the tool run."""
+    """Entry for the four hooks. Never breaks a session: on an internal error it lets the tool run."""
     data = _hook_input()
     sid = data.get("session_id") or ""
     try:
         d = load()
+        if event == "stop":
+            from . import corrections as CR
+            CR.capture(data)
+            return 0
         if event in ("session-start", "prompt"):
             # A session read the defaults file when it started. Tell it again only when something changed since:
             # its own rules (from Sessions → Rules), the defaults (from Preferences) or which of the user's own
@@ -796,15 +846,20 @@ def hook(event):
                 own = sorted(S.own_rules())
             except Exception:  # noqa: BLE001  a broken rule file must never block a session
                 own = []
+            try:
+                from . import corrections as CR
+                extra = CR.session_note(data.get("cwd") or "", effective(sid, d))
+            except Exception:  # noqa: BLE001  never block a session over it
+                extra = ""
             h = lambda t: hashlib.sha1(t.encode()).hexdigest()[:12]  # noqa: E731
-            cur = {"digest": h(note + "\0" + dflt + "\0" + ",".join(own)), "defaults": h(dflt), "note": h(note),
-                   "own": own}
+            cur = {"digest": h(note + "\0" + dflt + "\0" + ",".join(own) + "\0" + extra), "defaults": h(dflt),
+                   "note": h(note), "own": own, "extra": h(extra)}
             seen = _seen()
             prev = seen.get(sid)
             seen[sid] = cur
             C.write_json(_seen_path(), dict(list(seen.items())[-500:]))
             if event == "session-start":
-                out = note
+                out = "\n\n".join(x for x in (note, extra) if x)
             else:
                 parts = []
                 if not isinstance(prev, dict) or prev.get("digest") == cur["digest"]:
@@ -816,6 +871,9 @@ def hook(event):
                 if prev["note"] != cur["note"] or parts:
                     parts.append(note or "This session now follows the user's default rules, with no session "
                                  "changes.")
+                if prev.get("extra", cur["extra"]) != cur["extra"]:
+                    parts.append(extra or "The user's rules for this repo and the corrections queue no longer apply; "
+                                 "stop queuing corrections.")
                 added = [n for n in own if n not in prev["own"]]
                 gone = [n for n in prev["own"] if n not in own]
                 if added:
@@ -835,7 +893,9 @@ def hook(event):
             tool, ti = data.get("tool_name"), data.get("tool_input") or {}
             if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
                 p = os.path.realpath(os.path.expanduser(str(ti.get("file_path") or "")))
-                if p in (os.path.realpath(_state_path()), os.path.realpath(PREFS_MD)):
+                from . import corrections as CR
+                if p in (os.path.realpath(_state_path()), os.path.realpath(PREFS_MD),
+                         os.path.realpath(CR._path())):
                     sys.stderr.write("Blocked by your rules: %s holds your rules; change them in lfg ui → "
                                      "Preferences.\n" % p)
                     return 2
@@ -853,7 +913,7 @@ def hook(event):
 # ---------------------------------------------------------------- installing into Claude Code
 
 HOOKS = (("SessionStart", "startup|resume|clear|compact", "session-start"), ("UserPromptSubmit", None, "prompt"),
-         ("PreToolUse", "Bash|Edit|Write|MultiEdit|NotebookEdit", "pre-tool"))
+         ("PreToolUse", "Bash|Edit|Write|MultiEdit|NotebookEdit", "pre-tool"), ("Stop", None, "stop"))
 
 
 def _hook_cmd(event):
@@ -870,7 +930,7 @@ def installed():
 
 
 def install():
-    """Add the three hooks to ~/.claude/settings.json and the import line to ~/.claude/CLAUDE.md, through the change
+    """Add the four hooks to ~/.claude/settings.json and the import line to ~/.claude/CLAUDE.md, through the change
     ledger (backed up, undone by `lfg changes undo` / `lfg uninstall`)."""
     from . import claudecfg as CC
     write_defaults_file()

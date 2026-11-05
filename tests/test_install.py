@@ -23,6 +23,7 @@ from lfgcore import common as C  # noqa: E402
 from lfgcore import control as K  # noqa: E402
 from lfgcore import hooks as H  # noqa: E402
 from lfgcore import mcp as M  # noqa: E402
+from lfgcore import prefs as P  # noqa: E402
 from lfgcore import setup as SU  # noqa: E402
 
 PLUGIN = os.path.join(ROOT, "plugin")
@@ -84,6 +85,9 @@ class Sandbox(unittest.TestCase):
             mock.patch.dict(os.environ, {"HOME": self.home, "PATH": self.bin + os.pathsep + "/usr/bin:/bin",
                                          "ANTHROPIC_BASE_URL": ""}),
             mock.patch("lfgcore.graphs.spawn_background"),
+            # fixed when prefs is imported, so HOME above doesn't move it: without this, setup's rules refresh
+            # rewrites the real ~/.claude/lfg-preferences.md from the throwaway LFG_HOME's empty preferences
+            mock.patch.object(P, "PREFS_MD", os.path.join(self.home, ".claude", "lfg-preferences.md")),
         ]
         for p in self.patches:
             p.start()

@@ -25,11 +25,11 @@ FEATURES = {  # id -> what it is and the dashboard pages it adds (page keys are 
     "planning": {"name": "Planning and the code map", "description": "Issues, briefs, plans and the code graph.",
                  "skills": ["grill", "plan", "map"], "pages": ["issues", "code"]},
 }
-ALWAYS = ["prefs", "talk", "home", "studio", "sessions", "todos", "environment", "runs", "usage", "skills",
-          "integrations",
-          "settings", "help"]
-NAV_ORDER = ["prefs", "talk", "home", "studio", "sessions", "todos", "environment", "runs", "issues", "checks", "prs",
-             "code", "insights", "docs", "knowledge", "usage", "skills", "integrations", "settings", "help"]
+ALWAYS = ["prefs", "talk", "corrections", "home", "studio", "sessions", "todos", "environment", "runs", "usage",
+          "skills", "integrations", "settings", "help"]
+NAV_ORDER = ["prefs", "talk", "corrections", "home", "studio", "sessions", "todos", "environment", "runs", "issues",
+             "checks", "prs", "code", "insights", "docs", "knowledge", "usage", "skills", "integrations", "settings",
+             "help"]
 DEFAULT = ["coding"]
 
 

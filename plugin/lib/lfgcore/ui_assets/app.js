@@ -1410,7 +1410,7 @@ async function offerTours() {
 }
 
 // ------------------------------------------------------------------ pages
-const NAV = [["prefs", "Preferences"], ["talk", "How Claude talks"], ["home", "Home"], ["studio", "Studio"], ["sessions", "Sessions"], ["todos", "Todos"], ["environment", "Environment"], ["runs", "Runs"], ["issues", "Issues"], ["checks", "Checks"], ["prs", "PR reviews"], ["code", "Code"], ["insights", "Insights"], ["docs", "Docs"],
+const NAV = [["prefs", "Preferences"], ["talk", "How Claude talks"], ["corrections", "Corrections"], ["home", "Home"], ["studio", "Studio"], ["sessions", "Sessions"], ["todos", "Todos"], ["environment", "Environment"], ["runs", "Runs"], ["issues", "Issues"], ["checks", "Checks"], ["prs", "PR reviews"], ["code", "Code"], ["insights", "Insights"], ["docs", "Docs"],
   ["knowledge", "Knowledge"], ["usage", "Usage"], ["skills", "Skills"], ["integrations", "Integrations"], ["settings", "Settings"], ["help", "Help"]];
 const TITLES = Object.fromEntries(NAV);
 TITLES.onboarding = "Welcome"; TITLES.lfg = "Home";
@@ -2579,12 +2579,13 @@ PAGES.prefs = async () => {
   const [P, unlocked] = await Promise.all([api("prefs"), isUnlocked()]);
   const I = P.installed || {};
   const on = I.hooks && I.import;
-  const banner = on ? "" : `<div class="callout warn">${dot("warn")}<span><b>Your rules aren't switched on yet.</b> This adds three small hooks to <code>~/.claude/settings.json</code> (one gives each session its rules, one checks commands before they run) and one line to your CLAUDE.md that reads the rules file. Both are backed up and listed under Settings → Claude Code, where they can be undone.</span> <button class="btn small primary" id="prefs-install" ${unlocked ? "" : "disabled"}>Switch on</button></div>`;
+  const banner = on ? "" : `<div class="callout warn">${dot("warn")}<span><b>Your rules aren't switched on yet.</b> This adds four small hooks to <code>~/.claude/settings.json</code> (one gives each session its rules, one checks commands before they run, one queues your corrections while they're on) and one line to your CLAUDE.md that reads the rules file. Both are backed up and listed under Settings → Claude Code, where they can be undone.</span> <button class="btn small primary" id="prefs-install" ${unlocked ? "" : "disabled"}>Switch on</button></div>`;
   return `${head("Preferences", "Your rules for Claude. These are the defaults every new session starts with; Sessions → Rules changes them for one session. Enforced rules are checked before every command, so Claude keeps them even by mistake; the rest are instructions.")}
     ${banner}
     ${on ? `<div class="callout ok">${dot("ok")}<span><b>Changes apply to sessions already open, no restart needed.</b> Enforced rules are checked on the very next command; open sessions are told about any change with your next message to them.</span></div>` : ""}
     ${unlocked ? "" : lockedNote("change your rules here")}
-    ${prefControls({ ...P, catalog: P.catalog.filter(p => p.group !== TALK) }, P.defaults, P.defaults, null, unlocked)}
+    ${prefControls({ ...P, catalog: P.catalog.filter(p => p.group !== TALK && p.group !== CORR) }, P.defaults, P.defaults, null, unlocked)}
+    ${section(CORR, `<p class="muted">Rules you approved from your corrections have their own page: <a href="#corrections">Corrections</a>.</p>`)}
     ${section(TALK, `<p class="muted">Its rules have their own page: <a href="#talk">How Claude talks</a>.</p>`)}
     <div class="box pad mt"><div class="k" style="margin-top:0">When a change takes effect</div>
       <ul class="small"><li><b>Enforced rules</b> apply at once, in every session, open or new: the next command is checked against them.</li>
@@ -2593,6 +2594,68 @@ PAGES.prefs = async () => {
       <p class="muted small">Your defaults are written to <code>${esc(P.file)}</code>, which your CLAUDE.md reads.</p></div>`;
 };
 const TALK = "How Claude talks to you";
+const CORR = "From your corrections";
+/* Corrections: what you corrected Claude on, queued; you approve, merge or discard each. Nothing is a rule until you approve it. */
+const CORR_KIND = { said: "you said", rejected: "rejected a tool call", interrupted: "after interrupting", flagged: "Claude noticed" };
+PAGES.corrections = async () => {
+  const [D, unlocked] = await Promise.all([api("corrections"), isUnlocked()]);
+  const dis = unlocked ? "" : "disabled", I = D.installed || {};
+  const toggle = `<div class="callout ${D.enabled ? "ok" : ""}">${dot(D.enabled ? "ok" : "")}<span class="grow"><b>Corrections are ${D.enabled ? "on" : "off"}.</b> ${D.enabled ? "When you correct Claude in any session, it lands here for you to review. Claude also queues the ones that are more a feeling than a plain no." : "Turn on to queue what you correct Claude on. Rules you already approved keep working either way."}</span> <label class="row"><input type="checkbox" id="corr-on" ${D.enabled ? "checked" : ""} ${dis}> <span>${D.enabled ? "On" : "Off"}</span></label></div>`;
+  const hooks = I.hooks ? "" : `<div class="callout warn">${dot("warn")}<span><b>The hook that captures corrections isn't installed yet.</b> It is one more of your Preferences hooks in <code>~/.claude/settings.json</code>, backed up and undoable under Settings → Claude Code.</span> <button class="btn small primary" id="corr-install" ${dis}>Install</button></div>`;
+  const scopeOpts = x => `<label class="row"><input type="radio" name="scope-${esc(x.id)}" value="global" checked ${dis}> Every repo</label>${x.repo ? `<label class="row"><input type="radio" name="scope-${esc(x.id)}" value="project" ${dis}> Only ${esc(x.repo_name)}</label>` : ""}`;
+  const card = x => `<div class="box pad corr" data-corr="${esc(x.id)}">
+      <div class="row"><b class="grow">“${esc(x.said)}”</b><span class="tag">${esc(CORR_KIND[x.kind] || x.kind)}</span>${x.repo_name ? ` <span class="tag">${esc(x.repo_name)}</span>` : ""} <span class="small muted">${ago(x.at)}</span></div>
+      ${x.did ? `<p class="small muted"><b>Claude had:</b> ${esc(x.did)}</p>` : ""}
+      ${x.note ? `<p class="small"><b>Claude's read of the lesson:</b> ${esc(x.note)}</p>` : ""}
+      <p class="small muted">Caught because it ${esc(x.why || "was flagged")}.</p>
+      ${(x.similar || []).map(r => `<div class="callout small"><span class="grow">Looks like your rule <b>${esc(r.title)}</b>: ${esc(r.text)}</span> <button class="btn small" data-corr-merge="${esc(r.id)}" ${dis}>Merge into it</button></div>`).join("")}
+      <details ${x.similar && x.similar.length ? "" : "open"}><summary>Make it a rule</summary>
+        <input type="text" class="wide mt" data-f="title" placeholder="A short name, e.g. Don't ask what's already decided" ${dis}>
+        <textarea class="editor small mt" data-f="text" placeholder="What Claude should do from now on, in words it can follow" ${dis}>${esc(x.note || "")}</textarea>
+        <textarea class="editor small mt" data-f="why" placeholder="Why it matters (optional, told to Claude with the rule)" ${dis}></textarea>
+        <textarea class="editor small mt" data-f="example" placeholder="A real time it went wrong (optional), e.g. what you just said" ${dis}></textarea>
+        <div class="row mt">${scopeOpts(x)}</div>
+      </details>
+      <div class="set-actions"><button class="btn small primary" data-corr-approve ${dis}>Approve as a rule</button><button class="btn small" data-corr-brain ${dis} title="Background about you, not how Claude should work: kept as a note Claude looks up when it matters, not told to every session">Save to second-brain</button><button class="btn small" data-corr-discard ${dis}>Discard</button><span class="save-msg"></span></div></div>`;
+  const rule = r => `<div class="box pad pref" data-corr-rule="${esc(r.id)}"><div class="row"><b class="grow">${esc(r.title)}</b>${r.repo ? `<span class="tag">only ${esc(r.repo.split("/").pop())}</span>` : '<span class="tag">every repo</span>'} <span class="tag" title="How many of your corrections this rule holds">${plural((r.sources || []).length || 1, "correction")}</span>
+        <label class="row"><input type="checkbox" data-pref='${esc(JSON.stringify([r.id, ""]))}' ${r.on ? "checked" : ""} ${dis}> <span>${r.on ? "On" : "Off"}</span></label></div>
+      <div class="k">Rule</div><textarea class="editor small" data-f="text" ${dis}>${esc(r.text || "")}</textarea>
+      <div class="k">Why</div><textarea class="editor small" data-f="why" ${dis}>${esc(r.why || "")}</textarea>
+      <div class="k">Example</div><textarea class="editor small" data-f="example" ${dis}>${esc(r.example || "")}</textarea>
+      <div class="set-actions"><button class="btn small primary" data-corr-rule-save ${dis}>Save wording</button>${unlocked ? `<a href="#" class="small" data-pref-rm="${esc(r.id)}">Remove</a>` : ""}<span class="save-msg"></span></div></div>`;
+  const done = D.done.filter(x => x.status !== "pending");
+  return `${head("Corrections", "What you corrected Claude on. Nothing becomes a rule until you approve it here; approved rules go to the file your CLAUDE.md reads (or, for one repo, only to that repo's sessions), each with its own switch.")}
+    ${unlocked ? "" : lockedNote("review corrections here")}
+    ${toggle}${hooks}
+    ${section("To review", D.pending.length ? `<div class="pref-grid">${D.pending.map(card).join("")}</div>` : `<p class="muted">Nothing to review.${D.enabled ? "" : " Corrections are off."}</p>`, D.pending.length ? plural(D.pending.length, "item") : "")}
+    ${section("Your rules from corrections", D.rules.length ? `<div class="pref-grid">${D.rules.map(rule).join("")}</div>` : `<p class="muted">None yet.</p>`)}
+    ${done.length ? section("Decided", `<ul class="small">${done.map(x => `<li><b>${esc(x.status)}</b> ${ago(x.done_at || x.at)}: “${esc(x.said.slice(0, 140))}”${x.rule ? ` → <code>${esc(x.rule)}</code>` : ""}</li>`).join("")}</ul>`) : ""}`;
+};
+function wireCorrections(root) {
+  wirePrefs(root, softRoute);
+  const on = $("#corr-on", root);
+  if (on) on.onchange = async () => { const r = await save("corr_toggle", { on: on.checked }); if (!r.ok) prefToast("Not saved: " + (r.why || "error"), true); softRoute(); };
+  const inst = $("#corr-install", root);
+  if (inst) inst.onclick = async () => { inst.disabled = true; const r = await save("prefs_install", {}); if (!r.ok) { inst.disabled = false; return alertMsg(inst, r); } softRoute(); };
+  const val = (c, f) => ($(`[data-f="${f}"]`, c) || {}).value || "";
+  $$("[data-corr]", root).forEach(c => {
+    const id = c.dataset.corr, msg = $(".save-msg", c);
+    const done = (r, text) => { saidMsg(msg, r, text); if (r.ok) setTimeout(softRoute, 600); };
+    $("[data-corr-approve]", c).onclick = async () => {
+      const text = val(c, "text").trim();
+      if (!text) { $("details", c).open = true; return saidMsg(msg, { ok: false, why: "write the rule first: what Claude should do from now on" }); }
+      const scope = ($(`input[name="scope-${id}"]:checked`, c) || {}).value || "global";
+      done(await save("corr_approve", { id, text, title: val(c, "title"), why: val(c, "why"), example: val(c, "example"), scope }), "Approved. New sessions get it; open ones with your next message.");
+    };
+    $("[data-corr-discard]", c).onclick = async () => done(await save("corr_discard", { ids: [id] }), "Discarded.");
+    $("[data-corr-brain]", c).onclick = async () => done(await save("corr_brain", { id, title: val(c, "title"), text: val(c, "text") }), "Saved to your second-brain.");
+    $$("[data-corr-merge]", c).forEach(b => b.onclick = async () => done(await save("corr_merge", { id, rule: b.dataset.corrMerge, why: val(c, "why"), example: val(c, "example") }), "Merged."));
+  });
+  $$("[data-corr-rule]", root).forEach(c => {
+    const b = $("[data-corr-rule-save]", c);
+    if (b) b.onclick = async () => { const r = await save("corr_rule_edit", { id: c.dataset.corrRule, text: val(c, "text"), why: val(c, "why"), example: val(c, "example") }); saidMsg($(".save-msg", c), r, "Saved."); };
+  });
+}
 /* How Claude talks to you: each rule on its own, on or off, in the exact words Claude gets, which you can change. */
 PAGES.talk = async () => {
   const [P, unlocked] = await Promise.all([api("prefs"), isUnlocked()]);
@@ -5002,7 +5065,7 @@ function alertMsg(el, d) {
   saidMsg(m, d);
 }
 
-const NAV_GROUPS = [["Your work", ["home", "sessions", "todos", "environment", "runs", "issues", "checks", "prs"]], ["This project", ["code", "insights", "docs", "knowledge"]], ["LFG", ["prefs", "talk", "usage", "skills", "integrations", "settings", "help"]]];
+const NAV_GROUPS = [["Your work", ["home", "sessions", "todos", "environment", "runs", "issues", "checks", "prs"]], ["This project", ["code", "insights", "docs", "knowledge"]], ["LFG", ["prefs", "talk", "corrections", "usage", "skills", "integrations", "settings", "help"]]];
 /* 24px line icons, drawn for these pages (stroke = currentColor) */
 const ICON = {
   home: "M3 10.5 12 3l9 7.5M5 9v11h5v-6h4v6h5V9",
@@ -5010,6 +5073,7 @@ const ICON = {
   environment: "M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01",
   prefs: "M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M14 4v4M8 10v4M16 16v4",
   talk: "M4 5h16v10H9l-5 4zM8 9h8M8 12h5",
+  corrections: "M4 5h16v10H9l-5 4zM9 9.5l2 2 4-4",
   runs: "M5 4l14 8-14 8z",
   todos: "M4 6.5l1.5 1.5L8 5.5M4 12.5l1.5 1.5L8 11.5M4 18.5l1.5 1.5L8 17.5M11 7h9M11 13h9M11 19h9",
   studio: "M4 5h16v14H4zM7.5 10l2.5 2-2.5 2M12 15h4",
@@ -5389,6 +5453,7 @@ function wireView(key, view) {
   if (key === "knowledge") wireKnowledge(view);
   if (key === "prefs") wirePrefsPage(view);
   if (key === "talk") wireTalk(view);
+  if (key === "corrections") wireCorrections(view);
   if (key === "environment") wireEnvironment(view);
   if (key === "checks") { $$('[data-tabs="checks"] .tab', view).forEach(t => { if (once(t, "sonar")) t.addEventListener("click", () => setTimeout(() => wireSonar(view), 0)); }); wireSonar(view); }
   if (key === "onboarding") drawJourney(view);

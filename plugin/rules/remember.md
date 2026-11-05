@@ -28,7 +28,8 @@ After saving a `Decision` or `Learning`, tag it with the repo and feature it bel
 
 - The user states a decision, a constraint, a preference, or "always/never do X".
 - Work uncovers a root cause, a landmine, or a reason something is odd.
-- The user corrects you in a way that will matter next time.
+- The user corrects you in a way that will matter next time. When corrections are on (the session is told so at the
+  start), queue it with `lfg corrections add` instead of offering it here: the user reviews it on the Corrections page.
 - The user asks to remember, note or save something: that is `/note`, run it.
 
 Offer at a natural pause (the end of your reply or of a stage), not mid-task. At most 3 items per offer. Don't offer again what the user skipped in this session.
