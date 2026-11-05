@@ -1203,6 +1203,8 @@ def analyze_bash(cmd, depth=0):
             _strix(argv)
         elif base == "lfg":
             _lfg(argv)
+        elif base == "claude":
+            _claude_cli(argv)
         elif base == "find" and any(a in ("-exec", "-execdir", "-ok", "-okdir") for a in argv):
             for j, a in enumerate(argv):  # `find ... -exec <command> {} \\;`: the command runs once per match
                 if a in ("-exec", "-execdir", "-ok", "-okdir"):
@@ -1224,6 +1226,23 @@ def analyze_bash(cmd, depth=0):
 
 
 LFG_USER_ONLY = {"setup", "enable", "disable", "uninstall", "add", "remove"}
+CLAUDE_PLUGIN_WRITES = {"install", "i", "uninstall", "remove", "enable", "disable", "update", "configure", "prune",
+                        "autoremove", "add"}
+
+
+def _claude_cli(argv):
+    """Installing, removing or switching Claude Code plugins and marketplaces, and adding MCP servers, change every
+    session's code; they are the user's (Integrations → Plugins, or their own terminal)."""
+    args = [a for a in argv[1:] if not a.startswith("-")]
+    if args[:1] in (["plugin"], ["plugins"]):
+        rest = args[1:]
+        if rest[:1] == ["marketplace"]:
+            rest = rest[1:]
+        if rest[:1] and rest[0] in CLAUDE_PLUGIN_WRITES:
+            _block("13", "`claude %s` changes the plugins every session loads; you do it (lfg ui → Integrations → "
+                         "Claude Code plugins, or your own terminal)" % " ".join(args[:3]), hard=True)
+    if args[:1] == ["mcp"] and args[1:2] and args[1] in ("add", "add-json", "add-from-claude-desktop", "remove"):
+        _block("13", "`claude mcp %s` changes the MCP servers every session loads; you do it" % args[1], hard=True)
 
 
 def _lfg(argv):
@@ -1239,6 +1258,8 @@ def _lfg(argv):
     if sub == "corrections" and rest[:1] and rest[0] in ("approve", "merge", "discard", "brain", "on", "off"):
         _block("13", "`lfg corrections %s` decides what becomes your rule; only you run it (lfg ui → Corrections)"
                % rest[0], hard=True)
+    if sub == "plugins" and rest[:1] and rest[0] in ("install", "enable", "disable", "uninstall"):
+        _block("13", "`lfg plugins %s` changes the plugins every session loads; only you run it" % rest[0], hard=True)
     if sub == "prefs" and "--by-user" in argv:
         _block("13", "`lfg prefs set --by-user` loosens your rules; only you run it, in your own terminal", hard=True)
     if sub == "review" and "post" in rest and "--dry-run" not in argv:
@@ -1473,6 +1494,11 @@ SELFTEST = [
     ("Bash", {"command": "rm -rf .lfg/runs/x/scratch"}, False),
     ("Edit", {"file_path": "~/.lfg/state/ledger.json"}, True),
     ("Bash", {"command": "lfg prefs set rule_1 ask --by-user"}, True),
+    ("Bash", {"command": "claude plugin install superpowers@claude-plugins-official"}, True),
+    ("Bash", {"command": "claude plugin marketplace add some/repo"}, True),
+    ("Bash", {"command": "claude plugin list --json"}, False),
+    ("Bash", {"command": "lfg plugins install x@y"}, True),
+    ("Bash", {"command": "lfg plugins"}, False),
     ("Bash", {"command": "lfg corrections approve c-1 --text x"}, True),
     ("Bash", {"command": "lfg corrections add \"no, use pnpm\""}, False),
     ("Bash", {"command": "git merge --ff-only origin/main"}, True),

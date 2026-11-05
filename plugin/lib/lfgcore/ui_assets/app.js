@@ -1004,7 +1004,48 @@ async function integrationsPage() {
   state.settings = Object.assign(state.settings || {}, { cfg, unlocked });
   return `${head("Integrations", "The tools LFG works with. Turn one on and its settings appear on its card; everything installs locally and can be turned off again.")}
     ${unlocked ? "" : lockedNote("change anything")}
-    <span class="save-msg" id="int-msg"></span><div id="int-box" data-fill><div class="loading">Checking each integration…</div></div>`;
+    <span class="save-msg" id="int-msg"></span><div id="int-box" data-fill><div class="loading">Checking each integration…</div></div>
+    ${section("Claude Code plugins", `<p class="muted">Plugins add skills, agents and tools to every Claude Code session, from the marketplaces Claude Code knows. Install one here and turn it on or off without removing it; each change is listed under Settings → Claude Code, where it can be undone.</p><div id="plg-box" data-fill><div class="loading">Asking Claude Code for its plugins…</div></div>`)}`;
+}
+/* Integrations → Claude Code plugins: what's installed (on/off, remove), suggestions, and a search of the marketplaces.
+   Drawn on its own, not with the integrations above (those redraw every 2 seconds while one installs). */
+async function loadPlugins(fresh) {
+  const box = $("#plg-box");
+  if (!box) return;
+  const q = state.plgQ || "", dis = (state.settings || {}).unlocked ? "" : "disabled";
+  const d = await api("plugins", { q, fresh: fresh ? "1" : "" });
+  if (!$("#plg-box")) return;
+  if (d.available === false) { box.innerHTML = unavailable(d, "Couldn't list Claude Code's plugins"); return; }
+  const busy = state.plgBusy || {};
+  const btn = (act, id, label, cls = "btn small") => `<button class="${cls}" data-plg="${esc(act)}" data-id="${esc(id)}" ${dis || (busy[id] ? "disabled" : "")}>${busy[id] === act ? (act === "install" ? "Installing…" : "Working…") : label}</button>`;
+  const inst = x => `<li class="plg"><div class="grow"><div class="title">${esc(x.name)} <span class="muted small">${esc(x.marketplace)}${x.version ? " · " + esc(x.version) : ""}</span>${x.suggested ? ' <span class="tag">suggested</span>' : ""}</div>
+      ${x.about ? `<div class="meta">${esc(x.about)}</div>` : ""}${x.yours ? "" : `<div class="meta">Installed for ${x.project ? esc(x.project.split("/").pop()) + " only" : "one repo"}: change it in that repo's Claude Code.</div>`}</div>
+      ${x.yours ? `<button class="tgl${x.enabled ? " on" : ""}" role="switch" aria-checked="${x.enabled}" aria-label="${x.enabled ? "Turn off" : "Turn on"} ${esc(x.name)}" data-plg-on="${esc(x.id)}" ${dis || (busy[x.id] ? "disabled" : "")}></button>${btn("uninstall", x.id, "Remove", "btn small ghost")}` : `<span class="muted small nowrap">${x.enabled ? "On" : "Off"} there</span>`}</li>`;
+  const sugg = x => `<li class="plg"><div class="grow"><div class="title">${esc(x.name)} <span class="tag">suggested</span></div><div class="meta">${esc(x.why)}</div></div>${x.available ? btn("install", x.id, "Install", "btn small primary") : '<span class="muted small">Not in your marketplaces</span>'}</li>`;
+  const hit = x => `<li class="plg"><div class="grow"><div class="title">${esc(x.name)} <span class="muted small">${esc(x.marketplace)}${x.installs ? ` · ${n(x.installs)} installs` : ""}</span></div><div class="meta">${esc(x.about)}</div></div>${btn("install", x.id, "Install")}</li>`;
+  morph(box, `${d.installed.length ? `<div class="k">Installed</div><div class="box"><ul class="list">${d.installed.map(inst).join("")}</ul></div>` : '<p class="muted">No plugins installed besides LFG.</p>'}
+    ${d.suggested.length ? `<div class="k mt">Suggested</div><div class="box"><ul class="list">${d.suggested.map(sugg).join("")}</ul></div>` : ""}
+    <div class="k mt">Find a plugin</div><div class="row"><input type="search" id="plg-q" class="grow" placeholder="Search ${n(d.available_total)} plugins, e.g. review, terraform, playwright" value="${esc(q)}" autocomplete="off"><button class="btn small" id="plg-refresh" title="Ask Claude Code again">Refresh</button></div>
+    ${d.searched ? (d.found.length ? `<div class="box mt"><ul class="list">${d.found.map(hit).join("")}</ul></div>${d.found_total > d.found.length ? `<p class="muted small">${d.found_total - d.found.length} more: add a word to narrow it down.</p>` : ""}` : `<p class="muted small mt">No plugin matches "${esc(d.searched)}".</p>`) : ""}
+    <p class="muted small mt">Installing adds someone else's code to every session. Only you can do it, here or with <code>lfg plugins</code> in your terminal; Claude can't.</p><span class="save-msg" id="plg-msg"></span>`);
+  const msg = $("#plg-msg", box), qi = $("#plg-q", box);
+  let t = null;
+  qi.oninput = () => { clearTimeout(t); t = setTimeout(() => { state.plgQ = qi.value; loadPlugins().then(() => { const el = $("#plg-q"); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }); }, 300); };
+  $("#plg-refresh", box).onclick = () => loadPlugins(true);
+  const act = async (what, id, body, okText) => {
+    state.plgBusy = { ...(state.plgBusy || {}), [id]: what }; loadPlugins();
+    const r = await save("plugin_" + what, body);
+    delete state.plgBusy[id];
+    await loadPlugins();
+    const m = $("#plg-msg"); if (m) saidMsg(m, r, okText);
+  };
+  $$("[data-plg]", box).forEach(b => b.onclick = () => {
+    const id = b.dataset.id, what = b.dataset.plg;
+    if (what === "install" && !confirm(`Install ${id}? It adds its skills, agents and tools to every Claude Code session. New sessions pick it up.`)) return;
+    if (what === "uninstall" && !confirm(`Remove ${id}? Turning it off keeps it installed; removing deletes it.`)) return;
+    act(what, id, { id }, what === "install" ? `Installed ${id}. New sessions have it.` : `Removed ${id}.`);
+  });
+  $$("[data-plg-on]", box).forEach(b => b.onclick = () => { const id = b.dataset.plgOn, on = !b.classList.contains("on"); act("enable", id, { id, on }, `${id} is ${on ? "on" : "off"}. New sessions pick it up.`); });
 }
 let intTimer = null;
 const INT_ICON = { core: "code", knowledge: "knowledge", headroom: "compress", sonarqube: "checks", dictate: "mic", pentest: "target", security: "lock", shipcheck: "box", linear: "issues", github: "branch" };
@@ -1201,6 +1242,7 @@ function wireSettings(root) {
   if ($("#storage-box", root)) loadStorage();
   if ($("#tools-box", root)) loadTools();
   if ($("#int-box", root)) loadIntegrations();
+  if ($("#plg-box", root)) loadPlugins();
   if ($("#features-section", root)) loadFeatures();
   wireRules(root);
   const cs = $("#cfg-save", root);

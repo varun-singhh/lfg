@@ -1127,6 +1127,34 @@ def cmd_corrections(a):
     return 0
 
 
+def cmd_plugins(a):
+    from . import plugins as PL
+    words = list(a.id or [])
+    if a.action != "list" and len(words) != 1:
+        C.die("usage: lfg plugins %s <name@marketplace>" % a.action, 2)
+    a.id = " ".join(words)
+    try:
+        if a.action == "install":
+            _print(PL.install(a.id))
+        elif a.action in ("enable", "disable"):
+            _print(PL.set_enabled(a.id, a.action == "enable"))
+        elif a.action == "uninstall":
+            _print(PL.uninstall(a.id))
+        else:
+            d = PL.view(a.id or "", fresh=True)
+            if a.json:
+                _print(d)
+                return 0
+            for x in d["installed"]:
+                print("%-4s %-50s %s" % ("on" if x["enabled"] else "off", x["id"],
+                                         "" if x["yours"] else "(one repo only)"))
+            for x in d["found"]:
+                print("     %-50s %s" % (x["id"], x["about"][:70]))
+    except ValueError as e:
+        C.die(str(e), 2)
+    return 0
+
+
 def cmd_update(a):
     from . import updates as U
     if a.action in ("apply", "fix"):
@@ -1755,6 +1783,10 @@ def main(argv=None):
                     help="approve: every repo, or only the repo it was said in")
     cr.add_argument("--all", action="store_true", help="list: resolved ones too")
     cr.add_argument("--json", action="store_true")
+    pl = sp.add_parser("plugins", help="Claude Code plugins: list (and search), install, enable, disable, uninstall")
+    pl.add_argument("action", nargs="?", default="list", choices=["list", "install", "enable", "disable", "uninstall"])
+    pl.add_argument("id", nargs="*", help="name@marketplace; list: words to search the marketplaces for")
+    pl.add_argument("--json", action="store_true")
     up = sp.add_parser("update", help="is there newer LFG (your fork, the original project)? apply installs it; fix "
                                       "has Claude fix a stopped update, then applies")
     up.add_argument("action", nargs="?", default="check", choices=["check", "apply", "fix"])
@@ -1892,6 +1924,7 @@ def main(argv=None):
             "pentest": cmd_pentest, "shipcheck": cmd_shipcheck, "watch": cmd_watch, "feedback": cmd_feedback,
             "usage": cmd_usage, "sessions": cmd_sessions, "update": cmd_update, "knowledge": cmd_knowledge,
             "prefs": cmd_prefs,
+            "plugins": cmd_plugins,
             "corrections": cmd_corrections,
             "vendor": cmd_vendor,
             "omnigraph": cmd_omnigraph, "sonar": cmd_sonar,

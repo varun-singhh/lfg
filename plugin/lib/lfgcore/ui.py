@@ -249,6 +249,12 @@ def api(view, q):
     if view == "claude":
         from . import control as K
         return K.claude_view()
+    if view == "plugins":
+        from . import plugins as PL
+        try:
+            return PL.view(_arg(q, "q") or "", fresh=_arg(q, "fresh") == "1")
+        except ValueError as e:
+            return {"available": False, "why": str(e)}
     if view == "integrations":
         from . import control as K
         return K.integrations_view()
@@ -508,6 +514,16 @@ def save(what, body):
             return P.update_custom(str(body.get("id") or ""), text=body.get("text"), why=body.get("why"),
                                    example=body.get("example"), title=body.get("title"))
         except (ValueError, PermissionError) as e:
+            raise S.Invalid(str(e)) from None
+    if what in ("plugin_install", "plugin_enable", "plugin_uninstall"):
+        from . import plugins as PL
+        try:
+            if what == "plugin_install":
+                return PL.install(body.get("id"))
+            if what == "plugin_enable":
+                return PL.set_enabled(body.get("id"), bool(body.get("on")))
+            return PL.uninstall(body.get("id"))
+        except ValueError as e:
             raise S.Invalid(str(e)) from None
     if what in ("pref_set", "pref_clear", "prefs_install", "pref_add", "pref_remove", "pref_remind", "pref_text"):
         from . import prefs as P
