@@ -21,7 +21,8 @@ class FakeClaude:
     """What `claude plugin` would say and do, kept in memory."""
     def __init__(self):
         self.installed = [{"id": "lfg@lfg", "scope": "user", "enabled": True},
-                          {"id": "tool@team", "scope": "local", "enabled": True, "projectPath": "/r/app"}]
+                          {"id": "tool@team", "scope": "local", "enabled": True, "projectPath": "/r/app"},
+                          {"id": "co@synced", "scope": "synced", "enabled": True}]
         self.available = [{"pluginId": SP, "name": "superpowers", "description": "Skills for planning and review",
                            "marketplaceName": "claude-plugins-official", "installCount": 900},
                           {"pluginId": "pr-review@market", "name": "pr-review", "description": "Review PRs",
@@ -57,7 +58,7 @@ class PluginsTest(unittest.TestCase):
 
     def test_lists_without_lfg_suggests_and_searches(self):
         v = PL.view()
-        self.assertEqual([x["id"] for x in v["installed"]], ["tool@team"])  # LFG has its own switches
+        self.assertEqual([x["id"] for x in v["installed"]], ["co@synced", "tool@team"])  # LFG has its own switches
         self.assertFalse(v["installed"][0]["yours"])  # one repo only: shown, not switched here
         self.assertEqual([x["id"] for x in v["suggested"]], [SP])
         self.assertEqual(v["found"], [])
@@ -89,6 +90,8 @@ class PluginsTest(unittest.TestCase):
             PL.set_enabled("tool@team", False)
         with self.assertRaisesRegex(ValueError, "one repo"):
             PL.uninstall("tool@team")
+        with self.assertRaisesRegex(ValueError, "claude.ai account"):  # synced from your account, not a repo
+            PL.set_enabled("co@synced", False)
         with self.assertRaisesRegex(ValueError, "isn't installed"):
             PL.uninstall(SP)
         PL.install(SP)

@@ -2,6 +2,18 @@
   "_about": "What's new in each LFG release, said to the user: the walkthrough the dashboard shows once after an update, Help → What's new, and the lines `lfg setup` prints. Each item is one step of the walkthrough: page and sel (optional) say which page to open and what to light up on it. Newest release first. CHANGELOG.md keeps the detailed record.",
   "releases": [
     {
+      "version": "unreleased",
+      "title": "unreleased",
+      "items": [
+        {
+          "title": "Plugins from your claude.ai account",
+          "text": "Integrations → Claude Code plugins now says when a plugin comes from your claude.ai account or organisation, and that you change it there, instead of calling it a one-repo install.",
+          "page": "integrations",
+          "sel": "#plg-box"
+        }
+      ]
+    },
+    {
       "version": "0.4.0",
       "title": "Corrections, tabs, review combos and plugins",
       "items": [

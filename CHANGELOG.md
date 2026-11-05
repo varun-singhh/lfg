@@ -4,6 +4,9 @@ All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.j
 
 ## Unreleased
 
+### Fixed
+- Integrations → Claude Code plugins said a plugin synced from your claude.ai account or organisation was "installed for one repo"; it now says where it comes from and that it's changed there.
+
 ## 0.4.0 (2026-11-05)
 
 A repo's LFG knowledge now lives in the repo, in `.lfg/`, committed with the work, so a teammate who checks out a branch gets the same context and their additions flow back. See `docs/team-knowledge.md`.

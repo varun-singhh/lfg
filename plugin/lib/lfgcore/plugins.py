@@ -61,6 +61,7 @@ def view(q="", fresh=False):
                      "version": x.get("version") or "", "scope": x.get("scope") or "",
                      "enabled": bool(x.get("enabled")), "project": x.get("projectPath") or "",
                      "about": (a.get("description") or "")[:400], "yours": x.get("scope") == "user",
+                     # synced: from your claude.ai account or organisation, managed there; local: one repo
                      "suggested": SUGGESTED.get(x["id"], "")})
     have = {x["id"] for x in inst} | {OWN}
     sugg = [{"id": k, "name": k.split("@")[0], "why": v, "about": (about.get(k, {}).get("description") or "")[:400],
@@ -79,6 +80,13 @@ def view(q="", fresh=False):
     return {"installed": sorted(inst, key=lambda x: (not x["yours"], x["id"])), "suggested": sugg,
             "found": found[:40], "found_total": len(found), "searched": " ".join(words),
             "available_total": len(d["available"])}
+
+
+def _elsewhere(pid, x, verb):
+    """Why a plugin that isn't installed for every repo is changed somewhere else."""
+    if x.get("scope") == "synced":
+        return "%s comes from your claude.ai account or organisation; %s it there" % (pid, verb)
+    return "%s is installed for one repo only; %s it in that repo's Claude Code" % (pid, verb)
 
 
 def _check_id(pid):
@@ -117,7 +125,7 @@ def set_enabled(pid, on):
     if not x:
         raise ValueError("%s isn't installed" % pid)
     if x.get("scope") != "user":
-        raise ValueError("%s is installed for one repo only; switch it in that repo's Claude Code" % pid)
+        raise ValueError(_elsewhere(pid, x, "switch"))
     if bool(x.get("enabled")) == bool(on):
         return {"id": pid, "enabled": bool(on)}
     _do("enable" if on else "disable", pid)
@@ -130,7 +138,7 @@ def uninstall(pid):
     if not x:
         raise ValueError("%s isn't installed" % pid)
     if x.get("scope") != "user":
-        raise ValueError("%s is installed for one repo only; remove it in that repo's Claude Code" % pid)
+        raise ValueError(_elsewhere(pid, x, "remove"))
     _do("uninstall", pid)
     for e in CC.find(kind="cmd", tag="plugin-extra", target=pid):
         CC._mark_undone(e["id"], "removed in Integrations → Plugins")
