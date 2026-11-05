@@ -1402,6 +1402,16 @@ a.stk-i:hover { background: var(--hover); }
 .fresh-eyes { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); cursor: pointer; }
 .model-pick { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .model-pick select { font-size: 13px; padding-top: 4px; padding-bottom: 4px; min-width: 150px; }
+/* The method picker: tick one or several methods for the next review, or save them as your default */
+.method-pick { position: relative; }
+.method-pick > summary { list-style: none; cursor: pointer; }
+.method-pick > summary::-webkit-details-marker { display: none; }
+.method-pick .mp-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 380px; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+.method-pick .mp-list { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; max-height: 320px; overflow: auto; }
+.method-pick .mp-o { display: flex; gap: 8px; align-items: flex-start; padding: 6px 4px; border-radius: 6px; cursor: pointer; font-size: 13.5px; }
+.method-pick .mp-o:hover { background: var(--soft); }
+.method-pick .mp-o input { margin-top: 3px; }
 
 /* Skills run on a session */
 .skill-runs { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }

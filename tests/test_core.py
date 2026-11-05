@@ -4961,7 +4961,7 @@ class ReviewTest(unittest.TestCase):
                          ("LFG's built-in method", "review-pr"))
         with mock.patch.dict(R.os.environ, {"LFG_REVIEW_SOURCES": "[]"}):
             self.assertFalse(R.sources()["own"])  # the run's own pick wins over the saved one
-        self.assertEqual(R.method_choices()[0]["id"], "builtin")
+        self.assertEqual(R.method_choices()[0]["key"], "builtin")
         home = tempfile.mkdtemp()  # never the real ~/.claude/skills
         self.addCleanup(__import__("shutil").rmtree, home, True)
         skills = os.path.join(home, ".claude", "skills")
@@ -4971,30 +4971,52 @@ class ReviewTest(unittest.TestCase):
             with open(os.path.join(skills, name, "SKILL.md"), "w") as f:
                 f.write("---\nname: %s\ndescription: %s\n---\n" % (name, about))
         with mock.patch.object(R.C, "HOME", home):
-            fits = {m["id"]: m["fits"] for m in R.method_choices()}
+            fits = {m["label"]: m["fits"] for m in R.method_choices()}
         self.assertEqual((fits["review-x"], fits["ship-x"]), (True, False))
         with self.assertRaises(R.ReviewError):
             R.start("o/r", 7, method="no-such-skill")
 
-    def test_several_methods_are_read_together_with_lfgs_own_among_them(self):
-        stack = ["builtin", "~/.claude/skills/review-pr/SKILL.md", "~/.claude/skills/review-pr/checklists"]
-        self.assertEqual(R._expand("builtin"), R._expand(R.default_dir()))
-        self.assertTrue(R._expand("builtin"))
-        self.assertEqual(R.method_label(stack), "LFG's built-in method + review-pr")
-        cfg = dict(R.C.config(), review={"sources": stack})
-        with mock.patch.object(R.C, "config", return_value=cfg):
-            ms = R.method_choices()
-            self.assertEqual([(m["id"], m["saved"]) for m in ms[:2]], [("builtin", False), ("saved", True)])
-            self.assertEqual(ms[1]["sources"], stack)  # the page's default sends the whole stack
-            self.assertEqual(R.sources()["files"][:len(R._expand("builtin"))], R._expand("builtin"))  # read first
+    def test_one_picker_ticks_any_methods_for_a_review_or_as_the_default(self):
         home = tempfile.mkdtemp()  # never the real ~/.claude/skills
         self.addCleanup(__import__("shutil").rmtree, home, True)
-        os.makedirs(os.path.join(home, ".claude", "skills", "review-x"))
-        with open(os.path.join(home, ".claude", "skills", "review-x", "SKILL.md"), "w") as f:
-            f.write("---\nname: review-x\ndescription: Review a PR\n---\n")
-        one = dict(R.C.config(), review={"sources": ["~/.claude/skills/review-x"]})
-        with mock.patch.object(R.C, "config", return_value=one), mock.patch.object(R.C, "HOME", home):
-            self.assertNotIn("saved", [m["id"] for m in R.method_choices()])  # one skill: its own entry is the default
+        for name in ("review-x", "ship-x"):
+            os.makedirs(os.path.join(home, ".claude", "skills", name, "checklists"))
+            with open(os.path.join(home, ".claude", "skills", name, "SKILL.md"), "w") as f:
+                what = "Review" if name == "review-x" else "Ship"
+                f.write("---\nname: %s\ndescription: %s a PR\n---\n" % (name, what))
+        loose = os.path.join(home, "notes.md")
+        C.write_text(loose, "# extra\n")
+        rx = "~/.claude/skills/review-x"
+        self.assertEqual(R._expand("builtin"), R._expand(R.default_dir()))
+        with mock.patch.object(R.C, "HOME", home), \
+                mock.patch.dict(R.os.environ, {"HOME": home}):
+            # a skill's SKILL.md or a file inside it is that skill; LFG's own is "builtin"
+            inside = os.path.join(home, ".claude/skills/review-x/checklists")
+            self.assertEqual([R.method_key(x) for x in (rx + "/SKILL.md", inside, "builtin", loose)],
+                             [rx, rx, "builtin", loose])
+            self.assertEqual(R.method_label(["builtin", rx + "/SKILL.md", rx + "/checklists"]),
+                             "LFG's built-in method + review-x")
+            # picked for one review: LFG's own first, so your own win; LFG's own alone is the default ([])
+            self.assertEqual(R.method_sources([rx, "builtin"]), ["builtin", rx])
+            self.assertEqual(R.method_sources(["builtin"]), [])
+            for bad in ([], ["~/.claude/skills/nope"], "builtin"):
+                with self.assertRaises(R.ReviewError):
+                    R.method_sources(bad)
+            cfg = dict(R.C.config(), review={"sources": ["builtin", rx + "/SKILL.md", rx + "/checklists", loose]})
+            with mock.patch.object(R.C, "config", return_value=cfg):
+                self.assertEqual(R.method_saved(), ["builtin", rx, loose])
+                ms = {m["key"]: m for m in R.method_choices()}
+                self.assertEqual([k for k, m in ms.items() if m["saved"]], ["builtin", rx, loose])
+                self.assertEqual((ms[rx]["fits"], ms["~/.claude/skills/ship-x"]["fits"], ms[loose].get("file")),
+                                 (True, False, True))  # a loose file in your default is offered too
+                self.assertEqual(R.sources()["files"][:len(R._expand("builtin"))], R._expand("builtin"))
+            with mock.patch.object(R.C, "config", return_value=dict(R.C.config(), review={})):
+                self.assertEqual(R.method_saved(), ["builtin"])
+            started = []
+            with mock.patch("subprocess.Popen", side_effect=lambda args, **kw: started.append(args)):
+                R.start("o/r", 7, sources=[rx, "builtin"])
+                R.start("o/r", 7, method="review-x")
+            self.assertEqual([json.loads(a[a.index("--method") + 1]) for a in started], [["builtin", rx], [rx]])
 
     def test_a_review_says_what_the_pr_was_meant_to_do_and_files_ticket_problems_apart(self):
         meta = dict(self.META, branch="dev/ato-4223-fix-export", body="Fixes the export timeout.")
