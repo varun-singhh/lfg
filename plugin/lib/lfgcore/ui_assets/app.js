@@ -3869,7 +3869,9 @@ function usedTags(u, method) {
 /* Which model reviews run on, next to the buttons that start them. One setting for every review, chat and fix. */
 /* Which methods the next review here follows, and your default: one picker. Tick one or several (several are read
    together, LFG's own first so yours win where they disagree); the ticks hold for reviews started from this page while
-   it is open. Save as my default keeps them for every review. Keys: "builtin", ~/.claude/skills/<name>, or a file. */
+   it is open. Save as my default keeps them for every review. Combos are ticked sets saved under a name: one click
+   picks one, the star makes one your default. Keys: "builtin", ~/.claude/skills/<name>, plugin:<plugin>/<skill>, or
+   a file. */
 const methodSel = d => state.reviewSel || (d && d.method_saved) || ["builtin"];
 const methodName = (d, k) => (((d && d.methods) || []).find(m => m.key === k) || {}).label || k.split("/").pop();
 const methodLabel = (d, keys) => [...keys].sort((a, b) => (a !== "builtin") - (b !== "builtin")).map(k => methodName(d, k)).join(" + ");
@@ -3880,12 +3882,17 @@ function methodPick(d, unlocked) {
   const sel = methodSel(d), saved = d.method_saved || ["builtin"], all = state.reviewMethodsAll, same = sameSet(sel, saved);
   const extra = (state.reviewExtra || []).filter(k => !d.methods.some(m => m.key === k)).map(k => ({ key: k, label: k.split("/").pop(), about: k, fits: true, file: true }));
   const list = [...d.methods, ...extra], shown = list.filter(m => all || m.fits || sel.includes(m.key)), hidden = list.length - shown.length;
-  const row = m => `<label class="mp-o" title="${esc(m.about || "")}"><input type="checkbox" data-mp-key="${esc(m.key)}" ${sel.includes(m.key) ? "checked" : ""} ${unlocked ? "" : "disabled"}><span class="grow"><b>${esc(m.label)}</b>${m.saved ? ' <span class="muted small">default</span>' : ""}${m.file ? `<div class="muted small mono">${esc(m.key)}</div>` : ""}</span></label>`;
+  const row = m => `<label class="mp-o" title="${esc(m.about || "")}"><input type="checkbox" data-mp-key="${esc(m.key)}" ${sel.includes(m.key) ? "checked" : ""} ${unlocked ? "" : "disabled"}><span class="grow"><b>${esc(m.label)}</b>${m.plugin ? ` <span class="tag" title="From the ${esc(m.plugin)} plugin you installed">${esc(m.plugin)}</span>` : ""}${m.saved ? ' <span class="muted small">default</span>' : ""}${m.file ? `<div class="muted small mono">${esc(m.key)}</div>` : ""}</span></label>`;
+  const combos = d.combos || [], dis = unlocked ? "" : "disabled";
+  const combo = c => { const on = sameSet(sel, c.methods), dflt = sameSet(c.methods, saved);
+    return `<span class="mp-combo${on ? " on" : ""}"><button class="btn small${on ? " primary" : ""}" data-mp-combo="${esc(c.name)}" title="${esc(methodLabel(d, c.methods))}">${esc(c.name)}</button>${unlocked ? `<button class="mp-cx${dflt ? " on" : ""}" data-mp-star="${esc(c.name)}" title="${dflt ? "Your default" : "Make it my default"}" aria-label="${dflt ? "Your default" : "Make it my default"}" ${dflt ? "disabled" : ""}>★</button><button class="mp-cx" data-mp-ren="${esc(c.name)}" title="Rename, or save the ticked methods into it" aria-label="Rename ${esc(c.name)}">✎</button><button class="mp-cx" data-mp-del="${esc(c.name)}" title="Delete this combo" aria-label="Delete ${esc(c.name)}">×</button>` : ""}</span>`; };
+  const combosBox = combos.length || unlocked ? `<div class="mp-combos"><div class="k" style="margin:0">Combos</div>${combos.map(combo).join("")}${combos.length ? "" : '<span class="muted small">None yet: tick some methods, then Save as combo.</span>'}</div>` : "";
   return `<details class="method-pick" data-method-pick><summary class="btn small">Method: <b data-mp-label>${esc(methodLabel(d, sel))}</b> <span class="tag warn" data-mp-tag ${same ? "hidden" : ""}>this page only</span></summary>
     <div class="mp-pop"><div class="muted small">What the next review follows: what to look for, how serious each finding is, how comments read. Tick several to use them together; LFG's own is read first, so yours win where they disagree.</div>
+      ${combosBox}
       <div class="mp-list">${shown.map(row).join("")}${hidden ? `<a href="#" class="small" data-mp-all>Show every skill (${hidden} more)</a>` : ""}</div>
       ${unlocked ? `<div class="row mt"><input type="text" class="grow mono small" data-mp-file placeholder="Or add a file or folder, e.g. ~/notes/review.md"><button class="btn small" data-mp-add>Add</button></div>
-      <div class="row mt"><span class="muted small grow" data-mp-msg>${same ? "This is your default." : "Only for reviews started from this page."}</span><button class="btn small primary" data-mp-save ${same ? "disabled" : ""}>Save as my default</button></div>` : ""}</div></details>`;
+      <div class="row mt"><span class="muted small grow" data-mp-msg>${same ? "This is your default." : "Only for reviews started from this page."}</span><button class="btn small" data-mp-combo-new ${dis}>Save as combo</button><button class="btn small primary" data-mp-save ${same ? "disabled" : ""}>Save as my default</button></div>` : ""}</div></details>`;
 }
 function wireMethodPick(root) {
   const box = $("[data-method-pick]", root);
@@ -3920,6 +3927,35 @@ function wireMethodPick(root) {
     prefToast(`Every review now follows ${methodLabel({ methods: r.methods }, r.saved)}.`);
     softRoute();
   };
+  const combos = d.combos || [], byName = n => combos.find(c => c.name === n);
+  const after = (r, text) => { if (!r.ok) return saidMsg($("[data-mp-msg]", box), r, ""); state.mpOpen = true; if (text) prefToast(text); softRoute(); };
+  $$("[data-mp-combo]", box).forEach(b => b.onclick = e => { e.preventDefault(); const c = byName(b.dataset.mpCombo); if (!c) return; state.reviewSel = [...c.methods]; state.reviewExtra = c.methods.filter(k => !d.methods.some(m => m.key === k)); state.mpOpen = true; softRoute(); });
+  const nb = $("[data-mp-combo-new]", box);
+  if (nb) nb.onclick = async () => {
+    const name = (prompt(`Name this combo (${methodLabel(d, methodSel(d))}):`) || "").trim();
+    if (!name) return;
+    if (byName(name) && !confirm(`Replace the combo "${name}" with what's ticked now?`)) return;
+    after(await save("review_combo_save", { name, sources: methodSel(d) }), `Saved "${name}".`);
+  };
+  $$("[data-mp-ren]", box).forEach(b => b.onclick = async e => {
+    e.preventDefault();
+    const old = b.dataset.mpRen, c = byName(old);
+    const name = (prompt(`New name for "${old}". It also takes what's ticked now (${methodLabel(d, methodSel(d))}); clear the box to cancel.`, old) || "").trim();
+    if (!name || !c) return;
+    after(await save("review_combo_save", { name, old, sources: methodSel(d) }), `Saved "${name}".`);
+  });
+  $$("[data-mp-del]", box).forEach(b => b.onclick = async e => {
+    e.preventDefault();
+    if (!confirm(`Delete the combo "${b.dataset.mpDel}"? Your default and the ticks stay as they are.`)) return;
+    after(await save("review_combo_delete", { name: b.dataset.mpDel }), "Deleted.");
+  });
+  $$("[data-mp-star]", box).forEach(b => b.onclick = async e => {
+    e.preventDefault();
+    const c = byName(b.dataset.mpStar); if (!c) return;
+    const r = await save("review_sources", { sources: c.methods });
+    if (r.ok) { state.reviewSel = null; state.reviewExtra = []; }
+    after(r, `Every review now follows "${c.name}" (${methodLabel(d, c.methods)}).`);
+  });
   if (state.mpOpen) { box.open = true; state.mpOpen = false; }
   if (state.mpOutside) document.removeEventListener("click", state.mpOutside, true);
   state.mpOutside = e => { const b = $("[data-method-pick]"); if (b && b.open && !b.contains(e.target)) b.open = false; };

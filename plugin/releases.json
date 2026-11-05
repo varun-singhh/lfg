@@ -3,38 +3,66 @@
   "releases": [
     {
       "version": "0.4.0",
-      "title": "Corrections, pinned tabs and Studio tabs",
+      "title": "Corrections, pinned tabs, Studio tabs and review combos",
       "items": [
-        {"title": "Corrections",
-         "text": "When you correct Claude (\"no, use pnpm\", a tool call you reject, or a correction that's more a feeling than a no), LFG can queue it here. You decide what becomes a rule; nothing does without you. It's off until you switch it on here, then click Install once.",
-         "page": "corrections", "sel": "#corr-on"},
-        {"title": "Rules with a why and an example",
-         "text": "Approve a correction as a rule for every repo or only the one it was said in. Add why it matters and a real time it went wrong: Claude is told both with the rule. Each rule has its own switch, and LFG points out a rule you already have that says much the same, so you can merge instead of adding another.",
-         "page": "corrections"},
-        {"title": "Or keep it in your second-brain",
-         "text": "Some corrections are background about you rather than how Claude should work. Save to second-brain keeps those as a note Claude looks up when it matters, instead of telling every session.",
-         "page": "corrections"},
-        {"title": "Studio sessions open as tabs",
-         "text": "Every session you open becomes a tab, above the session and at the top of Studio in the sidebar, with a dot that shows whether it's working, waiting or needs you. Drag a tab in either place to reorder.",
-         "page": "studio", "sel": "#nav .ns-body"},
-        {"title": "Pin a tab",
-         "text": "Hover a tab, in PR reviews or Studio, and click the pin to keep it at the front. Pinned tabs have no close button and are never dropped when you have many open. Drag a tab among the pinned ones to pin it, or out of them to unpin it.",
-         "page": "prs", "sel": "#nav a.nav-sub"},
-        {"title": "The setup guide can be skipped",
-         "text": "The guide that opens the first time you use the dashboard now has a Skip button, and Escape closes it. The ⓘ button in the top bar opens it again."},
-        {"title": "What's new, after every update",
-         "text": "This walkthrough shows once after each update. Help → What's new lists every release, and replays any of them.",
-         "page": "help", "sel": "#hp-news"}
+        {
+          "title": "Corrections",
+          "text": "When you correct Claude (\"no, use pnpm\", a tool call you reject, or a correction that's more a feeling than a no), LFG can queue it here. You decide what becomes a rule; nothing does without you. It's off until you switch it on here, then click Install once.",
+          "page": "corrections",
+          "sel": "#corr-on"
+        },
+        {
+          "title": "Rules with a why and an example",
+          "text": "Approve a correction as a rule for every repo or only the one it was said in. Add why it matters and a real time it went wrong: Claude is told both with the rule. Each rule has its own switch, and LFG points out a rule you already have that says much the same, so you can merge instead of adding another.",
+          "page": "corrections"
+        },
+        {
+          "title": "Or keep it in your second-brain",
+          "text": "Some corrections are background about you rather than how Claude should work. Save to second-brain keeps those as a note Claude looks up when it matters, instead of telling every session.",
+          "page": "corrections"
+        },
+        {
+          "title": "Studio sessions open as tabs",
+          "text": "Every session you open becomes a tab, above the session and at the top of Studio in the sidebar, with a dot that shows whether it's working, waiting or needs you. Drag a tab in either place to reorder.",
+          "page": "studio",
+          "sel": "#nav .ns-body"
+        },
+        {
+          "title": "Pin a tab",
+          "text": "Hover a tab, in PR reviews or Studio, and click the pin to keep it at the front. Pinned tabs have no close button and are never dropped when you have many open. Drag a tab among the pinned ones to pin it, or out of them to unpin it.",
+          "page": "prs",
+          "sel": "#nav a.nav-sub"
+        },
+        {
+          "title": "The setup guide can be skipped",
+          "text": "The guide that opens the first time you use the dashboard now has a Skip button, and Escape closes it. The ⓘ button in the top bar opens it again."
+        },
+        {
+          "title": "Review combos, and plugin review skills",
+          "text": "The review Method picker now lists review skills from plugins you installed, such as superpowers. Tick the methods you want together and click Save as combo to name the set; one click picks a combo, and the star makes one your default.",
+          "page": "prs",
+          "sel": "[data-method-pick]"
+        },
+        {
+          "title": "What's new, after every update",
+          "text": "This walkthrough shows once after each update. Help → What's new lists every release, and replays any of them.",
+          "page": "help",
+          "sel": "#hp-news"
+        }
       ]
     },
     {
       "version": "0.3.0",
       "title": "LFG Dictate",
       "items": [
-        {"title": "LFG Dictate",
-         "text": "Hold Option+Space anywhere on your Mac to dictate, on-device. Off until you turn it on: `lfg add dictate`. Open `lfg ui` for a 1-minute tour."},
-        {"title": "Experimental labels",
-         "text": "Pentest and Headroom are now labelled Experimental."}
+        {
+          "title": "LFG Dictate",
+          "text": "Hold Option+Space anywhere on your Mac to dictate, on-device. Off until you turn it on: `lfg add dictate`. Open `lfg ui` for a 1-minute tour."
+        },
+        {
+          "title": "Experimental labels",
+          "text": "Pentest and Headroom are now labelled Experimental."
+        }
       ]
     }
   ]

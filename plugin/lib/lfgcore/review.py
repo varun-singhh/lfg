@@ -742,9 +742,33 @@ def threads(repo, number):
 
 # ---------------------------------------------------------------- what the review reads
 
+PLUGIN_KEY = re.compile(r"^plugin:([^/\s]+)/([^/\s]+)$")  # plugin:<plugin>@<marketplace>/<skill>
+
+
+def _plugin_skills():
+    """Skills from the Claude Code plugins you installed (not LFG's own), {key: SKILL.md path}. A key names the plugin
+    and skill, not the folder, so it keeps working when the plugin updates to a new version's folder."""
+    d = C.read_json(os.path.join(C.HOME, ".claude", "plugins", "installed_plugins.json"), {}) or {}
+    out = {}
+    for name, installs in sorted(((d.get("plugins") if isinstance(d.get("plugins"), dict) else d) or {}).items()):
+        if not isinstance(installs, list) or name.split("@")[0] == "lfg":
+            continue
+        # the install for every repo first, else the newest
+        for i in sorted((x for x in installs if isinstance(x, dict) and x.get("installPath")),
+                        key=lambda x: (x.get("scope") == "user", x.get("lastUpdated") or ""), reverse=True)[:1]:
+            for f in sorted(glob.glob(os.path.join(i["installPath"], "skills", "*", "SKILL.md"))):
+                out["plugin:%s/%s" % (name, os.path.basename(os.path.dirname(f)))] = f
+    return out
+
+
 def _expand(path):
     if path == BUILTIN:  # LFG's own method, listed with your sources so the two are read together
         path = default_dir()
+    elif PLUGIN_KEY.match(str(path)):  # a plugin's skill: its folder in the version installed now
+        f = _plugin_skills().get(path)
+        if not f:
+            return []
+        path = os.path.dirname(f)
     path = os.path.expanduser(path)
     if os.path.isdir(path):
         return sorted(glob.glob(os.path.join(path, "**", "*.md"), recursive=True))
@@ -1105,8 +1129,8 @@ def _model(m=None):
 def method_key(path):
     """One method's key: `builtin` for LFG's own, ~/.claude/skills/<name> for anything inside one of your skills (its
     SKILL.md or a checklist in it: the whole skill is one method), else the file or folder as given."""
-    if path == BUILTIN:
-        return BUILTIN
+    if path == BUILTIN or PLUGIN_KEY.match(str(path)):
+        return str(path)
     full = os.path.realpath(os.path.expanduser(str(path)))
     skills = os.path.realpath(os.path.join(C.HOME, ".claude", "skills"))
     if full.startswith(skills + os.sep):
@@ -1133,10 +1157,64 @@ def method_choices():
         about = str(K._frontmatter(C.read_text(d)[:20000]).get("description") or "").lstrip(">- \n").strip()
         out.append({"key": key, "label": _skill_name(key), "about": about[:300], "saved": key in saved,
                     "fits": key in saved or bool(re.match(r"(review|audit)\b", about, re.I))})
+    for key, f in _plugin_skills().items():
+        about = str(K._frontmatter(C.read_text(f)[:20000]).get("description") or "").lstrip(">- \n").strip()
+        out.append({"key": key, "label": _skill_name(key), "about": about[:300], "saved": key in saved,
+                    "plugin": key.split("/")[0][7:].split("@")[0],
+                    "fits": key in saved or bool(re.match(r"(review|audit)\b", about, re.I)
+                                                 or re.search(r"review", key.split("/")[-1], re.I))})
     have = {m["key"] for m in out}
     out += [{"key": k, "label": _skill_name(k), "about": k, "fits": True, "saved": True, "file": True}
             for k in saved if k not in have]
     return out
+
+
+def combos():
+    """Your saved combos of methods, [{"name", "methods": [keys]}], in the order you saved them."""
+    raw = (C.config().get("review") or {}).get("combos") or []
+    return [{"name": str(c["name"]), "methods": [str(k) for k in c["methods"]]} for c in raw
+            if isinstance(c, dict) and c.get("name") and isinstance(c.get("methods"), list) and c["methods"]]
+
+
+def _write_review(fn):
+    """Change the "review" part of config.json with fn(review_dict), backed up first."""
+    from . import settings as ST
+    path = C.lfg_path("config.json")
+    raw = C.read_json(path, {}) or {}
+    if not isinstance(raw, dict):
+        raise ReviewError("%s is not valid JSON; fix it by hand first" % path)
+    ST._backup(path, "config")
+    rv = dict(raw.get("review") or {})
+    fn(rv)
+    if rv:
+        raw["review"] = rv
+    else:
+        raw.pop("review", None)
+    C.write_json(path, raw)
+
+
+def save_combo(name, keys, old_name=""):
+    """Save the ticked methods under a name (replacing a combo of that name, or renaming old_name)."""
+    name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not name or len(name) > 40:
+        raise ReviewError("give the combo a name, up to 40 characters")
+    srcs = method_sources(keys)
+    keys = srcs or [BUILTIN]
+    have = combos()
+    gone = {name.lower(), str(old_name or "").strip().lower()}
+    at = next((i for i, c in enumerate(have) if c["name"].lower() in gone), len(have))
+    rest = [c for c in have if c["name"].lower() not in gone]
+    rest.insert(min(at, len(rest)), {"name": name, "methods": keys})
+    if len(rest) > 20:
+        raise ReviewError("keep it to 20 combos")
+    _write_review(lambda rv: rv.__setitem__("combos", rest))
+    return {"combos": combos()}
+
+
+def delete_combo(name):
+    left = [c for c in combos() if c["name"].lower() != str(name or "").strip().lower()]
+    _write_review(lambda rv: rv.__setitem__("combos", left) if left else rv.pop("combos", None))
+    return {"combos": combos()}
 
 
 def method_sources(keys):
@@ -1162,6 +1240,9 @@ def method_label(srcs):
 def _skill_name(path):
     """A source's name for people: the skill it belongs to (…/skills/review-pr/SKILL.md is review-pr), else the file
     or folder's own name."""
+    p = PLUGIN_KEY.match(str(path))
+    if p:  # superpowers:requesting-code-review
+        return "%s:%s" % (p.group(1).split("@")[0], p.group(2))
     m = re.search(r"/skills/([^/]+)", str(path))
     return m.group(1) if m else (os.path.basename(str(path).rstrip("/")) or str(path))
 

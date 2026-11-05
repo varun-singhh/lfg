@@ -313,7 +313,7 @@ def api(view, q):
         if view == "prreviews":
             return dict(R.dashboard(fresh=_arg(q, "fresh") == "1", only=_only(q)), method=R.method(),
                         ticket_titles=ticket_titles(), models=R.models(), model=R.chosen_model(),
-                        methods=R.method_choices(), method_saved=R.method_saved(),
+                        methods=R.method_choices(), method_saved=R.method_saved(), combos=R.combos(),
                         method_now=R.method_label((C.config().get("review") or {}).get("sources")))
         try:
             repo, number = R.parse_pr(_arg(q, "pr"))
@@ -348,7 +348,7 @@ def api(view, q):
                     "linked": [linked_pr(x) for x in R.linked(pr)],
                     "groups": SS.groups_of(pr), "all_groups": SS.group_names(),
                     "models": R.models(), "model": R.chosen_model(), "methods": R.method_choices(),
-                    "method_saved": R.method_saved(),
+                    "method_saved": R.method_saved(), "combos": R.combos(),
                     "method_now": R.method_label((C.config().get("review") or {}).get("sources"))}
         except R.ReviewError as e:
             return {"available": False, "why": str(e)}
@@ -648,6 +648,10 @@ def review_action(what, body):
         if what == "review_sources":  # Save as my default: the methods ticked in the picker
             R.set_sources(R.method_sources(body.get("sources")))
             return {"saved": R.method_saved(), "methods": R.method_choices()}
+        if what == "review_combo_save":  # Save as combo: the ticked methods under a name
+            return R.save_combo(body.get("name"), body.get("sources"), old_name=body.get("old") or "")
+        if what == "review_combo_delete":
+            return R.delete_combo(body.get("name"))
         if what == "review_model":
             return S.save_config({"review.model": str(body.get("model") or "")})
         if what == "review_unpass":

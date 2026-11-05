@@ -5018,6 +5018,79 @@ class ReviewTest(unittest.TestCase):
                 R.start("o/r", 7, method="review-x")
             self.assertEqual([json.loads(a[a.index("--method") + 1]) for a in started], [["builtin", rx], [rx]])
 
+    def test_review_skills_from_installed_plugins_are_offered_and_survive_a_plugin_update(self):
+        home = tempfile.mkdtemp()  # never the real ~/.claude
+        self.addCleanup(__import__("shutil").rmtree, home, True)
+        cache = os.path.join(home, ".claude", "plugins", "cache")
+
+        def plugin(name, version, skills):
+            root = os.path.join(cache, name, version)
+            for sk, about in skills:
+                os.makedirs(os.path.join(root, "skills", sk), exist_ok=True)
+                C.write_text(os.path.join(root, "skills", sk, "SKILL.md"), "---\nname: %s\ndescription: %s\n---\n"
+                             % (sk, about))
+            return root
+        sp1 = plugin("superpowers", "5.0.0", [("requesting-code-review", "Use when completing tasks"),
+                                              ("brainstorming", "Use before any creative work")])
+        lfg = plugin("lfg", "0.3.0", [("review", "Reviews someone else's PR")])
+        index = os.path.join(home, ".claude", "plugins", "installed_plugins.json")
+        C.write_json(index, {"version": 2, "plugins": {
+            "superpowers@claude-plugins-official": [{"scope": "user", "installPath": sp1}],
+            "lfg@lfg": [{"scope": "user", "installPath": lfg}]}})
+        key = "plugin:superpowers@claude-plugins-official/requesting-code-review"
+        with mock.patch.object(R.C, "HOME", home):
+            ms = {m["key"]: m for m in R.method_choices()}
+            self.assertEqual((ms[key]["label"], ms[key]["plugin"], ms[key]["fits"]),
+                             ("superpowers:requesting-code-review", "superpowers", True))  # "review" in its name
+            self.assertFalse(ms["plugin:superpowers@claude-plugins-official/brainstorming"]["fits"])
+            self.assertFalse(any("lfg@lfg" in k for k in ms))  # LFG's own skills aren't methods
+            self.assertEqual(R.method_key(key), key)
+            self.assertEqual(R.method_sources([key, "builtin"]), ["builtin", key])
+            self.assertEqual(R.method_label(["builtin", key]),
+                             "LFG's built-in method + superpowers:requesting-code-review")
+            sp2 = plugin("superpowers", "5.1.0", [("requesting-code-review", "Use when completing tasks")])
+            C.write_json(index, {"plugins": {"superpowers@claude-plugins-official": [
+                {"scope": "user", "installPath": sp2, "lastUpdated": "2026-11-05"}]}})
+            self.assertEqual(R._expand(key), [os.path.join(sp2, "skills", "requesting-code-review", "SKILL.md")])
+            os.remove(index)
+            self.assertEqual(R._expand(key), [])  # uninstalled: missing, like a deleted file
+            with self.assertRaises(R.ReviewError):
+                R.method_sources([key])
+
+    def test_combos_save_rename_delete_and_one_becomes_the_default(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, home, True)
+        os.makedirs(os.path.join(home, ".claude", "skills", "review-pr"))
+        C.write_text(os.path.join(home, ".claude", "skills", "review-pr", "SKILL.md"), "---\nname: review-pr\n---\n")
+        rp = "~/.claude/skills/review-pr"
+        cfg_path = C.lfg_path("config.json")
+        before = C.read_text(cfg_path) if os.path.exists(cfg_path) else None
+        self.addCleanup(lambda: C.write_text(cfg_path, before) if before is not None else
+                        (os.path.exists(cfg_path) and os.remove(cfg_path)))
+        with mock.patch.object(R.C, "HOME", home), mock.patch.dict(R.os.environ, {"HOME": home}):
+            R.save_combo("Full", ["builtin", rp])
+            R.save_combo("Quick", [rp])
+            self.assertEqual(R.combos(), [{"name": "Full", "methods": ["builtin", rp]},
+                                          {"name": "Quick", "methods": [rp]}])
+            R.save_combo("quick", ["builtin"])  # the same name, any case: replaced in place
+            self.assertEqual([c["name"] for c in R.combos()], ["Full", "quick"])
+            self.assertEqual(R.combos()[1]["methods"], ["builtin"])
+            R.save_combo("Fast", [rp], old_name="Full")  # renamed, and takes the ticks, where it was
+            self.assertEqual(R.combos(), [{"name": "Fast", "methods": [rp]}, {"name": "quick", "methods": ["builtin"]}])
+            for bad in (("", [rp]), ("x" * 41, [rp]), ("Ok", []), ("Ok", ["~/.claude/skills/nope"])):
+                with self.assertRaises(R.ReviewError):
+                    R.save_combo(*bad)
+            R.set_sources(R.method_sources(R.combos()[0]["methods"]))  # the star: Save as my default
+            self.assertEqual(R.method_saved(), [rp])
+            R.delete_combo("FAST")
+            R.delete_combo("quick")
+            self.assertEqual(R.combos(), [])
+            self.assertEqual(R.method_saved(), [rp])  # deleting a combo leaves the default alone
+            self.assertNotIn("combos", C.read_json(cfg_path, {}).get("review", {}))
+        js = C.read_text(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js"))
+        for bit in ('save("review_combo_save", { name, sources: methodSel(d) })', "data-mp-star", "data-mp-del"):
+            self.assertIn(bit, js)
+
     def test_a_review_says_what_the_pr_was_meant_to_do_and_files_ticket_problems_apart(self):
         meta = dict(self.META, branch="dev/ato-4223-fix-export", body="Fixes the export timeout.")
         with mock.patch.object(R, "pr_meta", return_value=meta):

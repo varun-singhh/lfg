@@ -1414,6 +1414,12 @@ a.stk-i:hover { background: var(--hover); }
 .method-pick .mp-o { display: flex; gap: 8px; align-items: flex-start; padding: 6px 4px; border-radius: 6px; cursor: pointer; font-size: 13.5px; }
 .method-pick .mp-o:hover { background: var(--soft); }
 .method-pick .mp-o input { margin-top: 3px; }
+.method-pick .mp-combos { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.method-pick .mp-combo { display: inline-flex; align-items: center; gap: 1px; }
+.method-pick .mp-cx { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 3px; font-size: 12px; line-height: 20px; border-radius: 4px; visibility: hidden; }
+.method-pick .mp-cx:hover { background: var(--soft); color: var(--text); }
+.method-pick .mp-combo:hover .mp-cx, .method-pick .mp-cx.on { visibility: visible; }
+.method-pick .mp-cx.on { color: var(--warn, #c98a00); cursor: default; }
 
 /* Skills run on a session */
 .skill-runs { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
