@@ -3640,7 +3640,7 @@ async function prStart(pr, btn) {
   btn.style.minWidth = btn.offsetWidth + "px";  // a shorter label must not pull the buttons beside it left
   btn.disabled = true; btn.textContent = "Starting…";
   const notes = ((state.reviewNotes || {})[pr] || "").trim();
-  const d = await save("review_run", { pr, fresh, fresh_eyes: fresh && !!state.freshEyes, method: state.reviewMethod || "", notes });
+  const d = await save("review_run", { pr, fresh, fresh_eyes: fresh && !!state.freshEyes, sources: methodSel(state.prMethodData), notes });
   if (!d.ok) { btn.disabled = false; btn.textContent = "Try again"; btn.title = d.why || ""; return; }
   if (d.started) { delete (state.reviewNotes || {})[pr]; delete (state.reviewNotesOpen || {})[pr]; }  // notes are for this one review
   btn.textContent = d.started ? "Started" : "Already running";
@@ -3689,7 +3689,6 @@ PAGES.prs = async arg => {
   if (arg === "scores") return prScores();
   if (arg) return prDetail(arg);
   const [d, unlocked] = await Promise.all([api("prreviews", scopeArgs("prs")), isUnlocked()]);
-  state.prMethod = d.method;
   const lock = unlocked ? "" : `<div class="callout warn">Buttons are locked. Run <code>${esc(unlockCmd())}</code> in your terminal to review and post from here.</div>`;
   state.prPick = state.prPick || new Set();
   /* merged and closed PRs are done: hidden unless you ask, remembered across visits */
@@ -3727,8 +3726,7 @@ PAGES.prs = async arg => {
     ${section("Waiting on you", d.queue_why ? unavailable({ why: d.queue_why }, "Couldn't ask GitHub") : `<div class="box">${table(d.queue, qcols, { ...qopts, emptyTitle: "Nothing waiting", emptyBody: "No open PRs ask for your review." })}</div>`, "open PRs where GitHub lists you as a reviewer")}
     ${section("Your open PRs", d.mine_why ? unavailable({ why: d.mine_why }, "Couldn't ask GitHub") : `<div class="box">${table(d.mine, qcols, { ...qopts, emptyTitle: "No open PRs", emptyBody: "You have no open pull requests here." })}</div>`, "review your own work before others do; on your own PR you can only comment. Open one to link it to a session or a session group")}
     ${section("Your reviews", `${doneToggle}<div class="box">${table(shownReviews, rcols, { onRow: x => (location.hash = prHash(x)), sort: "updated", emptyTitle: done && !showDone ? "No open PRs reviewed" : "No reviews yet", emptyBody: done && !showDone ? "Every PR you reviewed here is merged or closed. Tick the box above to see them." : "Press Review above, or run <code>/lfg:review &lt;PR&gt;</code> in Claude Code." })}</div>`)}
-    ${passedSection(d, unlocked)}
-    ${methodSection(d.method, unlocked)}`;
+    ${passedSection(d, unlocked)}`;
 };
 /* A model's name as people say it: claude-opus-5-5 is Opus 5.5. */
 function modelName(id) {
@@ -3768,15 +3766,63 @@ function usedTags(u, method) {
   return rows.length ? `<div class="used">${rows.map(([k, cs]) => `<div class="used-k">${k}${USED_INFO[k] ? info(USED_INFO[k]) : ""}</div><div class="used-v">${cs.join("")}</div>`).join("")}</div>` : "";
 }
 /* Which model reviews run on, next to the buttons that start them. One setting for every review, chat and fix. */
-/* Which method the next review here follows: your saved one (Settings), LFG's built-in, or one of your skills. Only
-   for reviews started from this page while it's open; the saved one is in "Review method" below the lists. */
+/* Which methods the next review here follows, and your default: one picker. Tick one or several (several are read
+   together, LFG's own first so yours win where they disagree); the ticks hold for reviews started from this page while
+   it is open. Save as my default keeps them for every review. Keys: "builtin", ~/.claude/skills/<name>, or a file. */
+const methodSel = d => state.reviewSel || (d && d.method_saved) || ["builtin"];
+const methodName = (d, k) => (((d && d.methods) || []).find(m => m.key === k) || {}).label || k.split("/").pop();
+const methodLabel = (d, keys) => [...keys].sort((a, b) => (a !== "builtin") - (b !== "builtin")).map(k => methodName(d, k)).join(" + ");
+const sameSet = (a, b) => a.length === b.length && a.every(x => b.includes(x));
 function methodPick(d, unlocked) {
   if (!d.methods) return "";
-  const saved = d.methods.find(m => m.saved) || d.methods[0], cur = state.reviewMethod || saved.id;
-  const all = state.reviewMethodsAll, shown = d.methods.filter(m => all || m.fits || m.id === cur);
-  const opt = m => `<option value="${esc(m.id)}" ${m.id === cur ? "selected" : ""} title="${esc(m.about || "")}">${esc(m.label)}${m.saved ? " (default)" : ""}</option>`;
-  const others = d.methods.length - d.methods.filter(m => m.fits || m.id === cur).length;
-  return `<label class="model-pick" >Method${info("The checklist the next review follows: what to look for, how serious each finding is, and how comments are worded. lfg:review still runs the review around it. Your default is set in Review method, below the lists.")}<select data-review-method ${unlocked ? "" : "disabled"}>${shown.map(opt).join("")}${!all && others ? `<option value="__all">Other skill… (${others})</option>` : ""}</select></label>`;
+  state.prMethodData = d;
+  const sel = methodSel(d), saved = d.method_saved || ["builtin"], all = state.reviewMethodsAll, same = sameSet(sel, saved);
+  const extra = (state.reviewExtra || []).filter(k => !d.methods.some(m => m.key === k)).map(k => ({ key: k, label: k.split("/").pop(), about: k, fits: true, file: true }));
+  const list = [...d.methods, ...extra], shown = list.filter(m => all || m.fits || sel.includes(m.key)), hidden = list.length - shown.length;
+  const row = m => `<label class="mp-o" title="${esc(m.about || "")}"><input type="checkbox" data-mp-key="${esc(m.key)}" ${sel.includes(m.key) ? "checked" : ""} ${unlocked ? "" : "disabled"}><span class="grow"><b>${esc(m.label)}</b>${m.saved ? ' <span class="muted small">default</span>' : ""}${m.file ? `<div class="muted small mono">${esc(m.key)}</div>` : ""}</span></label>`;
+  return `<details class="method-pick" data-method-pick><summary class="btn small">Method: <b data-mp-label>${esc(methodLabel(d, sel))}</b> <span class="tag warn" data-mp-tag ${same ? "hidden" : ""}>this page only</span></summary>
+    <div class="mp-pop"><div class="muted small">What the next review follows: what to look for, how serious each finding is, how comments read. Tick several to use them together; LFG's own is read first, so yours win where they disagree.</div>
+      <div class="mp-list">${shown.map(row).join("")}${hidden ? `<a href="#" class="small" data-mp-all>Show every skill (${hidden} more)</a>` : ""}</div>
+      ${unlocked ? `<div class="row mt"><input type="text" class="grow mono small" data-mp-file placeholder="Or add a file or folder, e.g. ~/notes/review.md"><button class="btn small" data-mp-add>Add</button></div>
+      <div class="row mt"><span class="muted small grow" data-mp-msg>${same ? "This is your default." : "Only for reviews started from this page."}</span><button class="btn small primary" data-mp-save ${same ? "disabled" : ""}>Save as my default</button></div>` : ""}</div></details>`;
+}
+function wireMethodPick(root) {
+  const box = $("[data-method-pick]", root);
+  if (!box) return;
+  const d = state.prMethodData;
+  const paint = () => {
+    const sel = methodSel(d), same = sameSet(sel, d.method_saved || ["builtin"]);
+    $("[data-mp-label]", box).textContent = methodLabel(d, sel);
+    $("[data-mp-tag]", box).hidden = same;
+    const sv = $("[data-mp-save]", box); if (sv) sv.disabled = same;
+    const msg = $("[data-mp-msg]", box); if (msg) msg.textContent = same ? "This is your default." : "Only for reviews started from this page.";
+  };
+  $$("[data-mp-key]", box).forEach(c => c.onchange = () => {
+    const keys = $$("[data-mp-key]:checked", box).map(x => x.dataset.mpKey);
+    if (!keys.length) { c.checked = true; return; }  // a review needs at least one method
+    state.reviewSel = keys; paint();
+  });
+  const allA = $("[data-mp-all]", box);
+  if (allA) allA.onclick = e => { e.preventDefault(); state.reviewMethodsAll = true; state.mpOpen = true; softRoute(); };
+  const add = $("[data-mp-add]", box), inp = $("[data-mp-file]", box);
+  if (add) add.onclick = () => {
+    const v = inp.value.trim(); if (!v) return;
+    state.reviewExtra = [...new Set([...(state.reviewExtra || []), v])];
+    state.reviewSel = [...new Set([...methodSel(d), v])]; state.mpOpen = true; softRoute();
+  };
+  if (inp) inp.onkeydown = e => { if (e.key === "Enter") add.onclick(); };
+  const sv = $("[data-mp-save]", box);
+  if (sv) sv.onclick = async () => {
+    const r = await save("review_sources", { sources: methodSel(d) });
+    if (!r.ok) return saidMsg($("[data-mp-msg]", box), r, "");
+    state.reviewSel = null; state.reviewExtra = []; state.mpOpen = true;
+    prefToast(`Every review now follows ${methodLabel({ methods: r.methods }, r.saved)}.`);
+    softRoute();
+  };
+  if (state.mpOpen) { box.open = true; state.mpOpen = false; }
+  if (state.mpOutside) document.removeEventListener("click", state.mpOutside, true);
+  state.mpOutside = e => { const b = $("[data-method-pick]"); if (b && b.open && !b.contains(e.target)) b.open = false; };
+  document.addEventListener("click", state.mpOutside, true);
 }
 function modelPick(d, unlocked) {
   if (!d.models) return "";
@@ -3884,15 +3930,6 @@ const linkTags = prs => (prs || []).map(x => ` <a class="tag mono" href="#prs/${
 /* Which files a review reads to decide what to look for, how to score and how to word comments. */
 /* Review sources next to each other from one skill's folder (its SKILL.md and the files it points at) are one entry:
    the skill, with its parts under it, moved and removed together. */
-function methodGroups(sources) {
-  const groups = [];
-  sources.forEach((x, i) => {
-    const m = /^(.*\/skills\/([^/]+))(\/|$)/.exec(x.path), key = m ? m[1] : x.path, last = groups[groups.length - 1];
-    if (m && last && last.key === key) last.items.push(i);
-    else groups.push({ key, skill: m ? m[2] : "", items: [i] });
-  });
-  return groups;
-}
 /* Findings you told reviews not to flag again, in this repo or in every repo. Every review reads these first. */
 const PASS_SCOPE = { repo: ["Every PR in this repo", "A review of any PR in that repo leaves it alone.", "for every PR in this repo"], all: ["Every repo", "A review of any PR in any repo leaves it alone.", "for every repo"] };
 const passedTag = x => x.scope === "all" ? `<span class="tag warn" title="${PASS_SCOPE.all[1]}">Every repo</span>` : `<span class="tag" title="${PASS_SCOPE.repo[1]}">Every PR in ${esc(x.repo)}</span>`;
@@ -3924,42 +3961,6 @@ function offerPass(pr, id, title, own) {
     if (b.dataset.passScope !== "pr") prefToast(`Reviews won't flag this again in ${b.dataset.passScope === "all" ? "any repo" : repo}. You can undo it under Passed on for good.`);
     softRoute();
   });
-}
-function methodSection(m, unlocked) {
-  if (!m) return "";
-  const gs = methodGroups(m.sources);
-  const part = x => `${x.path === "builtin" ? "<b>LFG's built-in method</b>" : `<span class="mono small">${esc(x.path)}</span>`} ${x.missing ? '<span class="tag bad">not found</span>' : `<span class="muted small">${plural(x.found, "file")}</span>`}`;
-  const rows = gs.map((g, gi) => {
-    const xs = g.items.map(i => m.sources[i]);
-    const what = g.skill && xs.length > 1 ? `<b>${esc(g.skill)}</b> skill <span class="mono small muted">${esc(g.key)}</span><ul class="parts">${xs.map(x => `<li>${part({ ...x, path: x.path.slice(g.key.length + 1) || x.path })}</li>`).join("")}</ul>` : part(xs[0]);
-    return `<li><span class="grow">${what}</span>${m.own && unlocked ? `<button class="btn small" data-rm-move='${gi},-1' ${gi ? "" : "disabled"} aria-label="Read earlier">↑</button><button class="btn small" data-rm-move='${gi},1' ${gi < gs.length - 1 ? "" : "disabled"} aria-label="Read later">↓</button><button class="btn small" data-rm-del="${gi}">Remove</button>` : ""}</li>`;
-  }).join("");
-  return `<details class="more mt" id="review-method"><summary><b>Review method</b> <span class="muted small">${m.own ? `your own: ${plural(gs.length, "source")}` : "LFG's built-in method"}</span></summary>
-    <div class="readable"><p class="muted small">What every review here reads, in order, to decide what to look for, how serious each finding is, the score and how comments are worded. Later ones win. The repo's AGENTS.md and CLAUDE.md files are read after these and win over them.</p>
-    <ul class="items box">${rows}</ul>
-    ${unlocked ? `<div class="row mt"><input type="text" id="rm-new" class="grow mono" placeholder="A file or folder, e.g. ~/.claude/skills/review-pr/SKILL.md"><button class="btn" id="rm-add">Add</button>${m.own && !m.sources.some(x => x.path === "builtin") ? '<button class="btn" id="rm-builtin" title="Read LFG\'s built-in method together with your own sources. Move it up to have your sources win where they disagree">Also use LFG\'s built-in method</button>' : ""}${m.own ? '<button class="btn" id="rm-reset" title="Go back to LFG\'s built-in review method">Use LFG\'s built-in method</button>' : ""}</div><span class="save-msg" id="rm-msg"></span>` : '<p class="muted small">Run <code>${esc(unlockCmd())}</code> to change it here.</p>'}
-    <p class="muted small">Read last, after everything above: <span class="mono">${esc(m.overrides)}</span> (${m.override_files.length ? plural(m.override_files.length, "file") : "empty"}).</p></div></details>`;
-}
-function wireMethod(root) {
-  const box = $("#review-method", root);
-  if (!box) return;
-  const cur = () => (state.prMethod.own ? state.prMethod.sources.map(x => x.path) : []);
-  const put = async list => {
-    const r = await save("review_sources", { sources: list });
-    if (!r.ok) return saidMsg($("#rm-msg", box), r, "");
-    state.prMethod = r; sessionStorage.setItem("lfg.methodOpen", "1"); softRoute();
-  };
-  const blocks = () => methodGroups(state.prMethod.sources).map(g => g.items.map(i => cur()[i]));
-  $$("[data-rm-del]", box).forEach(b => b.onclick = () => put(blocks().filter((_, g) => g !== +b.dataset.rmDel).flat()));
-  $$("[data-rm-move]", box).forEach(b => b.onclick = () => { const [g, d] = b.dataset.rmMove.split(",").map(Number), l = blocks(); [l[g], l[g + d]] = [l[g + d], l[g]]; put(l.flat()); });
-  const add = $("#rm-add", box), inp = $("#rm-new", box);
-  if (add) add.onclick = () => { const v = inp.value.trim(); if (v) put([...cur(), v]); };
-  if (inp) inp.onkeydown = e => { if (e.key === "Enter") add.onclick(); };
-  const both = $("#rm-builtin", box);
-  if (both) both.onclick = () => put(["builtin", ...cur()]);  // read first, so your own sources win where they disagree
-  const reset = $("#rm-reset", box);
-  if (reset) reset.onclick = () => put([]);
-  if (sessionStorage.getItem("lfg.methodOpen")) { box.open = true; sessionStorage.removeItem("lfg.methodOpen"); }
 }
 /* A Linear ticket as Lee's rules want it named: its id and, when LFG has it, its title. */
 const ticketName = t => `${t}${(state.ticketTitles || {})[t] ? ` (${state.ticketTitles[t]})` : ""}`;
@@ -4722,16 +4723,12 @@ function wirePrs(root) {
   $$(".pr-steps", root).forEach(el => (el.scrollTop = el.scrollHeight));  // newest step in view
   $$("[data-prs-done]", root).forEach(c => c.onchange = () => { localStorage.setItem("lfg.prs.done", c.checked ? "1" : "0"); softRoute(); });
   $$("[data-pr-group]", root).forEach(b => b.onclick = prGroup);
-  $$("[data-review-method]", root).forEach(s => s.onchange = () => {
-    if (s.value === "__all") { state.reviewMethodsAll = true; return softRoute().then(() => $("[data-review-method]")?.focus()); }
-    state.reviewMethod = s.value;
-  });
   $$("[data-review-model]", root).forEach(s => s.onchange = async () => {
     const r = await save("review_model", { model: s.value });
     if (!r.ok) return alertMsg(s, r);
     prefToast(`Reviews now run on ${s.selectedOptions[0].textContent}.`);
   });
-  wireMethod(root);
+  wireMethodPick(root);
   $$("[data-pr-notes]", root).forEach(b => b.onclick = () => {
     const box = b.closest(".pr-actions").nextElementSibling, t = $("textarea", box), pr = t.dataset.prNotesText;
     box.hidden = !box.hidden;
@@ -4759,7 +4756,7 @@ function wirePrs(root) {
   $$("[data-ticket-run]", root).forEach(b => b.onclick = async () => {
     const [t, refs] = JSON.parse(b.dataset.ticketRun);
     b.disabled = true; b.textContent = "Starting…";
-    const r = await save("review_run", { pr: refs[0], with: refs.slice(1), ticket: t, fresh: b.dataset.fresh === "1", fresh_eyes: b.dataset.fresh === "1" && !!state.freshEyes, method: state.reviewMethod || "" });
+    const r = await save("review_run", { pr: refs[0], with: refs.slice(1), ticket: t, fresh: b.dataset.fresh === "1", fresh_eyes: b.dataset.fresh === "1" && !!state.freshEyes, sources: methodSel(state.prMethodData) });
     if (!r.ok) { b.disabled = false; b.textContent = "Try again"; return alertMsg(b, r); }
     setTimeout(softRoute, 1000);
   });
@@ -4770,7 +4767,7 @@ function wirePrs(root) {
   $$("[data-pr-together]", root).forEach(b => b.onclick = async () => {
     const [pr, others] = JSON.parse(b.dataset.prTogether);
     b.disabled = true; b.textContent = "Starting…";
-    const r = await save("review_run", { pr, with: others, fresh: b.dataset.fresh === "1", fresh_eyes: b.dataset.fresh === "1" && !!state.freshEyes, method: state.reviewMethod || "" });
+    const r = await save("review_run", { pr, with: others, fresh: b.dataset.fresh === "1", fresh_eyes: b.dataset.fresh === "1" && !!state.freshEyes, sources: methodSel(state.prMethodData) });
     if (!r.ok) { b.disabled = false; b.textContent = "Try again"; return alertMsg(b, r); }
     setTimeout(softRoute, 1000);
   });

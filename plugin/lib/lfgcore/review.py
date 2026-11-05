@@ -780,7 +780,7 @@ def sources():
 
 
 def method():
-    """What the Review method section shows: the files and folders a review reads, in order, each with whether it is
+    """What a review reads: the files and folders a review reads, in order, each with whether it is
     there and how many files it holds; then your overrides, read last."""
     cfg = C.config().get("review") or {}
     own = list(cfg.get("sources") or [])
@@ -1102,22 +1102,54 @@ def _model(m=None):
     return ["--model", m] if m else []
 
 
+def method_key(path):
+    """One method's key: `builtin` for LFG's own, ~/.claude/skills/<name> for anything inside one of your skills (its
+    SKILL.md or a checklist in it: the whole skill is one method), else the file or folder as given."""
+    if path == BUILTIN:
+        return BUILTIN
+    full = os.path.realpath(os.path.expanduser(str(path)))
+    skills = os.path.realpath(os.path.join(C.HOME, ".claude", "skills"))
+    if full.startswith(skills + os.sep):
+        return "~/.claude/skills/" + full[len(skills) + 1:].split(os.sep)[0]
+    return str(path)
+
+
+def method_saved():
+    """Your default methods, as keys in the order they're read (later ones win). None saved: LFG's own."""
+    return list(dict.fromkeys(method_key(x) for x in (C.config().get("review") or {}).get("sources") or [])) \
+        or [BUILTIN]
+
+
 def method_choices():
-    """Methods one review can use instead of the saved one: LFG's built-in method and each of your own skills. `fits`:
-    a skill whose job is reviewing (its description starts "Review" or "Audit"), or the one you saved; the page shows
-    those and keeps the rest behind "Other skill"."""
+    """Every method the picker offers: LFG's built-in one, each of your own skills, and any other file or folder in
+    your default. `fits`: a skill whose job is reviewing (its description starts "Review" or "Audit") or one you use;
+    the picker shows those and keeps the rest behind "Show every skill". `saved`: part of your default."""
     from . import control as K
-    saved = (C.config().get("review") or {}).get("sources") or []
-    out = [{"id": "builtin", "label": "LFG's built-in method", "sources": [], "fits": True, "saved": not saved}]
+    saved = method_saved()
+    out = [{"key": BUILTIN, "label": "LFG's built-in method", "fits": True, "saved": BUILTIN in saved,
+            "about": "LFG's own checklist: intent, bugs the PR introduces or exposes, severity and score."}]
     for d in sorted(glob.glob(os.path.join(C.HOME, ".claude", "skills", "*", "SKILL.md"))):
-        name, src = os.path.basename(os.path.dirname(d)), "~/.claude/skills/%s" % os.path.basename(os.path.dirname(d))
+        key = "~/.claude/skills/%s" % os.path.basename(os.path.dirname(d))
         about = str(K._frontmatter(C.read_text(d)[:20000]).get("description") or "").lstrip(">- \n").strip()
-        out.append({"id": name, "label": name, "sources": [src], "about": about[:300], "saved": saved == [src],
-                    "fits": saved == [src] or bool(re.match(r"(review|audit)\b", about, re.I))})
-    if saved and not any(x["saved"] for x in out):  # your saved method isn't one skill folder: e.g. several read
-        out.insert(1, {"id": "saved", "label": method_label(saved), "sources": list(saved), "fits": True,  # together
-                       "saved": True, "about": "Your saved Review method: read together, in order, later ones win."})
+        out.append({"key": key, "label": _skill_name(key), "about": about[:300], "saved": key in saved,
+                    "fits": key in saved or bool(re.match(r"(review|audit)\b", about, re.I))})
+    have = {m["key"] for m in out}
+    out += [{"key": k, "label": _skill_name(k), "about": k, "fits": True, "saved": True, "file": True}
+            for k in saved if k not in have]
     return out
+
+
+def method_sources(keys):
+    """What a review reads for these picked methods: LFG's own alone is the default ([]); otherwise the keys, LFG's
+    own first so your own methods win where they disagree. Each must exist."""
+    if not isinstance(keys, list) or not keys or not all(isinstance(x, str) and x.strip() for x in keys):
+        raise ReviewError("pick at least one review method")
+    keys = list(dict.fromkeys(method_key(x.strip()) for x in keys))
+    for k in keys:
+        if not _expand(k):
+            raise ReviewError("%s isn't a file or a folder with Markdown in it" % k)
+    keys = sorted(keys, key=lambda k: k != BUILTIN)
+    return [] if keys == [BUILTIN] else keys
 
 
 def method_label(srcs):
@@ -1134,7 +1166,8 @@ def _skill_name(path):
     return m.group(1) if m else (os.path.basename(str(path).rstrip("/")) or str(path))
 
 
-def start(repo, number, ticket=None, fresh=False, together=(), model=None, method=None, fresh_eyes=False, notes=None):
+def start(repo, number, ticket=None, fresh=False, together=(), model=None, method=None, fresh_eyes=False, notes=None,
+          sources=None):
     """Start `lfg review run` detached (the dashboard's Review / Re-review / Review together buttons). together: more
     (repo, number) PRs to review in the same session. notes: what you want this one review to look into."""
     import subprocess
@@ -1150,11 +1183,13 @@ def start(repo, number, ticket=None, fresh=False, together=(), model=None, metho
     args += ["--fresh"] if fresh or fresh_eyes else []
     args += ["--fresh-eyes"] if fresh_eyes else []
     args += ["--model", model] if model else []
-    if method:
-        m = next((x for x in method_choices() if x["id"] == method), None)
-        if not m:
+    if sources is not None:  # the methods picked for this review (method_choices keys)
+        args += ["--method", json.dumps(method_sources(sources))]
+    elif method:  # one method by name: "builtin" or a skill folder's name
+        key = BUILTIN if method == BUILTIN else "~/.claude/skills/%s" % method
+        if key not in {m["key"] for m in method_choices()}:
             raise ReviewError("no review method %r" % method)
-        args += ["--method", json.dumps(m["sources"])]
+        args += ["--method", json.dumps(method_sources([key]))]
     notes = str(notes or "").strip()
     args += ["--notes", _text(notes, "notes", 4000)] if notes else []
     with open(os.devnull, "wb") as dn:
