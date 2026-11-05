@@ -1159,6 +1159,14 @@ def cmd_release(a):
     from . import release as RL
     root = C.repo_root() or os.getcwd()
     try:
+        if a.action == "note":
+            items = []
+            if a.whats_new:
+                items.append({k: v for k, v in (("title", a.whats_new[0]), ("text", a.whats_new[1]),
+                                                ("page", a.page), ("sel", a.sel)) if v})
+            _print(RL.note(root, a.version, added=a.added or [], changed=a.changed or [], fixed=a.fixed or [],
+                           whats_new=items))
+            return 0
         _print(RL.prepare(root, a.version, title=a.title or ""))
     except ValueError as e:
         C.die(str(e), 2)
@@ -1797,9 +1805,15 @@ def main(argv=None):
     pl.add_argument("action", nargs="?", default="list", choices=["list", "install", "enable", "disable", "uninstall"])
     pl.add_argument("id", nargs="*", help="name@marketplace; list: words to search the marketplaces for")
     pl.add_argument("--json", action="store_true")
-    rl = sp.add_parser("release", help="in your LFG checkout: bump the version and name the unreleased notes after it")
-    rl.add_argument("action", choices=["prepare"])
-    rl.add_argument("version", help="e.g. 0.5.0")
+    rl = sp.add_parser("release", help="in your LFG checkout: a PR's notes (note), or cut a release (prepare)")
+    rl.add_argument("action", choices=["note", "prepare"])
+    rl.add_argument("version", help="prepare: the version, e.g. 0.5.0; note: the PR's branch, naming its notes file")
+    rl.add_argument("--added", action="append", help="note: a changelog line under Added (repeatable)")
+    rl.add_argument("--changed", action="append", help="note: a changelog line under Changed (repeatable)")
+    rl.add_argument("--fixed", action="append", help="note: a changelog line under Fixed (repeatable)")
+    rl.add_argument("--whats-new", nargs=2, metavar=("TITLE", "TEXT"), help="note: what the user is told")
+    rl.add_argument("--page", help="note: the dashboard page the What's new item is about, e.g. prs")
+    rl.add_argument("--sel", help="note: the part of that page to light up (a CSS selector)")
     rl.add_argument("--title", help="what the release is, in a few words (What's new shows it)")
     up = sp.add_parser("update", help="is there newer LFG (your fork, the original project)? apply installs it; fix "
                                       "has Claude fix a stopped update, then applies")

@@ -25,9 +25,9 @@ CI runs the same checks on macOS.
 
 ## Releases
 
-Changes reach users as numbered releases, not every merge: each pull request adds its notes under "unreleased" in
-`CHANGELOG.md` and `plugin/releases.json`, and a release PR (`plugin/bin/lfg release prepare <x.y.z>`) names them and
-bumps the version. Once merged, the merge commit is tagged `v<x.y.z>`. The details are in `CLAUDE.md`.
+Changes reach users as numbered releases, not every merge: each pull request writes its notes to its own
+`changes/<branch>.json` (`plugin/bin/lfg release note`), and a release PR (`plugin/bin/lfg release prepare <x.y.z>`)
+gathers them and bumps the version. Once merged, the merge commit is tagged `v<x.y.z>`. The details are in `CLAUDE.md`.
 
 ## Ground rules
 

@@ -6658,12 +6658,40 @@ class ReleasePrepareTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 RL.prepare(self.root, bad)
         r = RL.prepare(self.root, "0.5.1", today="2026-12-02")  # nothing unreleased: it says so
-        self.assertTrue(any("no unreleased notes" in n for n in r["notes"]))
-        self.assertTrue(any("Unreleased section is empty" in n for n in r["notes"]))
+        self.assertTrue(any("nothing for What's new" in n for n in r["notes"]))
+        self.assertTrue(any("no changelog lines" in n for n in r["notes"]))
+        self.assertTrue(any("title" in n for n in r["notes"]))
         with mock.patch.object(K.C, "PLUGIN_ROOT", os.path.join(self.root, "plugin")):
             C.write_json(os.path.join(self.root, "plugin", "releases.json"), {"releases": [
                 {"version": "unreleased", "title": "x", "items": [{"title": "a", "text": "b"}]}]})
             self.assertEqual(K.releases(), [])  # not released yet: never shown to users
+
+    def test_each_pr_writes_its_own_notes_file_and_a_release_gathers_them(self):
+        from lfgcore import release as RL
+        RL.note(self.root, "Tabs Follow Repo", fixed=["Tabs follow the repo."],
+                whats_new=[{"title": "Tabs follow your repo", "text": "Each repo shows its own.", "page": "studio"}])
+        RL.note(self.root, "message-times", added=["- Messages show when they were sent."],
+                whats_new=[{"title": "When each message was sent", "text": "Hover for the date."}])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "changes"))),
+                         ["message-times.json", "tabs-follow-repo.json"])  # one file each: no shared lines
+        for bad in ({"name": "!!"}, {"name": "x"}, {"name": "x", "whats_new": [{"title": "no text"}]}):
+            with self.assertRaises(ValueError):
+                RL.note(self.root, bad["name"], whats_new=bad.get("whats_new", ()))
+        r = RL.prepare(self.root, "0.5.0", title="Tabs and times", today="2026-12-01")
+        self.assertEqual(r["notes"], [])
+        self.assertEqual(os.listdir(os.path.join(self.root, "changes")), [])  # gathered, then deleted
+        rel = C.read_json(os.path.join(self.root, "plugin", "releases.json"))["releases"]
+        self.assertEqual(rel[0]["version"], "0.5.0")
+        self.assertEqual([i["title"] for i in rel[0]["items"]],  # the old way's "unreleased" first, then each file
+                         ["Combos", "When each message was sent", "Tabs follow your repo"])
+        log = C.read_text(os.path.join(self.root, "CHANGELOG.md"))
+        self.assertIn("## Unreleased\n\n## 0.5.0 (2026-12-01)\n\n### Added\n- Combos.\n"
+                      "- Messages show when they were sent.\n\n### Fixed\n- Tabs follow the repo.\n", log)
+        C.write_text(os.path.join(self.root, "changes", "broken.json"), "{not json")
+        with self.assertRaisesRegex(ValueError, "isn't valid JSON"):
+            RL.prepare(self.root, "0.6.0")
+        self.assertEqual(C.read_json(os.path.join(self.root, "plugin", ".claude-plugin", "plugin.json"))["version"],
+                         "0.5.0")  # refused before changing anything
 
     def test_the_real_notes_are_released_and_say_what_users_see(self):
         from lfgcore import control as K
@@ -6673,6 +6701,8 @@ class ReleasePrepareTest(unittest.TestCase):
             for i in r["items"]:
                 self.assertTrue(i["title"] and i["text"], i)
         self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(C.PLUGIN_ROOT), "CLAUDE.md")))
+        from lfgcore import release as RL
+        RL.pending(os.path.dirname(C.PLUGIN_ROOT))  # every notes file waiting for the next release reads
 
 
 class UpdatePickTest(unittest.TestCase):

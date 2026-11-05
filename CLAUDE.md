@@ -7,26 +7,32 @@ How changes ship in this repo. Every Claude Code session here reads this, on any
 Users get numbered releases, not every merge. The dashboard's Update button installs the newest release (a `v<x.y.z>`
 tag on the fork's main), and the dashboard walks the user through what's new in it, once.
 
-**Every pull request that changes something a user can see or do:**
+**Every pull request that changes something a user can see or do** writes its notes to a file of its own,
+`changes/<branch>.json`, and touches neither `CHANGELOG.md` nor `plugin/releases.json`. Each PR having its own file is
+what keeps two open PRs from conflicting; editing the top of those two files made every second PR conflict.
 
-1. Adds a line to `CHANGELOG.md` under `## Unreleased` (`### Added`, `### Changed` or `### Fixed`). This is the
-   detailed record.
-2. Adds an item to `plugin/releases.json` under the release whose `version` is `"unreleased"` (create it at the top
-   of `releases` if it isn't there, with a `title` placeholder). This is what the user is told in the What's new
-   walkthrough: a `title`, plain-English `text` saying what they can now see or do, and, when it lives on one page,
-   `page` (a dashboard page key, e.g. `prs`) and `sel` (a CSS selector for the part to light up there).
-3. Never bumps the version in `plugin/.claude-plugin/plugin.json`. Only a release does.
+```
+plugin/bin/lfg release note <branch> --fixed "<changelog line>" \
+  --whats-new "<title>" "<what the user can now see or do, in plain words>" --page prs --sel "#some-part"
+```
 
-Internal changes (refactors, tests, tooling) get a changelog line only if they change behaviour.
+- `--added`, `--changed`, `--fixed`: changelog lines (repeatable), the detailed record.
+- `--whats-new TITLE TEXT`: what the What's new walkthrough tells the user; `--page` (a dashboard page key, e.g.
+  `prs`) and `--sel` (a CSS selector) say where to show it, when it lives on one page. More than one item: edit the
+  file's `whats_new` list.
+- Never bump the version in `plugin/.claude-plugin/plugin.json`. Only a release does.
+
+Internal changes (refactors, tests, tooling) get notes only if they change behaviour.
 
 **A release** is its own pull request, cut when the user asks for one ("cut a release", "ship 0.5.0"):
 
-1. `plugin/bin/lfg release prepare <x.y.z> --title "<a few words>"` in the checkout. It bumps the version, names the
-   unreleased What's new entry after it, and moves the changelog's Unreleased notes under the version. Fix anything
-   it lists under `notes`.
-2. Tidy the changelog section: one `### Added` / `### Changed` / `### Fixed` each, plain words, newest first.
+1. `plugin/bin/lfg release prepare <x.y.z> --title "<a few words>"` in the checkout. It bumps the version, gathers
+   every `changes/*.json` into the version's changelog section and What's new entry, and deletes those files. Fix
+   anything it lists under `notes`.
+2. Read the result as the user will: plain words, nothing repeated.
 3. Open the PR. Once it is merged, tag the merge commit and push the tag:
-   `git tag v<x.y.z> <merge sha> && git push origin v<x.y.z>`. Until the tag exists, Update won't offer it.
+   `git tag -m "LFG <x.y.z>" v<x.y.z> <merge sha> && git push origin v<x.y.z>` (annotated: this repo signs tags).
+   Until the tag exists, Update won't offer it.
 
 Minor version for features (0.4.0 → 0.5.0), patch for fixes only (0.4.0 → 0.4.1).
 
