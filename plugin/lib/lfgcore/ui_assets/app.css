@@ -1556,12 +1556,31 @@ a.stk-i:hover { background: var(--hover); }
 #nav a.nav-sub { height: 26px; padding-left: 34px; font-size: 13px; gap: 4px; }
 #nav a.nav-sub > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #nav a.nav-sub .prtab-x { visibility: hidden; }
-[data-prtab].dragging { opacity: .4; }
+[data-tab].dragging { opacity: .4; }
 .prtab.drop-before { box-shadow: inset 2px 0 0 var(--blue); }
 .prtab.drop-after { box-shadow: inset -2px 0 0 var(--blue); }
 #nav a.nav-sub.drop-before { box-shadow: inset 0 2px 0 var(--blue); }
 #nav a.nav-sub.drop-after { box-shadow: inset 0 -2px 0 var(--blue); }
 #nav a.nav-sub:hover .prtab-x, #nav a.nav-sub.on .prtab-x { visibility: visible; }
+/* pinning: the pin shows on hover, and always on a pinned tab */
+.tab-pin { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px;
+  color: var(--muted); flex: none; cursor: pointer; visibility: hidden; }
+.tab-pin .ico { width: 13px; height: 13px; }
+.tab-pin:hover { background: var(--active); color: var(--text); }
+.prtab:hover .tab-pin, .prtab.on .tab-pin, #nav a:hover > .tab-pin, .tab-pin.on { visibility: visible; }
+.tab-pin.on { color: var(--blue); }
+.prtab.pinned { padding-left: 10px; }
+#nav a.nav-sub > .tab-l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#nav .ns-item.ns-tab { padding-right: 4px; }
+#nav .ns-item.ns-tab > .tab-l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#nav .ns-item.ns-tab .prtab-t { color: inherit; }
+#nav .ns-item.ns-tab .prtab-x { visibility: hidden; }
+#nav .ns-item.ns-tab:hover .prtab-x, #nav .ns-item.ns-tab.on .prtab-x { visibility: visible; }
+#nav .ns-item.drop-before { box-shadow: inset 0 2px 0 var(--blue); }
+#nav .ns-item.drop-after { box-shadow: inset 0 -2px 0 var(--blue); }
+#nav .ns-sep { height: 1px; background: var(--line); margin: 4px 10px 4px 36px; }
+.prtab .ns-dot { position: static; margin: 0; flex: none; }
+.pr-doc-tabs[hidden] { display: none; }
 .promo-notes { margin-top: 6px; font-size: 13.5px; }
 .promo-notes > summary { cursor: pointer; color: var(--text-2); }
 .promo-notes .md { max-height: 260px; overflow: auto; margin-top: 6px; }

@@ -5113,110 +5113,152 @@ const ICON = {
   more: "M5 12h.01M12 12h.01M19 12h.01",
   download: "M12 4v11M7 10l5 5 5-5M5 20h14",
   terminal: "M4 5h16v14H4zM7.5 10l2.5 2-2.5 2M12 15h4",
+  pin: "M9 4h6l-1 6 3 3H7l3-3zM12 13v7",
   agent: "M12 3v3M7 6h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2zM9.5 11.5v1M14.5 11.5v1M9.5 15.5h5",
 };
 const icon = (k, cls = "ico") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICON[k] || ""}"/></svg>`;
-/* Reviews open as tabs inside the dashboard: every PR review you open joins them, above its page and under PR
-   reviews in the sidebar, until you close it. Kept in this browser. */
-const PR_TABS_MAX = 12;
-const openTabs = () => { try { return JSON.parse(localStorage.getItem("lfg.prtabs") || "[]"); } catch (e) { return []; } };
-const prTabsSave = tabs => localStorage.setItem("lfg.prtabs", JSON.stringify(tabs.slice(-PR_TABS_MAX)));
-const prTabHref = pr => "#prs/" + pr.replace("#", "/");
-function prTabOpen(pr, title) {
-  const tabs = openTabs(), hit = tabs.find(t => t.pr === pr);
-  if (hit) { if (title && hit.title !== title) { hit.title = title; prTabsSave(tabs); } return; }
-  prTabsSave([...tabs, { pr, title: title || pr }]);
-  renderNav("prs");
+/* Tabs: PR reviews and Studio sessions you open join a row of tabs above the page and a list under the page in the
+   sidebar, until you close them. Drag one, above the page or in the sidebar, to reorder: both follow one order. Pin
+   one to keep it at the front: pinned tabs stay ahead of the rest, have no close button, and never drop off when too
+   many are open. Dragging a tab among the pinned ones pins it. Kept in this browser. */
+const TABS_MAX = 12;
+const nsDot = st => st === "needs-you" ? '<span class="ns-dot warn" title="Needs you"></span>' : ssLive(st) ? `<span class="ns-dot${st === "idle" ? "" : " on"}" title="${st === "idle" ? "Waiting for you" : "Working"}"></span>` : "";
+const ssStateOf = id => ((state.navSess || []).find(x => x.id === id) || {}).state;
+const TABSETS = {
+  prs: { store: "lfg.prtabs", key: "pr", root: "prs", href: k => "#prs/" + k.replace("#", "/"), tip: t => t.pr + " · " + t.title,
+    label: t => `${esc(t.pr.split("#")[1] ? "#" + t.pr.split("#")[1] : t.pr)} <span class="prtab-t">${esc(t.title)}</span>` },
+  studio: { store: "lfg.sstabs", key: "id", root: "studio", href: k => "#studio/" + k, tip: t => t.title,
+    label: t => `${nsDot(ssStateOf(t.id))}<span class="prtab-t ss-tab-t">${esc(t.title || "Session")}</span>` },
+};
+const tabKey = (kind, t) => t[TABSETS[kind].key];
+const tabHref = (kind, k) => TABSETS[kind].href(k);
+const tabOn = (kind, k) => { const h = tabHref(kind, k); return location.hash === h || location.hash.startsWith(h + "/"); };
+function tabsOf(kind) {
+  try { const v = JSON.parse(localStorage.getItem(TABSETS[kind].store) || "[]"); return Array.isArray(v) ? v.filter(t => t && tabKey(kind, t)) : []; } catch (e) { return []; }
 }
-function prTabClose(pr) {
-  const tabs = openTabs(), i = tabs.findIndex(t => t.pr === pr);
-  if (i < 0) return;
+function tabsSave(kind, tabs) {
+  const pinned = tabs.filter(t => t.pinned), rest = tabs.filter(t => !t.pinned);  // pinned first, each group in its order
+  localStorage.setItem(TABSETS[kind].store, JSON.stringify([...pinned, ...rest.slice(-Math.max(1, TABS_MAX - pinned.length))]));
+}
+function tabsRedraw(kind) {
+  renderNav((location.hash.slice(1) || "home").split("/")[0]);
+  $$(`[data-tabstrip="${kind}"]`).forEach(el => { el.outerHTML = tabStrip(kind); });
+}
+function tabOpen(kind, k, title) {
+  const tabs = tabsOf(kind), hit = tabs.find(t => tabKey(kind, t) === k);
+  if (hit) { if (title && hit.title !== title) { hit.title = title; tabsSave(kind, tabs); tabsRedraw(kind); } return; }
+  tabsSave(kind, [...tabs, { [TABSETS[kind].key]: k, title: title || k }]);
+  tabsRedraw(kind);
+}
+function tabClose(kind, k) {
+  const tabs = tabsOf(kind), i = tabs.findIndex(t => tabKey(kind, t) === k);
+  if (i < 0 || tabs[i].pinned) return;
   tabs.splice(i, 1);
-  prTabsSave(tabs);
-  if (location.hash === prTabHref(pr)) location.hash = tabs.length ? prTabHref(tabs[Math.min(i, tabs.length - 1)].pr).slice(1) : "prs";
-  else { renderNav(location.hash.startsWith("#prs") ? "prs" : null); $$(".pr-doc-tabs").forEach(el => { el.outerHTML = prTabStrip(); }); }
+  tabsSave(kind, tabs);
+  if (tabOn(kind, k)) location.hash = tabs.length ? tabHref(kind, tabKey(kind, tabs[Math.min(i, tabs.length - 1)])).slice(1) : TABSETS[kind].root;
+  else tabsRedraw(kind);
 }
-const prTabLabel = t => `${esc(t.pr.split("#")[1] ? "#" + t.pr.split("#")[1] : t.pr)} <span class="prtab-t">${esc(t.title)}</span>`;
-function prTabStrip() {
-  const tabs = openTabs();
-  return tabs.length ? `<div class="pr-doc-tabs" role="tablist">${tabs.map(t => `<a class="prtab ${location.hash === prTabHref(t.pr) ? "on" : ""}" href="${prTabHref(t.pr)}" draggable="true" data-prtab="${esc(t.pr)}" title="${esc(t.pr + " · " + t.title)}">${prTabLabel(t)}<span class="prtab-x" data-prtab-x="${esc(t.pr)}" role="button" aria-label="Close ${esc(t.pr)}">×</span></a>`).join("")}</div>` : "";
+function tabPin(kind, k) {
+  const tabs = tabsOf(kind), t = tabs.find(x => tabKey(kind, x) === k);
+  if (!t) return;
+  t.pinned = !t.pinned;
+  if (t.pinned) { tabs.splice(tabs.indexOf(t), 1); tabs.splice(tabs.filter(x => x.pinned).length, 0, t); }  // last of the pinned
+  tabsSave(kind, tabs);
+  tabsRedraw(kind);
 }
-document.addEventListener("click", e => {
-  const x = e.target.closest("[data-prtab-x]");
-  if (!x) return;
-  e.preventDefault(); e.stopPropagation();
-  prTabClose(x.dataset.prtabX);
-}, true);
-/* Drag a tab, above the page or in the sidebar, to reorder: both follow the one order kept in this browser. */
-let prTabDrag = null;
-function prTabMove(from, to, after) {
-  const tabs = openTabs(), i = tabs.findIndex(t => t.pr === from);
+function tabMove(kind, from, to, after) {
+  const tabs = tabsOf(kind), i = tabs.findIndex(t => tabKey(kind, t) === from);
   if (i < 0 || from === to) return;
   const [t] = tabs.splice(i, 1);
-  const j = tabs.findIndex(x => x.pr === to);
+  const j = tabs.findIndex(x => tabKey(kind, x) === to);
+  if (j >= 0) t.pinned = !!tabs[j].pinned;  // among the pinned ones it's pinned; among the rest it isn't
   tabs.splice(j < 0 ? tabs.length : j + (after ? 1 : 0), 0, t);
-  prTabsSave(tabs);
-  renderNav("prs");
-  $$(".pr-doc-tabs").forEach(el => { el.outerHTML = prTabStrip(); });
+  tabsSave(kind, tabs);
+  tabsRedraw(kind);
 }
-const prTabAfter = (e, el) => {
+const tabData = (kind, k) => esc(JSON.stringify([kind, k]));
+const tabBtns = (kind, t) => {
+  const k = tabKey(kind, t);
+  return `<span class="tab-pin${t.pinned ? " on" : ""}" data-tab-pin="${tabData(kind, k)}" role="button" title="${t.pinned ? "Unpin" : "Pin: keep it at the front"}" aria-label="${t.pinned ? "Unpin" : "Pin"} ${esc(t.title || k)}">${icon("pin")}</span>${t.pinned ? "" : `<span class="prtab-x" data-tab-x="${tabData(kind, k)}" role="button" aria-label="Close ${esc(t.title || k)}">×</span>`}`;
+};
+function tabStrip(kind) {
+  const tabs = tabsOf(kind);
+  return `<div class="pr-doc-tabs" role="tablist" data-tabstrip="${kind}"${tabs.length ? "" : " hidden"}>${tabs.map(t => { const k = tabKey(kind, t); return `<a class="prtab${tabOn(kind, k) ? " on" : ""}${t.pinned ? " pinned" : ""}" href="${tabHref(kind, k)}" draggable="true" data-tab="${tabData(kind, k)}" title="${esc(TABSETS[kind].tip(t))}">${TABSETS[kind].label(t)}${tabBtns(kind, t)}</a>`; }).join("")}</div>`;
+}
+const tabNavRow = (kind, t, cls) => { const k = tabKey(kind, t); return `<a class="${cls}${tabOn(kind, k) ? " on" : ""}${t.pinned ? " pinned" : ""}" href="${tabHref(kind, k)}" draggable="true" data-tab="${tabData(kind, k)}" title="${esc(TABSETS[kind].tip(t))}"><span class="tab-l">${TABSETS[kind].label(t)}</span>${tabBtns(kind, t)}</a>`; };
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-tab-x], [data-tab-pin]");
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const [kind, k] = JSON.parse(b.dataset.tabX || b.dataset.tabPin);
+  if (b.dataset.tabX) tabClose(kind, k); else tabPin(kind, k);
+}, true);
+let tabDrag = null;
+const tabAt = e => { const el = e.target.closest && e.target.closest("[data-tab]"); return el && tabDrag && JSON.parse(el.dataset.tab)[0] === tabDrag[0] ? el : null; };
+const tabAfter = (e, el) => {
   const r = el.getBoundingClientRect();
-  return el.classList.contains("nav-sub") ? e.clientY > r.top + r.height / 2 : e.clientX > r.left + r.width / 2;
+  return el.closest("#nav") ? e.clientY > r.top + r.height / 2 : e.clientX > r.left + r.width / 2;
 };
 document.addEventListener("dragstart", e => {
-  const el = e.target.closest && e.target.closest("[data-prtab]");
+  const el = e.target.closest && e.target.closest("[data-tab]");
   if (!el) return;
-  prTabDrag = el.dataset.prtab;
+  tabDrag = JSON.parse(el.dataset.tab);
   e.dataTransfer.effectAllowed = "move";
-  e.dataTransfer.setData("text/plain", prTabDrag);
+  e.dataTransfer.setData("text/plain", tabDrag[1]);
   el.classList.add("dragging");
 });
 document.addEventListener("dragover", e => {
-  const el = prTabDrag && e.target.closest && e.target.closest("[data-prtab]");
+  const el = tabAt(e);
   if (!el) return;
   e.preventDefault();
   $$(".drop-before, .drop-after").forEach(x => x.classList.remove("drop-before", "drop-after"));
-  if (el.dataset.prtab !== prTabDrag) el.classList.add(prTabAfter(e, el) ? "drop-after" : "drop-before");
+  if (JSON.parse(el.dataset.tab)[1] !== tabDrag[1]) el.classList.add(tabAfter(e, el) ? "drop-after" : "drop-before");
 });
 document.addEventListener("drop", e => {
-  const el = prTabDrag && e.target.closest && e.target.closest("[data-prtab]");
+  const el = tabAt(e);
   if (!el) return;
   e.preventDefault();
-  prTabMove(prTabDrag, el.dataset.prtab, prTabAfter(e, el));
+  tabMove(tabDrag[0], tabDrag[1], JSON.parse(el.dataset.tab)[1], tabAfter(e, el));
 });
 document.addEventListener("dragend", () => {
-  prTabDrag = null;
+  tabDrag = null;
   $$(".dragging, .drop-before, .drop-after").forEach(x => x.classList.remove("dragging", "drop-before", "drop-after"));
 });
+const prTabOpen = (pr, title) => tabOpen("prs", pr, title);
+const prTabStrip = () => tabStrip("prs");
 function renderNav(active) {
-  const subs = k => k !== "prs" ? "" : openTabs().map(t => `<a class="nav-sub ${location.hash === prTabHref(t.pr) ? "on" : ""}" href="${prTabHref(t.pr)}" draggable="true" data-prtab="${esc(t.pr)}" title="${esc(t.pr + " · " + t.title)}"><span>${prTabLabel(t)}</span><span class="prtab-x" data-prtab-x="${esc(t.pr)}" role="button" aria-label="Close ${esc(t.pr)}">×</span></a>`).join("");
+  const subs = k => k !== "prs" ? "" : tabsOf("prs").map(t => tabNavRow("prs", t, "nav-sub")).join("");
   // the pages the welcome turned on (always the one you're on)
   const visible = new Set(state.pages || NAV.map(p => p[0]));
   visible.add(active);
   morph($("#nav"), navSessions(active) + NAV_GROUPS.map(([g, ks]) => {
     const shown = ks.filter(k => visible.has(k));
-    return shown.length ? `<div class="nav-grp">${esc(g)}</div>${shown.map(k => `<a class="${k === active && !(k === "prs" && openTabs().some(t => location.hash === prTabHref(t.pr))) ? "on" : ""}" href="#${k}" title="${esc(TITLES[k])}"${k === active ? ' aria-current="page"' : ""}>${icon(k)}<span>${esc(TITLES[k])}</span></a>${subs(k)}`).join("")}` : "";
+    return shown.length ? `<div class="nav-grp">${esc(g)}</div>${shown.map(k => `<a class="${k === active && !(k === "prs" && tabsOf("prs").some(t => tabOn("prs", t.pr))) ? "on" : ""}" href="#${k}" title="${esc(TITLES[k])}"${k === active ? ' aria-current="page"' : ""}>${icon(k)}<span>${esc(TITLES[k])}</span></a>${subs(k)}`).join("")}` : "";
   }).filter(Boolean).join(""));
 }
-/* The Sessions accordion at the top of the sidebar: new session, the ones live here (and whether they need you),
-   your recent ones, and the full list. Open or closed is remembered. */
+/* The Studio accordion at the top of the sidebar: new session, your open session tabs (pinned first, drag to reorder),
+   then sessions live here that aren't open as tabs (and whether they need you) and your recent ones, and the full list.
+   Open or closed is remembered. */
 function navSessions(active) {
   const open = localStorage.getItem("lfg.nav.sessions") !== "0";
   const list = (state.navSess || []).filter(x => x.source !== "background");
   const cur = active === "studio" ? (location.hash.split("/")[1] || "") : "";  // "" = new, "all" = the list
-  const live = list.filter(x => ssLive(x.state)).slice(0, 5), recent = list.filter(x => !ssLive(x.state)).slice(0, Math.max(0, 5 - live.length));
-  const dot = st => st === "needs-you" ? '<span class="ns-dot warn" title="Needs you"></span>' : ssLive(st) ? `<span class="ns-dot${st === "idle" ? "" : " on"}" title="${st === "idle" ? "Waiting for you" : "Working"}"></span>` : "";
+  const tabs = tabsOf("studio"), tabbed = new Set(tabs.map(t => t.id)), rest = list.filter(x => !tabbed.has(x.id));
+  const live = rest.filter(x => ssLive(x.state)).slice(0, 5), recent = rest.filter(x => !ssLive(x.state)).slice(0, Math.max(0, 5 - live.length - tabs.length));
+  const nLive = list.filter(x => ssLive(x.state));
   const when = t => { const m = (Date.now() - new Date(t || 0)) / 6e4; return m < 60 ? `${Math.max(1, Math.round(m))}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
-  const row = x => `<a class="ns-item${x.id === cur ? " on" : ""}" href="#studio/${esc(x.id)}" title="${esc(x.title)}">${dot(x.state)}<span class="ns-t">${esc(x.title)}</span><span class="ns-w">${ssLive(x.state) ? "" : when(x.updated)}</span></a>`;
-  return `<div class="ns${open ? " open" : ""}"><div class="ns-head"><a class="${active === "studio" && !cur ? "on" : ""}" href="#studio" title="Studio: Claude Code sessions, here">${icon("studio")}<span>Studio</span>${live.length ? `<span class="ns-n${live.some(x => x.state === "needs-you") ? " warn" : ""}">${live.length}</span>` : ""}</a>
+  const row = x => `<a class="ns-item${x.id === cur ? " on" : ""}" href="#studio/${esc(x.id)}" title="${esc(x.title)}">${nsDot(x.state)}<span class="ns-t">${esc(x.title)}</span><span class="ns-w">${ssLive(x.state) ? "" : when(x.updated)}</span></a>`;
+  const others = live.map(row).join("") + recent.map(row).join("");
+  return `<div class="ns${open ? " open" : ""}"><div class="ns-head"><a class="${active === "studio" && !cur ? "on" : ""}" href="#studio" title="Studio: Claude Code sessions, here">${icon("studio")}<span>Studio</span>${nLive.length ? `<span class="ns-n${nLive.some(x => x.state === "needs-you") ? " warn" : ""}">${nLive.length}</span>` : ""}</a>
     <button class="ns-btn" data-ns-new title="New session" aria-label="New session">+</button><button class="ns-btn ns-tog" data-ns-toggle aria-expanded="${open}" aria-label="Show Studio sessions">${icon("chev")}</button></div>
-    <div class="ns-body">${live.map(row).join("")}${recent.map(row).join("")}${list.length ? `<a class="ns-all${cur === "all" ? " on" : ""}" href="#studio/all">All sessions</a>` : '<span class="ns-empty">No sessions yet</span>'}</div></div>`;
+    <div class="ns-body">${tabs.map(t => tabNavRow("studio", t, "ns-item ns-tab")).join("")}${tabs.length && others ? '<div class="ns-sep"></div>' : ""}${others}${list.length || tabs.length ? `<a class="ns-all${cur === "all" ? " on" : ""}" href="#studio/all">All sessions</a>` : '<span class="ns-empty">No sessions yet</span>'}</div></div>`;
 }
 async function loadNavSessions() {
   if (!state.repo) return;
   try { const d = await api("studio"); state.navSess = d.sessions || []; } catch (e) { return; }
   if (state.linearWs === undefined) { try { state.linearWs = ((await api("todos")).linear || {}).workspace || ""; } catch (e) { state.linearWs = ""; } }
   renderNav((location.hash.slice(1) || "home").split("/")[0]);
+  $$('[data-tabstrip="studio"]').forEach(el => { el.outerHTML = tabStrip("studio"); });
 }
 /* the sidebar folds to an icon rail (the button left of the breadcrumb, or Cmd/Ctrl+\\); remembered */
 function setRail(on) {
@@ -5532,14 +5574,15 @@ PAGES.studio = async arg => {
     const [sug, where] = await Promise.all([api("studio_suggest"), api("studio_where")]);
     state.sess = { d: null, id: null, sug, where };
     crumbs("studio", "New session", "#studio");
-    return `<div class="ss-one">${ssNew(sug)}</div>`;
+    return `${tabStrip("studio")}<div class="ss-one">${ssNew(sug)}</div>`;
   }
   const ch = arg.match(/^([0-9a-f-]{36})\/changes$/);
-  if (ch) return ssChanges(ch[1]);
+  if (ch) return `${tabStrip("studio")}${await ssChanges(ch[1])}`;
   const d = await api("studio_session", { id: arg });
   state.sess = { d, id: arg };
   crumbs("studio", d && d.available !== false ? d.title : null, `#studio/${arg}`);
-  return d.available === false ? unavailable(d) : `<div class="ss-one${(d.activity || []).length ? " has-act" : ""}">${ssDetail(d)}</div>`;
+  if (d.available !== false) tabOpen("studio", arg, d.title);
+  return d.available === false ? unavailable(d) : `${tabStrip("studio")}<div class="ss-one${(d.activity || []).length ? " has-act" : ""}">${ssDetail(d)}</div>`;
 };
 
 /* tags: one look tells you what a session is about and where it stands */

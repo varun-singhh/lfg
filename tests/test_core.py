@@ -6027,32 +6027,73 @@ class ReviewTest(unittest.TestCase):
         save = save[:save.index("});")]
         self.assertIn('$("textarea.editor", box).value', save)  # the box also holds the Ask Claude textarea, first
 
-    def test_reviews_open_as_tabs_above_the_page_and_in_the_sidebar(self):
-        """Run the tab helpers in node with a stand-in browser: open, retitle, close the one you're on."""
+    def run_tabs(self, calls, hash="#prs/o/r/7"):
+        """Run the tab helpers in node with a stand-in browser; calls is JS ending in a console.log."""
         node = C.which("node")
         if not node:
             self.skipTest("node isn't installed")
         with open(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js")) as f:
             js = f.read()
-        block = js[js.index("/* Reviews open as tabs inside the dashboard"):js.index("function renderNav(active)")]
+        block = js[js.index("/* Tabs: PR reviews and Studio sessions"):js.index("function renderNav(active)")]
         script = """
 const store = {}, localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } };
-const location = { hash: "#prs/o/r/7" }, document = { addEventListener() {} };
-const esc = s => String(s), $$ = () => [];
+const location = { hash: %s }, document = { addEventListener() {} };
+const esc = s => String(s), $$ = () => [], icon = k => "<i>" + k + "</i>", ssLive = st => !!st, state = {};
 let navs = 0; const renderNav = () => { navs++; };
 %s
+%s
+""" % (json.dumps(hash), block, calls)
+        return js, json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+
+    def test_reviews_open_as_tabs_above_the_page_and_in_the_sidebar(self):
+        """Open, retitle, close the one you're on."""
+        js, out = self.run_tabs("""
 prTabOpen("o/r#7", "Add thing"); prTabOpen("o/r#8", "Other"); prTabOpen("o/r#7", "Add thing, renamed");
-const before = openTabs().map(t => t.pr + "|" + t.title);
+const before = tabsOf("prs").map(t => t.pr + "|" + t.title);
 const strip = prTabStrip();
-prTabClose("o/r#7");
-console.log(JSON.stringify({before, strip, after: openTabs().map(t => t.pr), hash: location.hash, navs}));
-""" % block
-        out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+tabClose("prs", "o/r#7");
+console.log(JSON.stringify({before, strip, after: tabsOf("prs").map(t => t.pr), hash: location.hash, navs}));
+""")
         self.assertEqual(out["before"], ["o/r#7|Add thing, renamed", "o/r#8|Other"])
         self.assertIn('class="prtab on" href="#prs/o/r/7"', out["strip"])
         self.assertEqual((out["after"], out["hash"]), (["o/r#8"], "prs/o/r/8"))  # closing the open one moves on
         self.assertIn("prTabOpen(pr, ", js)
         self.assertIn("${prTabStrip()}${head(rec.title || pr", js)
+
+    def test_pinned_tabs_stay_in_front_cannot_close_and_never_drop_off(self):
+        _, out = self.run_tabs("""
+for (let i = 1; i <= 4; i++) prTabOpen("o/r#" + i, "PR " + i);
+tabPin("prs", "o/r#3");
+const pinned = tabsOf("prs").map(t => t.pr);
+tabClose("prs", "o/r#3");
+const still = tabsOf("prs").some(t => t.pr === "o/r#3");
+tabMove("prs", "o/r#4", "o/r#3", false);  // dropped among the pinned: pinned too, ahead of #3
+const moved = tabsOf("prs").map(t => t.pr + (t.pinned ? "*" : ""));
+for (let i = 5; i <= 30; i++) prTabOpen("o/r#" + i, "PR " + i);
+const kept = tabsOf("prs");
+tabMove("prs", "o/r#4", "o/r#30", true);  // dragged out among the rest: unpinned
+console.log(JSON.stringify({pinned, still, moved, n: kept.length, front: kept.slice(0, 2).map(t => t.pr),
+  strip: tabStrip("prs"), out: tabsOf("prs").find(t => t.pr === "o/r#4").pinned}));
+""")
+        self.assertEqual(out["pinned"], ["o/r#3", "o/r#1", "o/r#2", "o/r#4"])
+        self.assertTrue(out["still"])  # a pinned tab has no close
+        self.assertEqual(out["moved"], ["o/r#4*", "o/r#3*", "o/r#1", "o/r#2"])
+        self.assertEqual((out["n"], out["front"]), (12, ["o/r#4", "o/r#3"]))  # too many open: the oldest unpinned go
+        self.assertNotIn('data-tab-x="[&quot;prs&quot;,&quot;o/r#3', out["strip"])
+        self.assertFalse(out["out"])
+
+    def test_studio_sessions_open_as_tabs_too(self):
+        sid = "0123abcd-0000-0000-0000-000000000000"
+        js, out = self.run_tabs("""
+state.navSess = [{id: "%s", state: "needs-you"}];
+tabOpen("studio", "%s", "Fix the export");
+console.log(JSON.stringify({strip: tabStrip("studio"), prs: tabStrip("prs")}));
+""" % (sid, sid), hash="#studio/%s/changes" % sid)
+        self.assertIn('class="prtab on" href="#studio/%s"' % sid, out["strip"])  # on its changes page too
+        self.assertIn("Needs you", out["strip"])
+        self.assertIn("hidden", out["prs"])  # no PR tabs: an empty, hidden row
+        self.assertIn('if (d.available !== false) tabOpen("studio", arg, d.title);', js)
+        self.assertIn('tabsOf("studio")', js[js.index("function navSessions"):])
 
     def test_earlier_findings_on_a_re_review_are_grouped_by_where_they_stand(self):
         """Run the grouping in node: the review's call, moved on by "Is it fixed?", unknown states kept."""
