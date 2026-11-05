@@ -6027,6 +6027,32 @@ class ReviewTest(unittest.TestCase):
         save = save[:save.index("});")]
         self.assertIn('$("textarea.editor", box).value', save)  # the box also holds the Ask Claude textarea, first
 
+    def test_whats_new_walks_through_each_item_on_its_page(self):
+        node = C.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        with open(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js")) as f:
+            js = f.read()
+        block = js[js.index("const newsText = "):js.index("async function newsReplay")]
+        script = """
+const TOURS = {}, esc = s => String(s).replace(/</g, "&lt;"); let started = null;
+const startTour = n => { started = n; };
+%s
+newsTour([{version: "0.4.0", title: "Tabs", items: [
+  {title: "Pin a tab", text: "Run `lfg x` <b>", page: "prs", sel: "#nav a"},
+  {title: "Skip", text: "Esc closes it."}]}]);
+const t = TOURS["whats-new"];
+console.log(JSON.stringify({started, n: t.length, first: t[0].title, list: t[0].body(),
+  steps: t.slice(1).map(s => [s.page || null, s.sel || null, s.body()])}));
+""" % block
+        out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual((out["started"], out["n"], out["first"]), ("whats-new", 3, "What's new in LFG 0.4.0"))
+        self.assertIn("<li>Pin a tab</li>", out["list"])
+        self.assertEqual(out["steps"][0], ["prs", "#nav a", "Run <code>lfg x</code> &lt;b>"])
+        self.assertEqual(out["steps"][1][:2], [None, None])
+        self.assertIn("if (((t.news || {}).unseen || []).length) { newsTour(t.news.unseen); return; }", js)
+        self.assertIn('id="hp-news"', js)
+
     def test_the_setup_guide_can_be_skipped(self):
         with open(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js")) as f:
             js = f.read()

@@ -1292,14 +1292,28 @@ function startTour(name) {
   TOUR = { name, i: 0, box, onKey: e => { if (e.key === "Escape") finishTour("skipped"); else if (e.key === "ArrowRight") tourGo(1); else if (e.key === "ArrowLeft") tourGo(-1); } };
   document.addEventListener("keydown", TOUR.onKey);
   window.addEventListener("resize", tourDraw);
+  tourShow();
+}
+function tourGo(d) { if (!TOUR) return; const n = TOUR.i + d; if (n >= TOURS[TOUR.name].length) return finishTour("finished"); TOUR.i = Math.max(0, n); tourShow(); }
+/* what a step lights up: its element, if it's on the page and showing */
+const tourTarget = st => { const el = st.sel && $(st.sel); return el && el.getClientRects().length ? el : null; };
+/* A step on another page opens that page first and waits up to 3s for what it lights up; without it, the card is
+   centred. A later move (Next, Back) wins over a wait still running. */
+async function tourShow() {
+  if (!TOUR) return;
+  const st = TOURS[TOUR.name][TOUR.i], mine = TOUR.seq = (TOUR.seq || 0) + 1;
+  if (st.page && (location.hash.slice(1).split("/")[0] || "home") !== st.page) location.hash = "#" + st.page;
+  for (let k = 0; st.page && st.sel && k < 30 && !tourTarget(st); k++) {
+    await new Promise(r => setTimeout(r, 100));
+    if (!TOUR || TOUR.seq !== mine) return;
+  }
   tourDraw();
 }
-function tourGo(d) { if (!TOUR) return; const n = TOUR.i + d; if (n >= TOURS[TOUR.name].length) return finishTour("finished"); TOUR.i = Math.max(0, n); tourDraw(); }
 function tourDraw() {
   if (!TOUR) return;
   const steps = TOURS[TOUR.name], st = steps[TOUR.i], last = TOUR.i === steps.length - 1;
   const hole = $(".tour-hole", TOUR.box), card = $(".tour-card", TOUR.box), shade = $(".tour-shade", TOUR.box);
-  const target = st.sel && $(st.sel);
+  const target = tourTarget(st);
   card.innerHTML = `<div class="tour-step">${TOUR.i + 1} of ${steps.length}</div><h3 id="tour-title">${esc(st.title)}</h3><div class="tour-body">${st.body()}</div>
     <div class="tour-actions"><button class="link" data-t="skip">Skip tour</button><span class="grow"></span>${TOUR.i ? '<button class="btn small" data-t="back">Back</button>' : ""}<button class="btn small primary" data-t="next">${last ? "Done" : "Next"}</button></div>`;
   $('[data-t="skip"]', card).onclick = () => finishTour("skipped");
@@ -1336,11 +1350,30 @@ function endTour() {
   TOUR.box.remove();
   TOUR = null;
 }
+/* What's new: a walkthrough of what changed, shown once after an update (and from Help → What's new any time). The
+   first step lists everything; each item after it opens its page and lights up what it's about. Finishing or skipping
+   it counts the release as seen. Written in plugin/releases.json. */
+const newsText = t => esc(t).replace(/`([^`]+)`/g, "<code>$1</code>");
+function newsTour(rels) {
+  const items = rels.flatMap(r => r.items);
+  const list = rels.map(r => `${rels.length > 1 ? `<div class="k">${esc(r.version)}: ${esc(r.title)}</div>` : ""}<ul class="news-list">${r.items.map(i => `<li>${esc(i.title)}</li>`).join("")}</ul>`).join("");
+  TOURS["whats-new"] = [{ title: rels.length === 1 ? `What's new in LFG ${rels[0].version}` : `What's new since you last looked`,
+    body: () => `${rels.length === 1 ? `<p>${esc(rels[0].title)}.</p>` : ""}${list}<p class="muted small">Next walks you through each one. Skip any time; Help → What's new has it again.</p>` }]
+    .concat(items.map(i => ({ page: i.page, sel: i.sel, title: i.title, body: () => newsText(i.text) })));
+  startTour("whats-new");
+}
+async function newsReplay(version) {
+  const d = await api("releases");
+  const r = (d.releases || []).find(x => x.version === version);
+  if (r) newsTour([r]);
+}
+document.addEventListener("click", e => { const b = e.target.closest("[data-news-replay]"); if (b) { e.preventDefault(); newsReplay(b.dataset.newsReplay); } });
 /* The first time the dashboard opens after Dictate is set up: offer the tour, or skip it for good */
 async function offerTours() {
   let t;
   try { t = await api("tours"); } catch (e) { return; }
   if (!t.setup_guide_done) { setupGuide(true); return; }  // first run: the setup guide comes before anything else
+  if (((t.news || {}).unseen || []).length) { newsTour(t.news.unseen); return; }  // after an update: what's new, once
   const seen = k => { try { return localStorage.getItem("lfg.tour." + k); } catch (e) { return null; } };
   const remember = (k, how) => { try { localStorage.setItem("lfg.tour." + k, how); } catch (e) { /* ignore */ } save("tour_done", { name: k, how }); };
   const d = t.dictate || {};
@@ -3614,7 +3647,10 @@ const HELP_GROUPS = [["Build something", ["lfg", "plan", "build", "spike", "wiza
   ["Understand the code", ["explain", "explain5", "impact", "map", "research"]], ["Review and ship", ["review-coach", "check", "secure", "pentest", "suggest-tests", "grill", "ship"]],
   ["Remember and hand off", ["note", "learn", "handoff", "inbox"]], ["Not sure", ["which"]]];
 PAGES.help = async () => {
-  const d = await api("guide");
+  const [d, R] = await Promise.all([api("guide"), api("releases")]);
+  const news = (R.releases || []).map((r, n) => `<details class="hp-q"${n ? "" : " open"}><summary><b>${esc(r.version)}</b> · ${esc(r.title)}${r.version === R.version ? ' <span class="tag">installed</span>' : ""}</summary>
+      <ul>${r.items.map(i => `<li><b>${esc(i.title)}.</b> ${newsText(i.text)}</li>`).join("")}</ul>
+      <p><button class="btn small" data-news-replay="${esc(r.version)}">Walk me through it</button></p></details>`).join("");
   const first = t => { const x = String(t || "").replace(/\s+/g, " ").trim(), m = /^(.{20,220}?[.!?])(\s|$)/.exec(x); return m ? m[1] : x.length <= 200 ? x : x.slice(0, x.lastIndexOf(" ", 190)) + "…"; };
   const all = (d.skills || []).map(x => ({ cmd: x.name, key: x.name.replace(/^\/lfg:/, ""), what: first(x.description) }));
   const placed = new Set(), groups = HELP_GROUPS.map(([g, ks]) => [g, ks.map(k => all.find(x => x.key === k)).filter(Boolean)]);
@@ -3623,6 +3659,7 @@ PAGES.help = async () => {
   const step = (n, ico, title, body) => `<div class="box hp-step"><span class="hp-n">${n}</span>${icon(ico)}<b>${title}</b><p>${body}</p></div>`;
   const qa = (q, a) => `<details class="hp-q"><summary>${q}</summary><p>${a}</p></details>`;
   return `${head("Help", "LFG takes a change from idea to pull request inside Claude Code. You describe it, review what comes back, and ship.")}
+    ${news ? section("What's new", `<div class="box pad" id="hp-news">${news}</div>`) : ""}
     ${section("Get started", `<div class="hp-steps">
       ${step(1, "studio", "Describe the change", `Open <a href="#studio">Studio</a> and write what you want, or type <code>/lfg:lfg</code> and a sentence in Claude Code.`)}
       ${step(2, "review", "Review the result", `LFG plans, builds, tests and reviews it, and stops to ask you at each checkpoint. Follow along in <a href="#runs">Runs</a>.`)}

@@ -24,6 +24,8 @@ After install (`~/.lfg`, mode 700):
 │                           # did, why, note, session, cwd, repo, repo_name, status: pending|approved|merged|discarded|
 │                           # to second-brain, rule, done_at}]} (mode 600); state/corrections-offsets.json: transcript
 │                           # read positions per session
+├── state/version.json     # seen: the last version `lfg setup` printed what's new for; news_seen: the last the dashboard's
+│                           # What's new walkthrough was shown for (plugin/releases.json, one item per step)
 ├── state/onboarding.json  # Welcome: chosen features, show-every-page (never in config.json)
 ├── state/updates.json     # last update check: upstream version, notes, error
 ├── state/github.json      # whether setup asked to star LFG, and the answer (stars only on yes or a click)

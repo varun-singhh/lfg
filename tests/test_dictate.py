@@ -209,6 +209,27 @@ class WhatsNewAndIntroTourTest(DictatePackTest):
         self.assertTrue(any("LFG Dictate" in x for x in lines))
         self.assertEqual(SU.whats_new(), [])  # once
 
+    def test_whats_new_walkthrough_shows_once_after_an_update_never_on_a_first_install(self):
+        from lfgcore import control as K
+        rels = [{"version": "0.9.0", "title": "Later", "items": [{"title": "x", "text": "y"}]},
+                {"version": "0.4.0", "title": "Tabs",
+                 "items": [{"title": "Pin a tab", "text": "Hover it.", "page": "prs"}]},
+                {"version": "0.3.0", "title": "Dictate", "items": [{"title": "LFG Dictate", "text": "Hold it."}]}]
+        with mock.patch.object(K, "releases", return_value=rels), mock.patch.object(C, "VERSION", "0.4.0"):
+            self.assertEqual(K.news_view()["unseen"], [])  # a first install: the setup guide first
+            K.tour_done("setup-guide", "skipped")  # and that counts this version as seen
+            self.assertEqual(K.news_view()["unseen"], [])
+        for f in ("tours.json", "version.json"):
+            os.remove(C.lfg_path("state", f))
+        C.write_json(C.lfg_path("state", "tours.json"), {"setup-guide": {"how": "finished"}})  # an install from 0.3.0
+        C.write_json(C.lfg_path("state", "version.json"), {"seen": "0.4.0"})  # setup already printed its lines
+        with mock.patch.object(K, "releases", return_value=rels), mock.patch.object(C, "VERSION", "0.4.0"):
+            self.assertEqual([r["version"] for r in K.tours_view()["news"]["unseen"]], ["0.4.0"])  # not 0.9.0 yet
+            K.tour_done("whats-new", "skipped")
+            self.assertEqual(K.news_view()["unseen"], [])
+            self.assertEqual(SU.whats_new(mark_seen=False), [])
+        self.assertTrue(K.releases()[0]["items"])  # the real file reads
+
     def test_install_from_before_version_tracking_counts_as_an_update(self):
         C.write_json(C.lfg_path("enabled.json"), {"repos": {}})
         self.assertTrue(SU.whats_new())

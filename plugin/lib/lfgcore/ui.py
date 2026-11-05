@@ -268,6 +268,9 @@ def api(view, q):
             return T.linear_options(fresh=_arg(q, "fresh") == "1")
         except T.Invalid as e:
             return {"available": False, "why": str(e)}
+    if view == "releases":
+        from . import control as K
+        return {"version": C.VERSION, "releases": K.releases()}
     if view == "tours":
         from . import control as K
         return K.tours_view()

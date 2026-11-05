@@ -297,7 +297,40 @@ def legacy_fix(item_id):
 
 # ---------------------------------------------------------------- guided tours (shown once, skippable)
 
-TOURS = ("dictate", "dictate-intro", "dictate-banner", "news-welcome", "setup-guide", "launch-video")
+TOURS = ("dictate", "dictate-intro", "dictate-banner", "news-welcome", "setup-guide", "launch-video", "whats-new")
+FIRST_WITH_NEWS = "0.3.0"  # the release before the What's new walkthrough: every install older than it had this
+
+
+def releases():
+    """What's new in each release, newest first (plugin/releases.json): told to the user, one item per walkthrough
+    step."""
+    d = C.read_json(os.path.join(C.PLUGIN_ROOT, "releases.json"), {}) or {}
+    return [r for r in d.get("releases") or [] if isinstance(r, dict) and r.get("version") and r.get("items")]
+
+
+def _version_state():
+    return C.read_json(C.lfg_path("state", "version.json"), {}) or {}
+
+
+def news_view():
+    """Releases newer than the last What's new walkthrough this machine saw, up to the installed version. Separate from
+    `seen` (the terminal's what's new, which setup marks before the dashboard opens). A first install sees none: the
+    setup guide comes first, and finishing or skipping it counts this version as seen."""
+    from .setup import _ver
+    seen = _version_state().get("news_seen")
+    if not seen:
+        done = C.read_json(C.lfg_path("state", "tours.json"), {}) or {}
+        if not done.get("setup-guide"):
+            return {"version": C.VERSION, "unseen": []}
+        seen = FIRST_WITH_NEWS
+    new = [r for r in releases() if _ver(seen) < _ver(r["version"]) <= _ver(C.VERSION)]
+    return {"version": C.VERSION, "unseen": new}
+
+
+def _news_seen():
+    st = _version_state()
+    st["news_seen"] = C.VERSION
+    C.write_json(C.lfg_path("state", "version.json"), st)
 
 
 def tours_view():
@@ -313,6 +346,7 @@ def tours_view():
                         "banner_closed": bool(done.get("dictate-banner"))},
             "news_welcome_closed": bool(done.get("news-welcome")),
             "setup_guide_done": bool(done.get("setup-guide")),  # the first-run setup guide, finished once
+            "news": news_view(),  # What's new: releases since the last walkthrough
             # the launch film popup on the home page, watched or closed
             "launch_video_seen": bool(done.get("launch-video"))}
 
@@ -324,6 +358,8 @@ def tour_done(name, how="finished"):
     d = C.read_json(p, {}) or {}
     d[name] = {"how": "skipped" if how == "skipped" else "finished", "at": C.now_iso()}
     C.write_json(p, d)
+    if name == "whats-new" or (name == "setup-guide" and not _version_state().get("news_seen")):
+        _news_seen()  # a first install starts with nothing new to show
     return {"tour": name, "done": True}
 
 

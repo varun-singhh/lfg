@@ -538,13 +538,6 @@ def _repos_with_graphs():
 
 # ---------------------------------------------------------------- what's new (printed once after an update)
 
-WHATS_NEW = {
-    "0.3.0": ["LFG Dictate: hold Option+Space anywhere on your Mac to dictate, on-device. Off until you turn it on: "
-              "`lfg add dictate`. Open `lfg ui` for a 1-minute tour.",
-              "Pentest and Headroom are now labelled Experimental."],
-}
-
-
 def _ver(v):
     return tuple(int(x) for x in re.findall(r"\d+", v or "0")[:3])
 
@@ -556,8 +549,9 @@ def whats_new(mark_seen=True):
     seen = (C.read_json(p, {}) or {}).get("seen")
     if not seen and (os.path.exists(C.lfg_path("state", "ledger.json")) or os.path.exists(C.lfg_path("enabled.json"))):
         seen = "0.2.0"  # installed before LFG kept track of versions
-    lines = [] if not seen else [line for v in sorted(WHATS_NEW, key=_ver) if _ver(seen) < _ver(v) <= _ver(C.VERSION)
-                                 for line in WHATS_NEW[v]]
+    from .control import releases
+    lines = [] if not seen else ["%s: %s" % (i["title"], i["text"]) for r in reversed(releases())
+                                 if _ver(seen) < _ver(r["version"]) <= _ver(C.VERSION) for i in r["items"]]
     if mark_seen and seen != C.VERSION:
         C.write_json(p, {"seen": C.VERSION})
     return lines
