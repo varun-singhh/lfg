@@ -6200,6 +6200,36 @@ console.log(JSON.stringify({today: msgStamp(today.toISOString()), old: msgStamp(
         self.assertIn('Copy</button>${msgStamp(it.ts)}</div>', js)  # Claude's
         self.assertIn('<div class="msg-at">${msgStamp(x.at)}</div>', js)  # older saved review chats
 
+    def test_the_browser_tab_says_repo_page_and_what_is_open(self):
+        node = C.which("node")
+        if not node:
+            self.skipTest("node isn't installed")
+        js = C.read_text(os.path.join(os.path.dirname(R.__file__), "ui_assets", "app.js"))
+        block = js[js.index("function repoShort(name, all)"):js.index("/* Breadcrumb in the top bar")]
+        script = """
+const TITLES = {prs: "PR reviews", studio: "Studio", home: "Home"}, state = {};
+const repoName = () => ((state.repos || []).find(r => r.id === state.repo) || {}).name || "";
+%s
+const all = ["external-api", "external-web", "aegis-compliance-portal", "lfg", "internal-apis"];
+state.repos = [{id: "e", name: "external-api"}, {id: "a", name: "aegis-compliance-portal"}];
+state.repo = "e";
+const out = {short: all.map(n => repoShort(n, all)), alone: repoShort("external-api", ["external-api"]),
+  pr: tabTitle("prs", "Atomus3D/external-api#1800"), home: tabTitle("home"),
+  long: tabTitle("studio", "Fix the export timeout on very large customer reports")};
+state.repo = "a"; out.other = tabTitle("prs");
+state.repo = ""; state.repos = []; out.none = tabTitle("home");
+console.log(JSON.stringify(out));
+""" % block
+        out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["short"], ["ext-a", "ext-w", "aegis", "lfg", "int"])  # two "ext" repos: told apart
+        self.assertEqual(out["alone"], "ext")
+        self.assertEqual(out["pr"], "ext · PRs · #1800")
+        self.assertEqual(out["home"], "ext · Home")
+        self.assertEqual(out["long"], "ext · Studio · Fix the export timeout on very…")
+        self.assertEqual((out["other"], out["none"]), ("aegis · PRs", "Home"))
+        self.assertIn("document.title = tabTitle(page, item);", js)
+        self.assertNotIn("document.title = `${TITLES[key]} · LFG`", js)
+
     def test_reviews_open_as_tabs_above_the_page_and_in_the_sidebar(self):
         """Open, retitle, close the one you're on."""
         js, out = self.run_tabs("""

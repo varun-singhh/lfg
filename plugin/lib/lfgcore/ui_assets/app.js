@@ -5414,11 +5414,33 @@ function applyPages(d) {
   const current = (location.hash.slice(1) || "home").split("/")[0];
   renderNav(current);
 }
-/* Breadcrumb in the top bar: project / page / item. Pages that open an item call crumbs() again with it. */
+/* A repo's short name for the browser tab: its first word, cut to 3 letters when that word is long (external-api is
+   "ext", aegis-compliance-portal "aegis", lfg "lfg"). Two repos that would share one get the first letter of each
+   word after it as well (external-api "ext-a", external-web "ext-w"). */
+function repoShort(name, all) {
+  const words = n => String(n || "").toLowerCase().split(/[-_.\s]+/).filter(Boolean);
+  const base = n => { const w = words(n)[0] || ""; return w.length > 6 ? w.slice(0, 3) : w; };
+  const short = base(name);
+  if (!short) return "";
+  const clash = (all || []).some(o => o && o !== name && base(o) === short);
+  return clash && words(name).length > 1 ? short + "-" + words(name).slice(1).map(w => w[0]).join("") : short;
+}
+const PAGE_SHORT = { prs: "PRs", talk: "Talk" };
+/* The browser tab: repo · page · what's open, shortened so several tabs stay readable ("ext · PRs · #1800"). */
+function tabTitle(page, item) {
+  const repo = repoShort(repoName(), (state.repos || []).map(r => r.name));
+  const what = !item ? "" : page === "prs" && /^[^#\s]+#\d+$/.test(item) ? "#" + item.split("#")[1]
+    : item.length > 32 ? item.slice(0, 31).trimEnd() + "…" : item;
+  return [repo, PAGE_SHORT[page] || TITLES[page] || page, what].filter(Boolean).join(" · ") || "LFG";
+}
+/* Breadcrumb in the top bar: project / page / item. Pages that open an item call crumbs() again with it. It also names
+   the browser tab. */
 function crumbs(page, item, itemHref) {
+  state.crumb = { page, item, itemHref };
   const parts = [`<span class="crumb-proj">${esc(repoName() || "LFG")}</span>`, `<a href="#${page}">${icon(page)}${esc(TITLES[page] || page)}</a>`];
   if (item) parts.push(itemHref ? `<a href="${itemHref}">${esc(item)}</a>` : `<span>${esc(item)}</span>`);
   $("#crumbs").innerHTML = parts.join('<span class="sep">/</span>');
+  document.title = tabTitle(page, item);
 }
 /* code map: build/update from the dashboard (the same background job the hooks start) */
 const mapBtn = (st, cls = "btn small") => st === "syncing" ? "" : st === "missing" ? `<button class="${cls} primary" data-map-build="update">Build now</button>`
@@ -5582,7 +5604,6 @@ async function route(opts) {
   const arg = rest.join("/");
   renderNav(key);
   if (!soft) crumbs(key);  // a refresh keeps the page's own crumbs (e.g. the PR) instead of flashing back to the page
-  document.title = `${TITLES[key]} · LFG`;
   const seq = ++renderSeq, view = $("#view"), y = window.scrollY;
   view.classList.toggle("wide", ((key === "review" || key === "prs") && !!arg && arg !== "scores") || key === "studio");  // review screens are two panes, Studio fills the window
   view.classList.toggle("studio", key === "studio");
@@ -6701,6 +6722,7 @@ async function init() {
   $("#repo").innerHTML = state.repos.map(x => `<option value="${esc(x.id)}" title="${esc(x.root || x.id)}" ${x.id === state.repo ? "selected" : ""}>${esc(x.name || x.id)}</option>`).join("") || "<option>no projects yet</option>";
   $("#repo").onchange = async () => {
     state.repo = $("#repo").value; localStorage.setItem("lfg.repo", state.repo); state.navSess = [];
+    if (state.crumb) crumbs(state.crumb.page, state.crumb.item, state.crumb.itemHref);  // the new repo's name, top and tab
     await loadBranches();
     loadNavSessions();
     // a page about one thing in the old repo (a PR, a run, a doc) goes to that section's list in the new one
