@@ -6,6 +6,18 @@
       "title": "unreleased",
       "items": [
         {
+          "title": "Tabs follow your repo",
+          "text": "The Studio and PR review tabs in the sidebar and above the page now change with the repo you pick top left, so each repo shows its own sessions and PRs.",
+          "page": "studio",
+          "sel": "#nav .ns-body"
+        }
+      ]
+    },
+    {
+      "version": "unreleased",
+      "title": "unreleased",
+      "items": [
+        {
           "title": "Plugins from your claude.ai account",
           "text": "Integrations → Claude Code plugins now says when a plugin comes from your claude.ai account or organisation, and that you change it there, instead of calling it a one-repo install.",
           "page": "integrations",

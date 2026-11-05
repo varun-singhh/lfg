@@ -5237,8 +5237,10 @@ const icon = (k, cls = "ico") => `<svg class="${cls}" viewBox="0 0 24 24" aria-h
 /* Tabs: PR reviews and Studio sessions you open join a row of tabs above the page and a list under the page in the
    sidebar, until you close them. Drag one, above the page or in the sidebar, to reorder: both follow one order. Pin
    one to keep it at the front: pinned tabs stay ahead of the rest, have no close button, and never drop off when too
-   many are open. Dragging a tab among the pinned ones pins it. Kept in this browser. */
-const TABS_MAX = 12;
+   many are open. Dragging a tab among the pinned ones pins it. Kept in this browser. Each repo has its own: the tabs
+   shown are the selected repo's (a session's tab keeps the repo it was opened in; a PR's is its GitHub repo, matched
+   by name to your checkouts, and shows everywhere when you have no checkout of it). */
+const TABS_MAX = 40;  // across every repo; pinned tabs never count
 const nsDot = st => st === "needs-you" ? '<span class="ns-dot warn" title="Needs you"></span>' : ssLive(st) ? `<span class="ns-dot${st === "idle" ? "" : " on"}" title="${st === "idle" ? "Waiting for you" : "Working"}"></span>` : "";
 const ssStateOf = id => ((state.navSess || []).find(x => x.id === id) || {}).state;
 const TABSETS = {
@@ -5250,7 +5252,15 @@ const TABSETS = {
 const tabKey = (kind, t) => t[TABSETS[kind].key];
 const tabHref = (kind, k) => TABSETS[kind].href(k);
 const tabOn = (kind, k) => { const h = tabHref(kind, k); return location.hash === h || location.hash.startsWith(h + "/"); };
-function tabsOf(kind) {
+/* Whether a tab belongs to the repo selected top left. */
+function tabHere(kind, t) {
+  if (kind === "studio") return t.repo ? t.repo === state.repo : (state.navSess || []).some(x => x.id === t.id);
+  const name = String(t.pr || "").split("#")[0].split("/")[1] || "";
+  return !(state.repos || []).some(r => r.name === name) || repoName() === name;
+}
+/* The selected repo's tabs, in order. tabsAll: every repo's, which is what's stored. */
+const tabsOf = kind => tabsAll(kind).filter(t => tabHere(kind, t));
+function tabsAll(kind) {
   try { const v = JSON.parse(localStorage.getItem(TABSETS[kind].store) || "[]"); return Array.isArray(v) ? v.filter(t => t && tabKey(kind, t)) : []; } catch (e) { return []; }
 }
 function tabsSave(kind, tabs) {
@@ -5262,21 +5272,26 @@ function tabsRedraw(kind) {
   $$(`[data-tabstrip="${kind}"]`).forEach(el => { el.outerHTML = tabStrip(kind); });
 }
 function tabOpen(kind, k, title) {
-  const tabs = tabsOf(kind), hit = tabs.find(t => tabKey(kind, t) === k);
-  if (hit) { if (title && hit.title !== title) { hit.title = title; tabsSave(kind, tabs); tabsRedraw(kind); } return; }
-  tabsSave(kind, [...tabs, { [TABSETS[kind].key]: k, title: title || k }]);
+  const tabs = tabsAll(kind), hit = tabs.find(t => tabKey(kind, t) === k);
+  if (hit) {
+    const repo = kind === "studio" && !hit.repo && state.repo;  // a tab from before tabs had a repo: it gets this one
+    if ((title && hit.title !== title) || repo) { if (title) hit.title = title; if (repo) hit.repo = repo; tabsSave(kind, tabs); tabsRedraw(kind); }
+    return;
+  }
+  tabsSave(kind, [...tabs, { [TABSETS[kind].key]: k, title: title || k, ...(kind === "studio" && state.repo ? { repo: state.repo } : {}) }]);
   tabsRedraw(kind);
 }
 function tabClose(kind, k) {
-  const tabs = tabsOf(kind), i = tabs.findIndex(t => tabKey(kind, t) === k);
-  if (i < 0 || tabs[i].pinned) return;
-  tabs.splice(i, 1);
-  tabsSave(kind, tabs);
-  if (tabOn(kind, k)) location.hash = tabs.length ? tabHref(kind, tabKey(kind, tabs[Math.min(i, tabs.length - 1)])).slice(1) : TABSETS[kind].root;
+  const tabs = tabsAll(kind), t = tabs.find(x => tabKey(kind, x) === k);
+  if (!t || t.pinned) return;
+  const here = tabs.filter(x => tabHere(kind, x)), i = here.indexOf(t);
+  here.splice(i, 1);
+  tabsSave(kind, tabs.filter(x => x !== t));
+  if (tabOn(kind, k)) location.hash = here.length ? tabHref(kind, tabKey(kind, here[Math.min(i, here.length - 1)])).slice(1) : TABSETS[kind].root;
   else tabsRedraw(kind);
 }
 function tabPin(kind, k) {
-  const tabs = tabsOf(kind), t = tabs.find(x => tabKey(kind, x) === k);
+  const tabs = tabsAll(kind), t = tabs.find(x => tabKey(kind, x) === k);
   if (!t) return;
   t.pinned = !t.pinned;
   if (t.pinned) { tabs.splice(tabs.indexOf(t), 1); tabs.splice(tabs.filter(x => x.pinned).length, 0, t); }  // last of the pinned
@@ -5284,7 +5299,7 @@ function tabPin(kind, k) {
   tabsRedraw(kind);
 }
 function tabMove(kind, from, to, after) {
-  const tabs = tabsOf(kind), i = tabs.findIndex(t => tabKey(kind, t) === from);
+  const tabs = tabsAll(kind), i = tabs.findIndex(t => tabKey(kind, t) === from);
   if (i < 0 || from === to) return;
   const [t] = tabs.splice(i, 1);
   const j = tabs.findIndex(x => tabKey(kind, x) === to);

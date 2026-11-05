@@ -5,6 +5,9 @@ All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.j
 ## Unreleased
 
 ### Fixed
+- Studio and PR review tabs follow the repo selected top left: each repo shows its own, as the Studio list did before tabs. A PR's tab shows in the repo it belongs to (every repo when you have no checkout of it). Up to 40 tabs are kept across repos, pinned ones not counted.
+
+### Fixed
 - Integrations → Claude Code plugins said a plugin synced from your claude.ai account or organisation was "installed for one repo"; it now says where it comes from and that it's changed there.
 
 ## 0.4.0 (2026-11-05)

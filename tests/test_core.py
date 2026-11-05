@@ -6170,6 +6170,7 @@ console.log(JSON.stringify({started, n: t.length, first: t[0].title, list: t[0].
 const store = {}, localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; } };
 const location = { hash: %s }, document = { addEventListener() {} };
 const esc = s => String(s), $$ = () => [], icon = k => "<i>" + k + "</i>", ssLive = st => !!st, state = {};
+const repoName = (id = state.repo) => ((state.repos || []).find(x => x.id === id) || {}).name || id;
 let navs = 0; const renderNav = () => { navs++; };
 %s
 %s
@@ -6200,18 +6201,44 @@ tabClose("prs", "o/r#3");
 const still = tabsOf("prs").some(t => t.pr === "o/r#3");
 tabMove("prs", "o/r#4", "o/r#3", false);  // dropped among the pinned: pinned too, ahead of #3
 const moved = tabsOf("prs").map(t => t.pr + (t.pinned ? "*" : ""));
-for (let i = 5; i <= 30; i++) prTabOpen("o/r#" + i, "PR " + i);
+for (let i = 5; i <= 50; i++) prTabOpen("o/r#" + i, "PR " + i);
 const kept = tabsOf("prs");
-tabMove("prs", "o/r#4", "o/r#30", true);  // dragged out among the rest: unpinned
+tabMove("prs", "o/r#4", "o/r#50", true);  // dragged out among the rest: unpinned
 console.log(JSON.stringify({pinned, still, moved, n: kept.length, front: kept.slice(0, 2).map(t => t.pr),
   strip: tabStrip("prs"), out: tabsOf("prs").find(t => t.pr === "o/r#4").pinned}));
 """)
         self.assertEqual(out["pinned"], ["o/r#3", "o/r#1", "o/r#2", "o/r#4"])
         self.assertTrue(out["still"])  # a pinned tab has no close
         self.assertEqual(out["moved"], ["o/r#4*", "o/r#3*", "o/r#1", "o/r#2"])
-        self.assertEqual((out["n"], out["front"]), (12, ["o/r#4", "o/r#3"]))  # too many open: the oldest unpinned go
+        self.assertEqual((out["n"], out["front"]), (40, ["o/r#4", "o/r#3"]))  # too many open: the oldest unpinned go
         self.assertNotIn('data-tab-x="[&quot;prs&quot;,&quot;o/r#3', out["strip"])
         self.assertFalse(out["out"])
+
+    def test_each_repo_shows_its_own_tabs(self):
+        _, out = self.run_tabs("""
+state.repos = [{id: "api-1", name: "api"}, {id: "web-2", name: "web"}];
+state.repo = "api-1";
+tabOpen("studio", "s-api", "API work"); prTabOpen("acme/api#1", "API PR"); prTabOpen("other/lib#9", "No checkout");
+state.repo = "web-2";
+tabOpen("studio", "s-web", "Web work"); prTabOpen("acme/web#2", "Web PR");
+const web = [tabsOf("studio").map(t => t.id), tabsOf("prs").map(t => t.pr)];
+state.repo = "api-1";
+const api = [tabsOf("studio").map(t => t.id), tabsOf("prs").map(t => t.pr)];
+tabClose("studio", "s-api");
+const kept = tabsAll("studio").map(t => t.id);
+store["lfg.sstabs"] = JSON.stringify([{id: "s-old", title: "Before repos"}]);  // saved before tabs had a repo
+state.navSess = [{id: "s-old"}];
+const legacy = tabsOf("studio").map(t => t.id);
+tabOpen("studio", "s-old", "Before repos");
+state.navSess = []; state.repo = "web-2";
+console.log(JSON.stringify({web, api, kept, legacy, after: tabsOf("studio").length,
+  tagged: tabsAll("studio")[0].repo}));
+""", hash="#studio")
+        self.assertEqual(out["web"], [["s-web"], ["other/lib#9", "acme/web#2"]])  # no checkout of lib: everywhere
+        self.assertEqual(out["api"], [["s-api"], ["acme/api#1", "other/lib#9"]])
+        self.assertEqual(out["kept"], ["s-web"])  # closing one repo's tab leaves the other's
+        self.assertEqual(out["legacy"], ["s-old"])  # an old tab shows in the repo whose session it is
+        self.assertEqual((out["after"], out["tagged"]), (0, "api-1"))  # and gets that repo once opened there
 
     def test_studio_sessions_open_as_tabs_too(self):
         sid = "0123abcd-0000-0000-0000-000000000000"
