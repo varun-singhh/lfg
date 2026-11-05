@@ -4,6 +4,11 @@ All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.j
 
 ## Unreleased
 
+## 0.4.2 (2026-11-05)
+
+### Added
+- The browser tab names the repo, page and what's open, shortened so several tabs stay readable (e.g. "ext · PRs · #1800"); a repo's short name is its first word, cut to 3 letters when long.
+
 ## 0.4.1 (2026-11-05)
 
 ### Added
