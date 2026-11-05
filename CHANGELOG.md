@@ -4,6 +4,8 @@ All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.j
 
 ## Unreleased
 
+## 0.4.1 (2026-11-05)
+
 ### Added
 - Messages in Studio and in a PR review's chat show when they were sent: the time today, the date and time before that, the full date on hover.
 
