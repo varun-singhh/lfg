@@ -4,6 +4,15 @@ All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.j
 
 ## Unreleased
 
+## 0.4.3 (2026-11-05)
+
+### Added
+- A review's question can be asked on GitHub for the PR's author (Ask the author on GitHub…): inline on the line it's about when that line is in the diff, else as a PR comment. Their replies show under the question; Use their reply as the answer sends them to the review's chat, and re-reviews read them on their own (`lfg review ask`, `lfg review replies`).
+
+### Fixed
+- After an Update, dashboard tabs you had open (not only the one you pressed Update in) reload onto the new version; before, they kept running the old one until reloaded by hand, so new things like the browser tab names didn't show there.
+- The repo list top left no longer shows repos whose folder is gone, e.g. throwaway ones left behind by LFG's own tests.
+
 ## 0.4.2 (2026-11-05)
 
 ### Added

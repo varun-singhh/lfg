@@ -2,6 +2,21 @@
   "_about": "What's new in each LFG release, said to the user: the walkthrough the dashboard shows once after an update, Help → What's new, and the lines `lfg setup` prints. Each item is one step of the walkthrough: page and sel (optional) say which page to open and what to light up on it. Newest release first. CHANGELOG.md keeps the detailed record.",
   "releases": [
     {
+      "version": "0.4.3",
+      "title": "Ask the PR's author, and every tab updates",
+      "items": [
+        {
+          "title": "Ask the PR's author",
+          "text": "When a review has a question only the PR's author can answer, press Ask the author on GitHub under it. It's posted on the line it's about, their reply shows under the question, and Use their reply as the answer lets the review update itself. Re-reviews read their replies too.",
+          "page": "prs"
+        },
+        {
+          "title": "Every open tab gets the update",
+          "text": "When you update LFG, every dashboard tab you have open now switches to the new version by itself, not just the one you clicked Update in."
+        }
+      ]
+    },
+    {
       "version": "0.4.2",
       "title": "Browser tabs say where you are",
       "items": [
