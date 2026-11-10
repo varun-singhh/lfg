@@ -1,7 +1,7 @@
 {
   "name": "lfg",
   "displayName": "LFG",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "An engineering pipeline for Claude Code: grill, plan, build, check, secure, review and ship from code graphs, with a safety guard. Off until you turn it on for a repo; never commits, pushes or deploys. Optional LFG Dictate: on-device speech-to-text anywhere on your Mac.",
   "author": {
     "name": "Varun Singh",

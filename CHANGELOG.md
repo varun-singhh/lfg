@@ -4,6 +4,19 @@ All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.j
 
 ## Unreleased
 
+## 0.5.0 (2026-11-10)
+
+### Added
+- Groups can hold other groups, to any depth (an epic, its milestones, then sessions)
+- Studio chats and terminal sessions are grouped the same way, from the Sessions page or Studio's list (new By group view)
+- Labels with a colour, any number per session or studio chat, shown as chips, with a label filter and a Labels manager
+- A group can follow a ticket: sessions whose branch, title or first message names it join automatically, unless you filed or took them out
+
+### Changed
+- A re-review opens with a Since the last review strip (fixed, new, still open) and Copy new findings and Copy still-open findings buttons; new findings come before earlier comments
+- Fixed or withdrawn earlier findings show as one struck-through line with the commit and the points they gave back
+- Questions have a Copy all questions button, and the score line reads 100 - 4 for open findings = 96
+
 ## 0.4.3 (2026-11-05)
 
 ### Added

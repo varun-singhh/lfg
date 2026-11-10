@@ -2,6 +2,22 @@
   "_about": "What's new in each LFG release, said to the user: the walkthrough the dashboard shows once after an update, Help → What's new, and the lines `lfg setup` prints. Each item is one step of the walkthrough: page and sel (optional) say which page to open and what to light up on it. Newest release first. CHANGELOG.md keeps the detailed record.",
   "releases": [
     {
+      "version": "0.5.0",
+      "title": "Groups, labels and clearer re-reviews",
+      "items": [
+        {
+          "title": "Groups can hold groups, and studios can join them",
+          "text": "Group your sessions as an epic, then its milestones, then sessions, and put Studio chats in the same groups. Add colour labels to cut across them, and let a group follow a ticket so its sessions join on their own.",
+          "page": "sessions"
+        },
+        {
+          "title": "Re-reviews show what changed",
+          "text": "A re-review now starts with what was fixed, what is new and what is still open. Fixed findings are crossed out with the points they gave back, and you can copy all new findings, all still-open findings or all questions for an agent in one click.",
+          "page": "prs"
+        }
+      ]
+    },
+    {
       "version": "0.4.3",
       "title": "Ask the PR's author, and every tab updates",
       "items": [
