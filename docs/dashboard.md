@@ -69,6 +69,17 @@ line it's about when that line is in the diff, else as a comment on the PR. Thei
 (read from GitHub when the page opens, at most every 2 minutes). **Use their reply as the answer** sends them to the
 review's chat, which changes the review when the reply settles something; a re-review reads them on its own.
 
+## Re-reviews and copying for an agent
+
+On a re-review, the review's page opens with **Since the last review**: how many earlier findings were fixed, how many
+are new and how many are still open, with **Copy new findings** and **Copy still-open findings** (each one block for an
+agent: a heading with the count, then every item as its own **Copy for an agent** reads, split by rules; a button is
+off when there is nothing to copy). Under it, **New in this review** comes first, then **Earlier comments** with the open
+ones first. A fixed or withdrawn earlier finding is one quiet line: a green **Fixed in <commit>** chip, its title
+crossed out, the points the fix gave back (**+12 back**) and the reason. The score line reads "100 - 4 for open findings
+= 96", because the 4 is points, not a count. **Copy all questions** on the Questions box copies every question with
+its answer so far. A first review looks as before.
+
 ## Code map
 
 The code map can be built, updated or rebuilt from scratch, and its docs refreshed, from the side menu, Home and Code. This uses `POST /api/save/graphs_build`, the same background job the hooks start. It needs no edit key, but it does need the same Origin, Host and header checks.

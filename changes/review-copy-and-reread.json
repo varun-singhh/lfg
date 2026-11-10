@@ -1,0 +1,16 @@
+{
+  "changelog": {
+    "Changed": [
+      "A re-review opens with a Since the last review strip (fixed, new, still open) and Copy new findings and Copy still-open findings buttons; new findings come before earlier comments",
+      "Fixed or withdrawn earlier findings show as one struck-through line with the commit and the points they gave back",
+      "Questions have a Copy all questions button, and the score line reads 100 - 4 for open findings = 96"
+    ]
+  },
+  "whats_new": [
+    {
+      "title": "Re-reviews show what changed",
+      "text": "A re-review now starts with what was fixed, what is new and what is still open. Fixed findings are crossed out with the points they gave back, and you can copy all new findings, all still-open findings or all questions for an agent in one click.",
+      "page": "prs"
+    }
+  ]
+}

@@ -4525,7 +4525,8 @@ function questionsBox(pr, p, unlocked) {
   if (!qs.length) return "";
   const open = qs.filter(q => !q.answer).length;
   const pend = state.chatPending || {};
-  return `<div class="panel pr-questions"><div class="k" style="margin-top:0">${open ? `${plural(open, "question")} for you` : "Questions, answered"}</div><p class="muted small">Your answer goes to the review's chat. Claude replies here and changes the review if your answer settles something.</p>${qs.map(q => {
+  const all = listForAgent("Questions from the review", pr, qs.map(questionForAgent));
+  return `<div class="panel pr-questions"><div class="row"><div class="k grow" style="margin:0">${open ? `${plural(open, "question")} for you` : "Questions, answered"}</div><button class="btn small" data-copy="${esc(all)}" title="Every question${qs.some(q => q.answer) ? ", with the answers so far," : ""} in one block, to paste to an agent">Copy all questions</button></div><p class="muted small">Your answer goes to the review's chat. Claude replies here and changes the review if your answer settles something.</p>${qs.map(q => {
     const key = `q:${pr}:${p.n}:${q.id}`, waiting = pend[key];
     const said = q.answer || waiting;
     return `<div class="pr-question" id="q-${esc(q.id)}" data-ask="${esc(q.ask)}"><div class="pr-ask">${q.costs ? `<span class="pts q-pts ${q.answer ? "off" : ""}" title="${q.answer ? `Cost ${q.costs} points until you answered it` : `This question costs ${q.costs} points until it's answered: it could become a finding that holds the merge back`}">−${q.costs}</span>` : ""}<button class="btn tiny pr-q-copy" data-copy="${esc(q.ask + (q.why ? "\n\nWhy it matters: " + q.why : ""))}" title="Copy the question, and why it matters">Copy</button>${txt(q.ask)}${q.why ? `<div class="muted small">${txt(q.why)}</div>` : ""}${q.file ? `<div class="muted small mono">${esc(q.file)}${q.line ? ":" + esc(q.line) : ""}</div>` : ""}</div>${askAuthor(pr, p, q, unlocked)}${said
@@ -4564,7 +4565,7 @@ function verdictHero(p, together, gh) {
   const upTo = (p.history || []).filter(x => x.n <= p.n);
   /* the score is 100 minus what is still open: its findings, earlier ones it still counted, and questions that cost points */
   const o = p.open_points || {}, part = (n, label, title) => n ? ` <span class="muted">−</span> <b>${n}</b> <span class="muted"${title ? ` title="${title}"` : ""}>${label}</span>` : "";
-  const parts = part(o.findings, "open findings") + part(o.earlier, "earlier findings", "Earlier reviews' findings this review still counted as open") + part(o.questions, "open questions");
+  const parts = part(o.findings, "for open findings") + part(o.earlier, "for earlier findings still open", "Earlier reviews' findings this review still counted as open") + part(o.questions, "for unanswered questions");
   const breakdown = sc == null ? "" : `<div class="score-why small" title="The score is 100 minus these">100${parts || ` <span class="muted">− nothing open</span>`} <span class="muted">=</span> <b>${sc}</b></div>${(p.credits || []).length ? `<div class="score-why small">${esc(p.score_at_review)} when reviewed, <b>${sc}</b> now: ${p.credits.map(c => `+${c.points} for ${esc(c.id)} ${{ fixed: "fixed", passed: "passed on", answered: "answered" }[c.why] || esc(c.why)}`).join(", ")}</div>` : ""}`;
   return `<div class="verdict-hero ${tone}">${ring}<div class="grow"><div class="verdict-badge ${tone}">${dot(tone)}${esc(label)}</div>${why ? `<div class="verdict-why">${txt(why)}</div>` : ""}${guessed ? '<div class="muted small">Worked out from the open findings; new reviews give their own call.</div>' : ""}${breakdown}${RUBRIC}</div>${together ? "" : trend(upTo)}</div>${clash ? `<div class="callout ${clash.others ? "bad" : "warn"} approved-anyway">${dot(clash.others ? "bad" : "warn")}<span>${esc(clash.text)}</span></div>` : ""}`;
 }
@@ -4661,6 +4662,26 @@ function findingForAgent(f, pr) {
 }
 function earlierForPerson(x, f, pr, said) {
   return [`${f.title || x.id} on ${pr}: ${said}`, x.note || "", f.comment_url || ""].filter(Boolean).join("\n\n");
+}
+/* Several items as one block for an agent: a heading saying what the list is and how many, then each item in the
+   same form as its own "Copy for an agent", split by rules. Empty when there is nothing to list. */
+function listForAgent(title, pr, parts) {
+  return parts.length ? [`# ${title} on ${pr} (${plural(parts.length, "item")})`, ...parts].join("\n\n---\n\n") : "";
+}
+function questionForAgent(q) {
+  return [`## Question ${q.id}: ${q.ask}`, q.why ? `Why it matters: ${q.why}` : "", q.file ? `Where: ${q.file}${q.line ? ":" + q.line : ""}` : "",
+    q.costs && !q.answer ? `Costs ${q.costs} points until it is answered.` : "", q.answer ? `Answer so far: ${q.answer}` : "Not answered yet."].filter(Boolean).join("\n\n");
+}
+/* Re-review at a glance: how many earlier findings closed, how many are new, how many are still open, with a copy
+   button for each of the last two (the whole review is the button up in the verdict). */
+function recapStrip(priorBy, p, pr, byId) {
+  const done = priorBy.filter(g => g.key === "fixed" || g.key === "withdrawn"), open = priorBy.filter(g => !done.includes(g));
+  const count = gs => gs.reduce((n, g) => n + g.items.length, 0);
+  const newText = listForAgent("New findings", pr, p.findings.map(f => findingForAgent(f, pr)));
+  const openText = listForAgent("Earlier findings still open", pr, open.flatMap(g => g.items.filter(x => byId[x.id]).map(x => earlierForAgent(x, byId[x.id], pr, g.label))));
+  const chip = (n, label, tone) => `<span class="chip ${n ? tone : "c-gray"}">${n} ${label}</span>`;
+  const copy = (text, label, title) => `<button class="btn small" data-copy="${esc(text)}" ${text ? "" : "disabled"} title="${esc(title)}">${label}</button>`;
+  return `<div class="panel recap"><div class="row wrap"><b>Since the last review</b>${chip(count(done), "fixed", "c-green")}${chip(p.findings.length, "new", "c-blue")}${chip(count(open), "still open", "c-yellow")}<span class="grow"></span>${copy(newText, "Copy new findings", "Every new finding in one block, to paste to an agent")}${copy(openText, "Copy still-open findings", "Every earlier finding that is still open, in one block, to paste to an agent")}</div></div>`;
 }
 function earlierForAgent(x, f, pr, said) {
   return [`# Earlier review comment ${x.id} on ${pr}: ${f.title || ""}`, `Now: ${said}.`, x.note ? `Why: ${x.note}` : "",
@@ -4773,11 +4794,23 @@ async function prDetail(arg) {
     const f = byId[x.id], from = passOf[x.id], head = `<div class="row prior-head">${f && f.status === "drop" ? `<span class="tag" title="The review still sees it in the code; you decided not to act on it">${own ? "you passed on it" : "you dropped it"}</span>` : ""}<span class="grow"></span>${from && from !== p.n ? `<a href="#" class="small" data-pr-goto='${esc(JSON.stringify([pr, from, x.id]))}'>From review ${from} ↗</a>` : ""}${f ? copyBtns(earlierForPerson(x, f, pr, g.label), earlierForAgent(x, f, pr, g.label)) : ""}</div>${x.note ? `<p class="small">${txt(x.note)}</p>` : ""}`;
     return `<div class="prior-item">${head}${f ? prFinding(f, pr, unlocked, true, own) : ""}</div>`;
   };
+  /* A finding that is done (fixed, or no longer applies) is one quiet line, not a card to decide on: what it was
+     crossed out, how it was closed, and the points it gave back, so nobody has to add the score up. */
+  const resolvedItem = (x, g) => {
+    const f = byId[x.id], from = passOf[x.id], cost = f ? POINTS[f.severity] || 0 : 0;
+    const by = f && (f.fixed || {}).commit ? ` in ${f.fixed.commit.slice(0, 8)}` : "";
+    const why = (f && (f.check || {}).state === "fixed" && f.check.why) || x.note;
+    return `<div class="prior-item resolved"><div class="row prior-head"><span class="chip c-green">${esc(g.heading)}${esc(by)}</span><span class="prior-struck">${txt(f ? f.title || f.issue : x.id)}</span>${cost && g.key === "fixed" ? `<span class="tag ok" title="The score gets these ${cost} points back">+${cost} back</span>` : ""}<span class="grow"></span><span class="muted small mono">${esc(x.id)}</span>${from && from !== p.n ? `<a href="#" class="small" data-pr-goto='${esc(JSON.stringify([pr, from, x.id]))}'>From review ${from} ↗</a>` : ""}${f ? copyBtns(earlierForPerson(x, f, pr, g.label), earlierForAgent(x, f, pr, g.label)) : ""}</div>${why ? `<p class="small">${txt(why)}</p>` : ""}</div>`;
+  };
   const priorBy = priorGroups(p.prior, byId);
-  const prior = priorBy.length ? section("Earlier comments", priorBy.map(g => `<div class="prior-group" data-prior-group="${esc(g.key)}"><h3 class="prior-group-h">${dot(g.tone)}${esc(g.heading)}<span class="n">${g.items.length}</span></h3>${g.items.map(x => priorItem(x, g)).join("")}</div>`).join(""), "where each earlier finding stands now; decide, discuss or fix them here") : "";
+  const isDone = g => g.key === "fixed" || g.key === "withdrawn";
+  const prior = priorBy.length ? section("Earlier comments", priorBy.map(g => `<div class="prior-group" data-prior-group="${esc(g.key)}"><h3 class="prior-group-h">${dot(g.tone)}${esc(g.heading)}<span class="n">${g.items.length}</span></h3>${g.items.map(x => isDone(g) ? resolvedItem(x, g) : priorItem(x, g)).join("")}</div>`).join(""), "where each earlier finding stands now; the open ones first, the closed ones last") : "";
+  const recap = priorBy.length ? recapStrip(priorBy, p, pr, byId) : "";
   const order = { blocker: 0, major: 1, minor: 2, nitpick: 3, note: 4 };
   const fs = [...p.findings].sort((a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5));
   const together = p.together || [];
+  /* on a re-review the new findings come first and are named for what they are: what this pass added */
+  const findingsSec = section(together.length ? `Findings on ${pr}` : priorBy.length ? "New in this review" : "Findings", (fs.length ? fs.map(f => prFinding(f, pr, unlocked, live, own)).join("") : priorBy.length ? empty("Nothing new", "This re-review found nothing new.") : empty("Nothing found", "This review found nothing to comment on.")) + (together.length ? postBar(pr, p, live, own, unlocked, d.fix_job) : ""), prTally(p, own));
   const discard = live && unlocked ? `<button class="btn small" data-pr-discard='${esc(JSON.stringify([pr, p.n]))}' title="Throw this review away; nothing was posted">Discard this review</button>` : "";
   return `${prTabStrip()}${head(rec.title || pr, `<span class="mono">${esc(pr)}</span> by ${esc(rec.author || "")}${rec.ticket ? ` · ${esc(rec.ticket)}` : ""} · <a href="${esc(rec.url)}" target="_blank" rel="noopener noreferrer">Open on GitHub ↗</a>`, back)}
     ${ghPanel(d.gh, passes.length)}
@@ -4794,9 +4827,11 @@ async function prDetail(arg) {
         ${p.run.used ? `<div class="k mt">What it used</div>${p.run.fresh_eyes ? `<div class="used"><div class="used-k">Mode${info("Fresh eyes: this review didn't see earlier reviews, your Fix/Pass choices, or anyone else's comments. Findings an earlier review raised are tagged.")}</div><div class="used-v"><span class="chip c-green">Fresh eyes</span></div></div>` : ""}${usedTags(p.run.used, p.run.method)}` : ""}
         <details class="more" data-pr-activity='${esc(JSON.stringify([pr, p.n]))}'><summary class="small">What Claude did</summary><div class="small muted"><span class="loading-inline">Loading…</span></div></details>` : ""}</div>
       ${questionsBox(pr, p, unlocked)}
-      ${prior}
+      ${recap}
       ${together.length ? `<div class="callout">This review covered ${plural(together.length + 1, "PR")} in one session: <span class="mono">${esc(pr)}</span>${together.map(t => `, <a class="mono" href="#prs/${esc(t.pr.replace("#", "/"))}">${esc(t.pr)}</a>`).join("")}. Each PR has its own findings, score and post box below.</div>` : ""}
-      ${section(together.length ? `Findings on ${pr}` : "Findings", (fs.length ? fs.map(f => prFinding(f, pr, unlocked, live, own)).join("") : empty("Nothing found", "This review found nothing to comment on.")) + (together.length ? postBar(pr, p, live, own, unlocked, d.fix_job) : ""), prTally(p, own))}
+      ${priorBy.length ? findingsSec : ""}
+      ${prior}
+      ${priorBy.length ? "" : findingsSec}
       ${together.length ? "" : postBar(pr, p, live, own, unlocked, d.fix_job, (p.prior || []).filter(x => !["fixed", "withdrawn"].includes(x.state)).map(x => byId[x.id]).filter(Boolean))}
       ${together.map(t => togetherSection(t, unlocked, d.gh && d.gh.me)).join("")}
     </div>${talkPane(pr, p, unlocked, byId)}</div>
