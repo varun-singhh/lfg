@@ -1397,6 +1397,23 @@ a.stk-i:hover { background: var(--hover); }
 .chip.c-pink { color: var(--pink-tx); background: var(--pink-bg); }
 .chip.c-orange { color: var(--orange-tx); background: var(--orange-bg); }
 .chip.c-green { color: var(--green-tx); background: var(--green-bg); }
+.chip.c-yellow { color: var(--yellow-tx); background: var(--yellow-bg); }
+.chip.c-red { color: var(--red-tx); background: var(--red-bg); }
+/* labels and nested groups (Sessions page, Studio's list) */
+.lbl-row { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 4px; vertical-align: middle; }
+.chip.lbl { height: 20px; font-size: 11.5px; border: 0; font-family: inherit; }
+button.chip.lbl { cursor: pointer; }
+.chip.lbl.on { box-shadow: 0 0 0 2px var(--blue); }
+.chip.lbl a { color: inherit; text-decoration: none; opacity: .7; }
+.lbl-filter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 0 10px; }
+.grp-kids { margin: 0 0 4px 18px; border-left: 1px solid var(--line); padding-left: 6px; }
+.lbl-edit { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.clr-dots { display: inline-flex; gap: 4px; }
+.clr { width: 16px; height: 16px; padding: 0; border-radius: 50%; border: 1px solid var(--line); cursor: pointer; background: var(--gray-bg); }
+.clr.on { box-shadow: 0 0 0 2px var(--blue); }
+.clr.c-gray { background: var(--gray); } .clr.c-green { background: var(--green); } .clr.c-yellow { background: var(--yellow); }
+.clr.c-red { background: var(--red); } .clr.c-blue { background: var(--blue-dot); } .clr.c-purple { background: var(--purple-tx); }
+.clr.c-pink { background: var(--pink-tx); } .clr.c-orange { background: var(--orange-tx); }
 .chip.connector::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .55; }
 .sess-recent .used { margin-bottom: 12px; }
 
@@ -2602,3 +2619,9 @@ body.sg-open { overflow: hidden; }
 .pr-asked { margin: 6px 0; display: grid; gap: 6px; justify-items: start; }
 .pr-gh-reply { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; width: 100%; }
 .pr-gh-reply .md p:last-child { margin-bottom: 0; }
+
+/* Studio's list: row actions and the group view */
+.ss-row-act { display: none; gap: 6px; align-items: center; align-self: center; }
+.ss-row:hover .ss-row-act, .ss-row:focus-within .ss-row-act { display: inline-flex; }
+.ss-row .lbl-row { margin-left: 8px; }
+.ss-tree details.item > .box { margin: 0 0 6px; }

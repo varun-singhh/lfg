@@ -35,7 +35,12 @@ def prefs():
     return {"names": dict(p.get("names") or {}), "folders": dict(p.get("folders") or {}),
             "hidden": list(p.get("hidden") or []), "starred": list(p.get("starred") or []),
             # a group can follow PRs ("owner/repo#12"): every session that mentions one joins it, unless taken out
-            "group_prs": dict(p.get("group_prs") or {}), "left_out": dict(p.get("left_out") or {})}
+            "group_prs": dict(p.get("group_prs") or {}), "left_out": dict(p.get("left_out") or {}),
+            # groups that exist on purpose (even empty), {child: parent} for nesting, tickets a group follows,
+            # labels per session id, and the colour of each label (by lower-case name)
+            "groups": list(p.get("groups") or []), "group_parent": dict(p.get("group_parent") or {}),
+            "group_tickets": dict(p.get("group_tickets") or {}), "labels": dict(p.get("labels") or {}),
+            "label_colors": dict(p.get("label_colors") or {})}
 
 
 def _save_prefs(p):
@@ -250,10 +255,22 @@ def _following(group_prs):
     return out
 
 
+def _group_set(p):
+    """Every group that exists: listed on purpose, or with a member, a child, a followed PR or a followed ticket."""
+    return (set(p["groups"]) | set(p["folders"]) | set(p["group_prs"]) | set(p["group_tickets"])
+            | set(p["group_parent"]) | set(p["group_parent"].values())) - {""}
+
+
 def group_names():
     """Every group's name, as listing() gives them, without reading a single transcript."""
+    return sorted(_group_set(prefs()))
+
+
+def group_info():
+    """{group: {"parent", "prs", "tickets"}} for every group that exists."""
     p = prefs()
-    return sorted(set(p["folders"]) | set(p["group_prs"]))
+    return {g: {"parent": p["group_parent"].get(g, ""), "prs": list(p["group_prs"].get(g, [])),
+                "tickets": list(p["group_tickets"].get(g, []))} for g in sorted(_group_set(p))}
 
 
 def listing(days=None, scripted=False, hidden=False, only=None, loose=False):
@@ -263,16 +280,16 @@ def listing(days=None, scripted=False, hidden=False, only=None, loose=False):
     any git repo (your home folder, ~/code, a scratch folder), whatever `only` says. `loose_count` counts those."""
     p = prefs()
     want = os.path.realpath(only) if only else ""
-    folder_of = {sid: f for f, ids in p["folders"].items() for sid in ids}
-    auto = {sid: g for sid, g in _following(p["group_prs"]).items()
-            if sid not in folder_of and sid not in (p["left_out"].get(g) or [])}
+    scanned = scan()
+    placed = placements(scanned)
     starred = set(p["starred"])
     hid = set(p["hidden"])
     cut = time.time() - days * 86400 if days else 0
     rows, loose_count = [], 0
-    for s in scan():
+    for s in scanned:
         # a script's session (`claude -p`, e.g. a dashboard review run) shows when it joined a group through its PR
-        if s["mtime"] < cut or (s["entrypoint"] == "sdk-cli" and not scripted and s["id"] not in auto) or \
+        by_pr = placed.get(s["id"], {}).get("via") == "pr"
+        if s["mtime"] < cut or (s["entrypoint"] == "sdk-cli" and not scripted and not by_pr) or \
                 (s["id"] in hid and not hidden):
             continue
         repo, root, wt = _where(s["cwd"])
@@ -290,8 +307,12 @@ def listing(days=None, scripted=False, hidden=False, only=None, loose=False):
         r["name"] = name_for(r, p["names"].get(s["id"], ""))
         r["auto_name"] = name_for(r)
         r["named"] = bool(p["names"].get(s["id"]) or s["title"])
-        r["folder"] = folder_of.get(s["id"]) or auto.get(s["id"], "")
-        r["via_pr"] = s["id"] in auto
+        where = placed.get(s["id"], {"folder": "", "via": ""})
+        r["folder"] = where["folder"]
+        r["via_pr"] = where["via"] == "pr"
+        r["via_ticket"] = where["via"] == "ticket"
+        r["labels"] = [{"name": n, "color": p["label_colors"].get(n.lower(), "gray")}
+                       for n in p["labels"].get(s["id"], [])]
         r["starred"] = s["id"] in starred
         r["hidden"] = s["id"] in hid
         r["group"] = r["folder"] or r["ticket"] or (r["branch"] if r["branch"] not in ("", "HEAD") else "") \
@@ -303,6 +324,7 @@ def listing(days=None, scripted=False, hidden=False, only=None, loose=False):
         rows.append(r)
     rows.sort(key=lambda r: r["modified"], reverse=True)
     return {"sessions": rows, "folders": group_names(), "group_prs": p["group_prs"],
+            "label_list": label_list({s["id"] for s in scanned}), "group_info": group_info(),
             "projects_dir": PROJECTS, "hidden_count": len(hid), "loose_count": loose_count}
 
 
@@ -450,9 +472,81 @@ def follow_pr(group, pr, on=True):
         p["group_prs"][group] = prs
     else:
         p["group_prs"].pop(group, None)
-        p["left_out"].pop(group, None)
+        if not p["group_tickets"].get(group):
+            p["left_out"].pop(group, None)
     _save_prefs(p)
     return {"group": group, "prs": prs}
+
+
+def follow_ticket(group, ticket, on=True):
+    """Have a group follow a ticket (ATO-7): every session whose branch, title or first message names it joins the
+    group, unless it was filed by hand or taken out. off: stop following it."""
+    group, ticket = _valid_group(group), str(ticket or "").strip()
+    m = TICKET.fullmatch(ticket)
+    if not m or ticket in NOT_TICKETS:
+        raise ValueError("not a ticket: %r (like ATO-7)" % ticket)
+    p = prefs()
+    tickets = [x for x in p["group_tickets"].get(group, []) if x != ticket] + ([ticket] if on else [])
+    if tickets:
+        p["group_tickets"][group] = tickets
+        if group not in p["groups"]:
+            p["groups"].append(group)
+    else:
+        p["group_tickets"].pop(group, None)
+        if not p["group_prs"].get(group):
+            p["left_out"].pop(group, None)
+    _save_prefs(p)
+    return {"group": group, "tickets": tickets}
+
+
+_BRANCH_TICKET = re.compile(r"(?:^|[/_-])([a-z][a-z0-9]{1,9}-\d{1,6})(?=$|[/_-])", re.I)
+
+
+def _tickets_in(*texts, branch=""):
+    """Every ticket id named in the texts (upper case only, so prose like "gpt-4" doesn't count) and in a branch
+    name (any case, as in `lee/ato-3574-fix`)."""
+    out = {m.upper() for m in _BRANCH_TICKET.findall(branch or "")}
+    for t in texts:
+        out.update(TICKET.findall(t or ""))
+    return out - NOT_TICKETS
+
+
+def _depth(p, group):
+    n, seen = 0, set()
+    while group in p["group_parent"] and group not in seen:
+        seen.add(group)
+        group = p["group_parent"][group]
+        n += 1
+    return n
+
+
+def placements(sessions=None):
+    """{session id: {"folder": group, "via": "" | "pr" | "ticket"}} for every session that is in a group. By hand
+    first (a session filed or taken out by hand is never moved), then a group following a PR it mentions, then a
+    group following a ticket its branch, title or first message names: the deepest such group, then the first by
+    name."""
+    p = prefs()
+    out = {sid: {"folder": f, "via": ""} for f, ids in p["folders"].items() for sid in ids}
+    for sid, g in _following(p["group_prs"]).items():
+        if sid not in out and sid not in (p["left_out"].get(g) or []):
+            out[sid] = {"folder": g, "via": "pr"}
+    wants = sorted(((-_depth(p, g), g, set(ts)) for g, ts in p["group_tickets"].items() if ts))
+    if wants:
+        for s in sessions if sessions is not None else scan():
+            if s["id"] in out:
+                continue
+            named = _tickets_in(s["title"], s["ai_title"], s["first"], branch=s["branch"])
+            out_of = set()  # taken out of a group: also out of the groups above it
+            for h, ids in p["left_out"].items():
+                if s["id"] in ids:
+                    while h and h not in out_of:
+                        out_of.add(h)
+                        h = p["group_parent"].get(h, "")
+            for _, g, ts in wants:
+                if ts & named and g not in out_of:
+                    out[s["id"]] = {"folder": g, "via": "ticket"}
+                    break
+    return out
 
 
 def groups_of(pr):
@@ -482,7 +576,9 @@ def file_into(sid, folder, came_from=""):
     group from then on."""
     sid, p = _known(sid), prefs()
     folder, came_from = _group_name(folder), _group_name(came_from)
-    if came_from in p["group_prs"] and folder != came_from:
+    if folder:
+        folder = _valid_group(folder)
+    if (came_from in p["group_prs"] or came_from in p["group_tickets"]) and folder != came_from:
         p["left_out"][came_from] = sorted(set(p["left_out"].get(came_from) or []) | {sid})
     for f in list(p["folders"]):
         p["folders"][f] = [x for x in p["folders"][f] if x != sid]
@@ -490,8 +586,220 @@ def file_into(sid, folder, came_from=""):
             del p["folders"][f]
     if folder:
         p["folders"].setdefault(folder, []).append(sid)
+        if folder not in p["groups"]:
+            p["groups"].append(folder)
     _save_prefs(p)
     return {"id": sid, "folder": folder}
+
+
+def _valid_group(name):
+    name = _group_name(name)
+    if len(name) < 2:
+        raise ValueError("give the group a name of at least 2 characters")
+    return name
+
+
+def _under(p, start, name):
+    """True when `start` is `name` or sits somewhere below it."""
+    seen = set()
+    while start and start not in seen:
+        if start == name:
+            return True
+        seen.add(start)
+        start = p["group_parent"].get(start, "")
+    return False
+
+
+def make_group(name, parent=""):
+    """Create a group on purpose, so it stays while it is empty. `parent` nests it inside another group."""
+    name, parent = _valid_group(name), _group_name(parent)
+    p = prefs()
+    known = _group_set(p)
+    if name in known:
+        raise ValueError("there is already a group called %r" % name)
+    if parent and parent not in known:
+        raise ValueError("there is no group called %r" % parent)
+    p["groups"] = sorted(set(p["groups"]) | {name})
+    if parent:
+        p["group_parent"][name] = parent
+    _save_prefs(p)
+    return {"group": name, "parent": parent}
+
+
+def rename_group(old, new):
+    """Rename a group everywhere it is stored. Refused when the new name is taken, so nothing changes."""
+    old, new = _group_name(old), _valid_group(new)
+    p = prefs()
+    known = _group_set(p)
+    if old not in known:
+        raise ValueError("there is no group called %r" % old)
+    if new != old and new in known:
+        raise ValueError("there is already a group called %r" % new)
+    p["groups"] = sorted({new if g == old else g for g in p["groups"]} | {new})
+    for key in ("folders", "group_prs", "group_tickets", "left_out"):
+        if old in p[key]:
+            p[key][new] = p[key].pop(old)
+    parent = {}
+    for child, par in p["group_parent"].items():
+        parent[new if child == old else child] = new if par == old else par
+    p["group_parent"] = parent
+    _save_prefs(p)
+    return {"group": new, "old": old}
+
+
+def move_group(name, parent):
+    """Put a group inside another one (empty: top level). Refused when that would put it inside itself."""
+    name, parent = _group_name(name), _group_name(parent)
+    p = prefs()
+    known = _group_set(p)
+    if name not in known:
+        raise ValueError("there is no group called %r" % name)
+    if parent and parent not in known:
+        raise ValueError("there is no group called %r" % parent)
+    if _under(p, parent, name):
+        raise ValueError("a group can't go inside itself or one of its own groups")
+    if parent:
+        p["group_parent"][name] = parent
+    else:
+        p["group_parent"].pop(name, None)
+    p["groups"] = sorted(set(p["groups"]) | {name})
+    _save_prefs(p)
+    return {"group": name, "parent": parent}
+
+
+def delete_group(name):
+    """Delete a group. Its sessions and its groups move up to its parent (or to Unsorted / the top level);
+    nothing is hidden or deleted."""
+    name = _group_name(name)
+    p = prefs()
+    if name not in _group_set(p):
+        raise ValueError("there is no group called %r" % name)
+    parent = p["group_parent"].get(name, "")
+    members = p["folders"].pop(name, [])
+    if parent and members:
+        p["folders"][parent] = list(dict.fromkeys(p["folders"].get(parent, []) + members))
+        if parent not in p["groups"]:
+            p["groups"].append(parent)
+    for child, par in list(p["group_parent"].items()):
+        if par == name:
+            if parent:
+                p["group_parent"][child] = parent
+            else:
+                del p["group_parent"][child]
+    p["group_parent"].pop(name, None)
+    p["groups"] = [g for g in p["groups"] if g != name]
+    for key in ("group_prs", "group_tickets", "left_out"):
+        p[key].pop(name, None)
+    _save_prefs(p)
+    return {"group": name, "moved_to": parent}
+
+
+# ---------------------------------------------------------------- labels
+
+LABEL_COLORS = ("gray", "green", "yellow", "red", "blue", "purple", "pink", "orange")
+# the order new labels get colours in: blue first, because gray reads as having no colour
+NEW_LABEL_ORDER = ("blue", "green", "purple", "orange", "pink", "yellow", "red", "gray")
+
+
+def _label(name):
+    name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if len(name) > 30:
+        raise ValueError("a label can be at most 30 characters")
+    return name
+
+
+def _label_names(p):
+    """{lower-case name: the spelling first typed} over every session's labels."""
+    out = {}
+    for sid in sorted(p["labels"]):
+        for n in p["labels"][sid]:
+            out.setdefault(n.lower(), n)
+    return out
+
+
+def _existing_ids():
+    return {os.path.basename(f)[:-6] for f in glob.glob(os.path.join(PROJECTS, "*", "*.jsonl"))}
+
+
+def set_labels(sid, names):
+    """Replace a session's labels (a studio's too: the same id). Names are case-insensitive: the first spelling typed
+    is kept. A new label gets the next colour not yet used."""
+    sid, p = _known(sid), prefs()
+    shown = _label_names(p)
+    mine = {}
+    for n in names or []:
+        n = _label(n)
+        if n:
+            mine.setdefault(n.lower(), shown.get(n.lower(), n))
+    for key in mine:
+        if key not in p["label_colors"]:
+            used = set(p["label_colors"].values())
+            p["label_colors"][key] = next((c for c in NEW_LABEL_ORDER if c not in used),
+                                          NEW_LABEL_ORDER[len(p["label_colors"]) % len(NEW_LABEL_ORDER)])
+    if mine:
+        p["labels"][sid] = list(mine.values())
+    else:
+        p["labels"].pop(sid, None)
+    _save_prefs(p)
+    return {"id": sid, "labels": list(mine.values())}
+
+
+def label_list(ids=None):
+    """[{name, color, count}] for the labels on sessions that still exist, by name."""
+    p = prefs()
+    ids = _existing_ids() if ids is None else ids
+    counts, shown = {}, _label_names(p)
+    for sid, names in p["labels"].items():
+        if sid in ids:
+            for n in names:
+                counts[n.lower()] = counts.get(n.lower(), 0) + 1
+    return [{"name": shown[k], "color": p["label_colors"].get(k, "gray"), "count": c}
+            for k, c in sorted(counts.items(), key=lambda kv: shown[kv[0]].lower())]
+
+
+def edit_label(name, new_name="", color=""):
+    """Rename a label (into an existing one: they merge) and/or give it another colour, on every item at once."""
+    key, p = _label(name).lower(), prefs()
+    shown = _label_names(p)
+    if key not in shown:
+        raise ValueError("there is no label called %r" % name)
+    if color and color not in LABEL_COLORS:
+        raise ValueError("colour must be one of: " + ", ".join(LABEL_COLORS))
+    new = _label(new_name)
+    final = key
+    if new and new.lower() != key:
+        final, display = new.lower(), shown.get(new.lower(), new)
+        for sid, names in list(p["labels"].items()):
+            out = []
+            for n in names:
+                n = display if n.lower() in (key, final) else n
+                if n not in out:
+                    out.append(n)
+            p["labels"][sid] = out
+        old_color = p["label_colors"].pop(key, "")
+        if final not in p["label_colors"]:
+            p["label_colors"][final] = old_color or "gray"
+    elif new and new != shown[key]:  # only the capitalisation changes
+        for sid, names in p["labels"].items():
+            p["labels"][sid] = [new if n.lower() == key else n for n in names]
+    if color:
+        p["label_colors"][final] = color
+    _save_prefs(p)
+    return {"label": shown.get(final, new or shown[key])}
+
+
+def delete_label(name):
+    """Remove a label from every session."""
+    key, p = _label(name).lower(), prefs()
+    if key not in _label_names(p):
+        raise ValueError("there is no label called %r" % name)
+    for sid in list(p["labels"]):
+        p["labels"][sid] = [n for n in p["labels"][sid] if n.lower() != key]
+        if not p["labels"][sid]:
+            del p["labels"][sid]
+    p["label_colors"].pop(key, None)
+    _save_prefs(p)
+    return {"label": name}
 
 
 # ---------------------------------------------------------------- usage, from the transcripts themselves
@@ -715,6 +1023,7 @@ def trash(sid):
     p = prefs()
     p["hidden"] = [x for x in p.get("hidden") or [] if x != sid]
     p["names"].pop(sid, None)
+    p["labels"].pop(sid, None)
     for f in list(p["folders"]):
         p["folders"][f] = [x for x in p["folders"][f] if x != sid]
         if not p["folders"][f]:

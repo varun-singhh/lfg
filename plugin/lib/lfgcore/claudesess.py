@@ -430,7 +430,12 @@ def listing(rid, root):
         return {"sessions": []}
     base = folder_for(root)
     files = glob.glob(os.path.join(base, "*.jsonl")) + glob.glob(os.path.join(base + "-worktrees-*", "*.jsonl"))
+    from . import sessions as SS
+    placed = SS.placements()
     cache, idx, changed, out = _summary_cache(), _index(), False, []
+    prefs = SS.prefs()
+    labels = {sid: [{"name": n, "color": prefs["label_colors"].get(n.lower(), "gray")} for n in names]
+              for sid, names in prefs["labels"].items()}
     for p in sorted(files, key=lambda p: -os.path.getmtime(p))[:200]:
         st = os.stat(p)
         key = "v%d:%s:%d:%d" % (SUMMARY_VERSION, p, st.st_mtime, st.st_size)  # a new version rebuilds them all
@@ -450,16 +455,20 @@ def listing(rid, root):
                         source="lfg" if mine.get("lfg") else
                         {"claude-desktop": "desktop", "cli": "terminal"}.get(s.get("entry"), "background"),
                         state=live.state if live else "saved", title=mine.get("title") or s["title"],
-                        mode=(live.mode if live else mine.get("mode")), pr=_pr_for(rid, s.get("branch"))))
+                        mode=(live.mode if live else mine.get("mode")), pr=_pr_for(rid, s.get("branch")),
+                        folder=(placed.get(sid) or {}).get("folder", ""), via=(placed.get(sid) or {}).get("via", ""),
+                        labels=labels.get(sid, [])))
     for sid, live in list(_LIVE.items()):  # a live session whose transcript isn't written yet
         if live.rid == rid and not any(x["id"] == sid for x in out):
             out.insert(0, {"id": sid, "title": live.title, "branch": live.branch, "source": "lfg", "state": live.state,
                            "model": live.model, "mode": live.mode, "updated": live.started, "cost": None,
-                           "skills": []})
+                           "skills": [], "folder": (placed.get(sid) or {}).get("folder", ""),
+                           "via": (placed.get(sid) or {}).get("via", ""), "labels": labels.get(sid, [])})
     if changed:
         C.ensure_dir(C.lfg_path("sessions"))
         C.write_json(C.lfg_path("sessions", "list-cache.json"), {k: v for k, v in cache.items() if os.path.exists(k)})
-    return {"sessions": out, "modes": MODES, "models": list(MODELS)}
+    return {"sessions": out, "modes": MODES, "models": list(MODELS), "group_info": SS.group_info(),
+            "label_list": SS.label_list()}
 
 
 LFG_PROMPTS = [  # LFG's own background runs, by how their prompt starts: a readable title instead

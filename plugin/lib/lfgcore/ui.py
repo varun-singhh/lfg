@@ -615,7 +615,8 @@ def save(what, body):
         dash.forget("environment")
         return res
     if what in ("session_name", "session_folder", "session_hide", "session_trash", "worktree_remove", "session_star",
-                "group_pr"):
+                "group_pr", "group_make", "group_rename", "group_move", "group_delete", "group_ticket",
+                "session_labels", "label_edit", "label_delete"):
         from . import sessions as SS
         try:
             if what == "session_name":
@@ -631,6 +632,25 @@ def save(what, body):
                 return SS.star(body.get("id"), body.get("on", True) is not False)
             if what == "group_pr":
                 return SS.follow_pr(body.get("group"), body.get("pr"), body.get("on", True) is not False)
+            if what == "group_ticket":
+                return SS.follow_ticket(body.get("group"), body.get("ticket"), body.get("on", True) is not False)
+            if what == "group_make":
+                return SS.make_group(body.get("name"), body.get("parent") or "")
+            if what == "group_rename":
+                return SS.rename_group(body.get("old"), body.get("new"))
+            if what == "group_move":
+                return SS.move_group(body.get("name"), body.get("parent") or "")
+            if what == "group_delete":
+                return SS.delete_group(body.get("name"))
+            if what == "session_labels":
+                names = body.get("labels")
+                if not isinstance(names, list):
+                    raise ValueError("labels must be a list")
+                return SS.set_labels(body.get("id"), names)
+            if what == "label_edit":
+                return SS.edit_label(body.get("name"), body.get("new_name") or "", body.get("color") or "")
+            if what == "label_delete":
+                return SS.delete_label(body.get("name"))
             if what == "worktree_remove":
                 res = SS.remove_worktree(str(body.get("path") or ""))
                 dash.forget("environment")

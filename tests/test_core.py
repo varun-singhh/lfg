@@ -4363,9 +4363,282 @@ class SessionsTest(unittest.TestCase):
         r = self.SS.listing()["sessions"][0]
         self.assertEqual((r["name"], r["folder"]), ("hello", ""))
         self.assertEqual(self.SS.prefs(), {"names": {}, "folders": {}, "hidden": [], "starred": [], "group_prs": {},
-                                           "left_out": {}})
+                                           "left_out": {}, "groups": ["Q4"], "group_parent": {}, "group_tickets": {},
+                                           "labels": {}, "label_colors": {}})
         with self.assertRaises(ValueError):
             self.SS.rename("../../etc/passwd", "x")
+
+    def test_groups_nest_and_survive_being_empty(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 1
+        self.write(a, "/nowhere/app", "main", "hello")
+        SS.make_group("Epic")
+        SS.make_group("M1", parent="Epic")
+        self.assertEqual(SS.group_info()["M1"]["parent"], "Epic")
+        self.assertIn("Epic", SS.group_names())
+        SS.file_into(a, "M1")
+        SS.file_into(a, "")
+        self.assertIn("M1", SS.group_names())
+
+    def test_group_cycles_and_name_clashes_are_refused(self):
+        SS = self.SS
+        SS.make_group("Epic")
+        SS.make_group("M1", parent="Epic")
+        SS.make_group("S1", parent="M1")
+        before = SS.group_info()
+        for name, parent in (("Epic", "M1"), ("Epic", "S1"), ("M1", "S1"), ("Epic", "Epic")):
+            with self.assertRaises(ValueError):
+                SS.move_group(name, parent)
+        with self.assertRaises(ValueError):
+            SS.rename_group("M1", "Epic")
+        with self.assertRaises(ValueError):
+            SS.move_group("Nope", "Epic")
+        self.assertEqual(SS.group_info(), before)
+
+    def test_renaming_a_group_moves_it_everywhere(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 1
+        self.write(a, "/nowhere/app", "main", "hello")
+        SS.make_group("Old")
+        SS.make_group("Kid", parent="Old")
+        SS.file_into(a, "Old")
+        SS.follow_pr("Old", "acme/api#12")
+        SS.rename_group("Old", "New")
+        self.assertEqual(SS.listing()["sessions"][0]["folder"], "New")
+        p = SS.prefs()
+        self.assertEqual(list(p["group_prs"]), ["New"])
+        self.assertEqual(SS.group_info()["Kid"]["parent"], "New")
+        self.assertNotIn("Old", SS.group_names())
+
+    def test_deleting_a_group_moves_its_contents_up(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 1
+        self.write(a, "/nowhere/app", "main", "hello")
+        SS.make_group("Epic")
+        SS.make_group("M1", parent="Epic")
+        SS.file_into(a, "M1")
+        SS.delete_group("M1")
+        self.assertEqual(SS.listing()["sessions"][0]["folder"], "Epic")
+        SS.delete_group("Epic")
+        rows = SS.listing()["sessions"]
+        self.assertEqual((len(rows), rows[0]["folder"]), (1, ""))
+        self.assertEqual(SS.group_names(), [])
+
+    def test_a_group_following_a_ticket_gathers_matching_sessions(self):
+        SS = self.SS
+        a, b, c, d = ("%08d-0000-0000-0000-00000000000%d" % (60 + i, i) for i in range(4))
+        self.write(a, "/nowhere/api", "lee/ato-7-x", "work")
+        self.write(b, "/nowhere/api", "main", "please build ATO-7 now")
+        self.write(c, "/nowhere/api", "main", "something else")
+        self.write(d, "/nowhere/api", "main", "unrelated")
+        with open(glob.glob(os.path.join(self.dir, "*", c + ".jsonl"))[0], "a") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "late mention of ATO-7"}]}}) + "\n")
+        SS.make_group("M1")
+        SS.follow_ticket("M1", "ATO-7")
+        rows = {r["id"]: r for r in SS.listing()["sessions"]}
+        self.assertEqual({i for i, r in rows.items() if r["folder"] == "M1"}, {a, b})
+        self.assertTrue(rows[a]["via_ticket"] and rows[b]["via_ticket"])
+        self.assertFalse(rows[c]["via_ticket"])
+        self.assertEqual(SS.group_info()["M1"]["tickets"], ["ATO-7"])
+        SS.follow_ticket("M1", "ATO-7", on=False)
+        self.assertEqual({r["folder"] for r in SS.listing()["sessions"]}, {""})
+
+    def test_manual_placement_beats_following(self):
+        SS = self.SS
+        a, b = ("%08d-0000-0000-0000-00000000000%d" % (70 + i, i) for i in range(2))
+        self.write(a, "/nowhere/api", "lee/ato-7-x", "work")
+        self.write(b, "/nowhere/api", "lee/ato-7-y", "work")
+        SS.make_group("M1")
+        SS.follow_ticket("M1", "ATO-7")
+        SS.file_into(a, "Elsewhere")
+        SS.file_into(b, "", came_from="M1")
+        rows = {r["id"]: r for r in SS.listing()["sessions"]}
+        self.assertEqual((rows[a]["folder"], rows[b]["folder"]), ("Elsewhere", ""))
+        self.assertFalse(rows[a]["via_ticket"] or rows[b]["via_ticket"])
+
+    def test_deepest_ticket_group_wins(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 80
+        self.write(a, "/nowhere/api", "lee/ato-7-x", "work")
+        SS.make_group("Epic")
+        SS.make_group("M1", parent="Epic")
+        SS.follow_ticket("Epic", "ATO-7")
+        SS.follow_ticket("M1", "ATO-7")
+        self.assertEqual(SS.listing()["sessions"][0]["folder"], "M1")
+        self.assertEqual(SS.placements()[a], {"folder": "M1", "via": "ticket"})
+
+    def test_follow_ticket_refuses_a_non_ticket(self):
+        SS = self.SS
+        SS.make_group("M1")
+        for bad in ("hello", "ATO-7 and more", "UTF-8"):
+            with self.assertRaises(ValueError):
+                SS.follow_ticket("M1", bad)
+
+    def test_labels_are_case_insensitive_and_coloured(self):
+        SS = self.SS
+        a, b, c = ("%08d-0000-0000-0000-00000000000%d" % (90 + i, i) for i in range(3))
+        for sid in (a, b, c):
+            self.write(sid, "/nowhere/app", "main", "hello " + sid)
+        self.assertEqual(SS.set_labels(a, ["Needs Review"])["labels"], ["Needs Review"])
+        self.assertEqual(SS.set_labels(b, ["needs review"])["labels"], ["Needs Review"])  # first spelling stays
+        SS.set_labels(c, [" needs  review ", "NEEDS REVIEW", "Orchestrator"])
+        lst = {x["name"]: x for x in SS.label_list()}
+        self.assertEqual(sorted(lst), ["Needs Review", "Orchestrator"])
+        self.assertEqual(lst["Needs Review"]["count"], 3)
+        self.assertIn(lst["Needs Review"]["color"], SS.LABEL_COLORS)
+        self.assertNotEqual(lst["Needs Review"]["color"], lst["Orchestrator"]["color"])
+        self.assertEqual(lst["Needs Review"]["color"], "blue") # first label: blue, never gray
+        row = {r["id"]: r for r in SS.listing()["sessions"]}[c]
+        self.assertEqual([x["name"] for x in row["labels"]], ["Needs Review", "Orchestrator"])
+        self.assertEqual(SS.listing()["label_list"], SS.label_list())
+        for bad in ("x" * 31,):
+            with self.assertRaises(ValueError):
+                SS.set_labels(a, [bad])
+        SS.set_labels(a, [])
+        self.assertEqual(SS.prefs()["labels"].get(a), None)
+
+    def test_label_rename_merges_and_delete_removes(self):
+        SS = self.SS
+        a, b = ("%08d-0000-0000-0000-00000000000%d" % (100 + i, i) for i in range(2))
+        for sid in (a, b):
+            self.write(sid, "/nowhere/app", "main", "hello " + sid)
+        SS.set_labels(a, ["Todo", "Epic"])
+        SS.set_labels(b, ["Later"])
+        SS.edit_label("Todo", color="red")
+        self.assertEqual({x["name"]: x["color"] for x in SS.label_list()}["Todo"], "red")
+        SS.edit_label("later", new_name="todo")  # merges into the existing label
+        self.assertEqual({x["name"]: x["count"] for x in SS.label_list()}, {"Epic": 1, "Todo": 2})
+        with self.assertRaises(ValueError):
+            SS.edit_label("nope", color="red")
+        with self.assertRaises(ValueError):
+            SS.edit_label("Todo", color="chartreuse")
+        SS.delete_label("TODO")
+        self.assertEqual([x["name"] for x in SS.label_list()], ["Epic"])
+        self.assertNotIn("todo", SS.prefs()["label_colors"])
+        self.assertEqual(SS.prefs()["labels"], {a: ["Epic"]})
+
+    def test_labels_on_a_deleted_session_are_ignored(self):
+        SS = self.SS
+        a, b = ("%08d-0000-0000-0000-00000000000%d" % (110 + i, i) for i in range(2))
+        for sid in (a, b):
+            self.write(sid, "/nowhere/app", "main", "hello " + sid)
+        SS.set_labels(a, ["Gone"])
+        SS.set_labels(b, ["Kept"])
+        os.remove(glob.glob(os.path.join(self.dir, "*", a + ".jsonl"))[0])
+        self.assertEqual([x["name"] for x in SS.label_list()], ["Kept"])
+        self.assertEqual([r["id"] for r in SS.listing()["sessions"]], [b])
+
+    def test_trashing_a_session_drops_its_labels(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 120
+        self.write(a, "/nowhere/app", "main", "hello")
+        os.utime(glob.glob(os.path.join(self.dir, "*", a + ".jsonl"))[0], (1, 1))
+        SS.set_labels(a, ["Temp"])
+        home = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, home, True)
+        os.makedirs(os.path.join(home, ".Trash"))
+        with mock.patch.object(SS.C, "HOME", home):
+            SS.trash(a)
+        self.assertNotIn(a, SS.prefs()["labels"])
+
+    def test_group_actions_go_through_save(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 130
+        self.write(a, "/nowhere/app", "lee/ato-9-x", "hello")
+        self.assertEqual(ui.save("group_make", {"name": "Epic", "parent": ""})["group"], "Epic")
+        ui.save("group_make", {"name": "M1", "parent": "Epic"})
+        ui.save("group_move", {"name": "M1", "parent": ""})
+        self.assertEqual(ui.save("group_move", {"name": "M1", "parent": "Epic"})["parent"], "Epic")
+        self.assertEqual(ui.save("group_rename", {"old": "M1", "new": "Milestone 1"})["group"], "Milestone 1")
+        self.assertEqual(ui.save("group_ticket", {"group": "Milestone 1", "ticket": "ATO-9"})["tickets"], ["ATO-9"])
+        self.assertEqual(SS.listing()["sessions"][0]["folder"], "Milestone 1")
+        self.assertEqual(ui.save("session_labels", {"id": a, "labels": ["Review"]})["labels"], ["Review"])
+        ui.save("label_edit", {"name": "review", "new_name": "", "color": "blue"})
+        self.assertEqual(SS.label_list()[0]["color"], "blue")
+        ui.save("label_delete", {"name": "Review"})
+        self.assertEqual(SS.label_list(), [])
+        self.assertEqual(ui.save("group_delete", {"name": "Milestone 1"})["moved_to"], "Epic")
+        for what, body in (("group_make", {"name": "x"}), ("group_move", {"name": "Epic", "parent": "Epic"}),
+                           ("group_rename", {"old": "Nope", "new": "Other one"}), ("group_delete", {"name": "Nope"}),
+                           ("group_ticket", {"group": "Epic", "ticket": "hello"}),
+                           ("session_labels", {"id": a, "labels": "not a list"}),
+                           ("label_edit", {"name": "nope"}), ("label_delete", {"name": "nope"})):
+            with self.assertRaises(ST.Invalid, msg=what):
+                ui.save(what, body)
+
+    def test_studio_listing_carries_group_and_labels(self):
+        from lfgcore import claudesess as CS
+        SS = self.SS
+        a, b = ("%08d-0000-0000-0000-00000000000%d" % (140 + i, i) for i in range(2))
+        self.write(a, "/nowhere/api", "main", "hello")
+        self.write(b, "/nowhere/api", "lee/ato-9-x", "other")
+        SS.make_group("Epic")
+        SS.file_into(a, "Epic")
+        SS.set_labels(a, ["Orchestrator"])
+        SS.follow_ticket("Epic", "ATO-9")
+        with mock.patch.object(CS, "PROJECTS", self.dir), mock.patch.object(CS, "_LIVE", {}):
+            out = CS.listing("r1", "/nowhere/api")
+        rows = {r["id"]: r for r in out["sessions"]}
+        self.assertEqual((rows[a]["folder"], rows[a]["via"], [x["name"] for x in rows[a]["labels"]]),
+                         ("Epic", "", ["Orchestrator"]))
+        self.assertEqual((rows[b]["folder"], rows[b]["via"], rows[b]["labels"]), ("Epic", "ticket", []))
+        self.assertEqual(out["group_info"]["Epic"]["tickets"], ["ATO-9"])
+        self.assertEqual(out["label_list"][0]["name"], "Orchestrator")
+
+    def test_taking_a_session_out_of_a_ticket_group_keeps_it_out_of_the_groups_above(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 150
+        self.write(a, "/nowhere/api", "lee/ato-7-x", "work")
+        SS.make_group("Epic")
+        SS.make_group("M1", parent="Epic")
+        SS.follow_ticket("Epic", "ATO-7")
+        SS.follow_ticket("M1", "ATO-7")
+        SS.file_into(a, "", came_from="M1")
+        self.assertEqual(SS.listing()["sessions"][0]["folder"], "")
+
+    def test_a_script_session_shows_only_through_a_followed_pr(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 151
+        self.write(a, "/nowhere/api", "lee/ato-7-x", "work", entry="sdk-cli")
+        SS.make_group("M1")
+        SS.follow_ticket("M1", "ATO-7")
+        self.assertEqual(SS.listing()["sessions"], [])  # a ticket alone doesn't pull background runs in
+        SS.file_into(a, "M1")
+        SS.delete_group("M1")
+        self.assertEqual(SS.listing()["sessions"], [])  # as before it joined
+
+    def test_filing_into_a_one_character_group_is_refused(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 152
+        self.write(a, "/nowhere/api", "main", "work")
+        with self.assertRaises(ValueError):
+            SS.file_into(a, "X")
+        self.assertEqual(SS.group_names(), [])
+
+    def test_a_label_goes_on_the_session_it_was_given_to_and_no_other(self):
+        SS = self.SS
+        a, b = ("%08d-0000-0000-0000-00000000000%d" % (160 + i, i) for i in range(2))
+        self.write(a, "/nowhere/app", "main", "orchestrate")
+        self.write(b, "/nowhere/app", "main", "unrelated")
+        ui.save("group_make", {"name": "Epic", "parent": ""})
+        ui.save("group_make", {"name": "M1", "parent": "Epic"})
+        ui.save("session_folder", {"id": a, "folder": "M1", "from": ""})
+        ui.save("session_labels", {"id": a, "labels": ["orchestrator"]})
+        rows = {r["id"]: r for r in SS.listing()["sessions"]}
+        self.assertEqual([x["name"] for x in rows[a]["labels"]], ["orchestrator"])
+        self.assertEqual(rows[b]["labels"], [])
+        self.assertEqual((rows[a]["folder"], rows[b]["folder"]), ("M1", ""))
+
+    def test_an_old_sessions_file_still_loads(self):
+        SS = self.SS
+        a = "%08d-0000-0000-0000-000000000000" % 1
+        self.write(a, "/nowhere/app", "main", "hello")
+        with open(SS._prefs_path(), "w") as f:
+            json.dump({"names": {}, "folders": {"Q4": [a]}}, f)
+        self.assertEqual(SS.listing()["sessions"][0]["folder"], "Q4")
+        self.assertEqual(SS.prefs()["group_parent"], {})
+        SS.file_into(a, "")
 
 
 class ReviewTest(unittest.TestCase):

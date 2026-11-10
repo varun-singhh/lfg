@@ -2793,6 +2793,186 @@ async function sessionRules(sid) {
   };
   draw();
 }
+/* Groups and labels, shared by the Sessions page and Studio's list. A group holds sessions (a studio chat is one) and
+   other groups; labels cut across them. Both live in LFG only: nothing on disk moves. */
+const LABEL_COLORS = ["gray", "green", "yellow", "red", "blue", "purple", "pink", "orange"];
+const LABEL_FILTER_KEY = "lfg.labels.filter";
+const labelFilter = () => { try { return JSON.parse(localStorage.getItem(LABEL_FILTER_KEY) || "[]").filter(x => typeof x === "string"); } catch (e) { return []; } };
+/* the filter without labels that are gone (deleted or renamed), so a stale one can't hide everything */
+const liveLabelFilter = list => { const have = (list || []).map(l => l.name.toLowerCase()), all = labelFilter(), keep = all.filter(k => have.includes(k)); if (keep.length !== all.length) setLabelFilter(keep); return keep; };
+const setLabelFilter = f => localStorage.setItem(LABEL_FILTER_KEY, JSON.stringify(f));
+const labelHit = (s, filter) => !filter.length || filter.every(f => (s.labels || []).some(l => l.name.toLowerCase() === f));
+const labelChip = l => `<span class="chip lbl c-${esc(l.color || "gray")}" title="Label">${esc(l.name)}</span>`;
+const labelChips = s => (s.labels || []).length ? `<span class="lbl-row">${s.labels.map(labelChip).join("")}</span>` : "";
+/* The groups as a tree: [{name, count, rows, children}]. A group's count includes everything under it. With a label
+   filter on (or opts.hideEmpty), a group with no matching row anywhere under it is left out. */
+function groupTree(rows, info, filter, opts) {
+  const hideEmpty = (filter && filter.length) || (opts && opts.hideEmpty);
+  const nodes = new Map();
+  const node = name => { if (!nodes.has(name)) nodes.set(name, { name, count: 0, rows: [], children: [] }); return nodes.get(name); };
+  Object.keys(info || {}).forEach(node);
+  for (const r of rows) if (r.folder) node(r.folder).rows.push(r);
+  const roots = [];
+  for (const n of nodes.values()) {
+    const parent = ((info || {})[n.name] || {}).parent;
+    if (parent && parent !== n.name && nodes.has(parent)) nodes.get(parent).children.push(n); else roots.push(n);
+  }
+  const total = (n, seen) => {
+    if (seen.has(n.name)) return 0;
+    seen.add(n.name);
+    n.children.sort((a, b) => a.name.localeCompare(b.name));
+    n.count = n.rows.length + n.children.reduce((t, c) => t + total(c, seen), 0);
+    if (hideEmpty) n.children = n.children.filter(c => c.count);
+    return n.count;
+  };
+  const seen = new Set();
+  roots.sort((a, b) => a.name.localeCompare(b.name));
+  roots.forEach(n => total(n, seen));
+  return hideEmpty ? roots.filter(n => n.count) : roots;
+}
+/* the group's name with the groups above it: "Epic › M1" */
+function groupPath(name, info) {
+  const out = [];
+  for (let g = name; g && !out.includes(g); g = ((info || {})[g] || {}).parent) out.unshift(g);
+  return out.join(" › ");
+}
+/* nested <details>, one per group; `h` supplies what differs between the two lists */
+function treeHtml(nodes, h) {
+  return nodes.map(n => `<details class="item grp-node" data-grp-node="${esc(n.name)}" ${h.open(n) ? "open" : ""}><summary><span class="grow"><b>${esc(n.name)}</b> ${h.tags(n.name)}</span><span class="muted small nowrap">${n.count ? plural(n.count, "session") : "nothing in it yet"}</span>${h.unlocked ? ` <button class="btn small" data-grp-manage="${esc(n.name)}" title="Rename it, move it, follow a ticket, or delete it">Manage</button>` : ""}</summary>${n.rows.length ? h.listOf(n.rows) : ""}${n.children.length ? `<div class="grp-kids">${treeHtml(n.children, h)}</div>` : ""}</details>`).join("");
+}
+const groupTags = (name, info) => { const g = (info || {})[name] || {}; return [...(g.prs || []).map(pr => `<a class="tag mono" href="#prs/${esc(pr.replace("#", "/"))}" title="This group follows ${esc(pr)}: every session that mentions it joins">${esc(pr)}</a>`), ...(g.tickets || []).map(t => `<span class="tag mono" title="This group follows ${esc(t)}: every session whose branch, title or first message names it joins">${esc(t)}</span>`)].join(" "); };
+const labelFilterBar = (list, filter) => !(list || []).length && !filter.length ? "" : `<div class="lbl-filter"><span class="muted small">Labels</span> ${list.map(l => `<button class="chip lbl c-${esc(l.color)}${filter.includes(l.name.toLowerCase()) ? " on" : ""}" data-lbl-filter="${esc(l.name.toLowerCase())}" aria-pressed="${filter.includes(l.name.toLowerCase())}" title="Show only what has this label. Pick several to narrow it down.">${esc(l.name)} <span class="n">${l.count}</span></button>`).join("")} <button class="btn small" data-lbl-manage>Manage labels</button>${filter.length ? ` <a href="#" data-lbl-clear>Clear</a>` : ""}</div>`;
+/* the groups that can't be a group's new parent: itself and everything under it */
+function groupBelow(name, info) {
+  const out = new Set([name]);
+  let grew = true;
+  while (grew) { grew = false; for (const [g, i] of Object.entries(info || {})) if (!out.has(g) && out.has(i.parent)) { out.add(g); grew = true; } }
+  return out;
+}
+const colorDots = (attr, value) => `<span class="clr-dots">${LABEL_COLORS.map(c => `<button class="clr c-${c}${c === value ? " on" : ""}" ${attr}="${c}" title="${c}" aria-label="${c}"></button>`).join("")}</span>`;
+/* ctx = { info: {group: {parent, prs, tickets}}, labels: [{name, color, count}], refresh() } */
+function sessionGroupDrawer(s, ctx) {
+  const info = ctx.info || {}, names = Object.keys(info).sort((a, b) => groupPath(a, info).localeCompare(groupPath(b, info)));
+  openDrawer("Put this in a group", `<div class="readable">
+    <p>Groups are your own way of sorting sessions and studio chats, for example an epic, then its milestones. They live in LFG only: no file or folder on disk moves, and <code>/resume</code> is unchanged. Each one is in at most one group. Anything you don't sort stays visible as Unsorted.</p>
+    ${s.folder ? `<p>Now in <b>${esc(s.folder)}</b>${s.via_pr ? " (it mentions a PR this group follows)" : s.via_ticket ? " (it names a ticket this group follows)" : ""}. <button class="btn small" id="grp-out">Take it out</button></p>` : ""}
+    ${names.filter(g => g !== s.folder).length ? `<div class="k">Your groups</div><div class="row wrap">${names.filter(g => g !== s.folder).map(g => `<button class="btn small" data-grp="${esc(g)}">${esc(groupPath(g, info))}</button>`).join("")}</div>` : ""}
+    <div class="k">New group</div>
+    <div class="row"><input type="text" id="grp-new" class="grow" placeholder="e.g. ATO-4162 rollout" maxlength="80"><button class="btn primary" id="grp-make">Create and add</button></div>
+    ${names.length ? `<div class="row"><span class="muted small">Inside</span> <select id="grp-parent"><option value="">(top level)</option>${names.map(g => `<option value="${esc(g)}">${esc(groupPath(g, info))}</option>`).join("")}</select></div>` : ""}
+    <span class="save-msg" id="sess-msg"></span></div>`);
+  const put = async folder => {
+    const from = s.via_pr || s.via_ticket ? s.folder : "";
+    const r = await save("session_folder", { id: s.id, folder, from });
+    saidMsg($("#sess-msg"), r, folder ? `Added to ${folder}.` : "Taken out.");
+    if (r.ok) setTimeout(() => { closeDrawer(); ctx.refresh(); }, 400);
+  };
+  $$("[data-grp]").forEach(b => b.onclick = () => put(b.dataset.grp));
+  const out = $("#grp-out");
+  if (out) out.onclick = () => put("");
+  const make = async () => {
+    const v = $("#grp-new").value.replace(/\s+/g, " ").trim();
+    if (v.length < 2) { $("#sess-msg").textContent = "Give the group a name of at least 2 characters."; return; }
+    if (!info[v]) {
+      const r = await save("group_make", { name: v, parent: ($("#grp-parent") || {}).value || "" });
+      if (!r.ok) return saidMsg($("#sess-msg"), r);
+    }
+    put(v);
+  };
+  $("#grp-make").onclick = make;
+  $("#grp-new").onkeydown = e => { if (e.key === "Enter") make(); };
+}
+function groupManagerDrawer(name, ctx) {
+  const info = ctx.info || {}, g = info[name] || {}, below = groupBelow(name, info);
+  const others = Object.keys(info).filter(x => !below.has(x)).sort((a, b) => groupPath(a, info).localeCompare(groupPath(b, info)));
+  openDrawer(`Group: ${name}`, `<div class="readable">
+    <div class="k">Name</div><div class="row"><input type="text" id="gm-name" class="grow" value="${esc(name)}" maxlength="80"><button class="btn" id="gm-rename">Rename</button></div>
+    <div class="k">Inside</div><div class="row"><select id="gm-parent"><option value="">(top level)</option>${others.map(x => `<option value="${esc(x)}" ${x === g.parent ? "selected" : ""}>${esc(groupPath(x, info))}</option>`).join("")}</select><button class="btn" id="gm-move">Move</button></div>
+    <div class="k">Follows tickets</div>
+    <p class="muted small">Every session whose branch, title or first message names the ticket joins this group, unless you filed it elsewhere or took it out.</p>
+    <div class="row wrap">${(g.tickets || []).map(t => `<span class="tag mono">${esc(t)} <a href="#" data-gm-unfollow="${esc(t)}" aria-label="Stop following ${esc(t)}">✕</a></span>`).join("") || '<span class="muted small">None yet.</span>'}</div>
+    <div class="row"><input type="text" id="gm-ticket" class="grow" placeholder="ATO-4162" maxlength="20"><button class="btn" id="gm-follow">Follow</button></div>
+    <div class="k">Delete</div>
+    <p class="muted small">Nothing is hidden or deleted. Its sessions and groups move up to ${g.parent ? `<b>${esc(g.parent)}</b>` : "the top level, and its sessions go back to Unsorted"}.</p>
+    <button class="btn" id="gm-delete">Delete this group</button>
+    <div><span class="save-msg" id="gm-msg"></span></div></div>`);
+  const run = async (what, body, ok) => {
+    const r = await save(what, body);
+    saidMsg($("#gm-msg"), r, ok);
+    if (r.ok) setTimeout(() => { closeDrawer(); ctx.refresh(); }, 400);
+  };
+  $("#gm-rename").onclick = () => run("group_rename", { old: name, new: $("#gm-name").value }, "Renamed.");
+  $("#gm-move").onclick = () => run("group_move", { name, parent: $("#gm-parent").value }, "Moved.");
+  const follow = () => run("group_ticket", { group: name, ticket: $("#gm-ticket").value.trim().toUpperCase(), on: true }, "Following it.");
+  $("#gm-follow").onclick = follow;
+  $("#gm-ticket").onkeydown = e => { if (e.key === "Enter") follow(); };
+  $$("[data-gm-unfollow]").forEach(a => a.onclick = e => { e.preventDefault(); run("group_ticket", { group: name, ticket: a.dataset.gmUnfollow, on: false }, "Stopped."); });
+  $("#gm-delete").onclick = () => run("group_delete", { name }, "Deleted.");
+}
+function newGroupDrawer(ctx) {
+  const info = ctx.info || {}, names = Object.keys(info).sort((a, b) => groupPath(a, info).localeCompare(groupPath(b, info)));
+  openDrawer("New group", `<div class="readable"><p>An empty group stays until you delete it. Put it inside another group to build an epic, then its milestones.</p>
+    <div class="row"><input type="text" id="ng-name" class="grow" placeholder="e.g. ATO-4162 rollout" maxlength="80"></div>
+    ${names.length ? `<div class="row"><span class="muted small">Inside</span> <select id="ng-parent"><option value="">(top level)</option>${names.map(g => `<option value="${esc(g)}">${esc(groupPath(g, info))}</option>`).join("")}</select></div>` : ""}
+    <div class="set-actions"><button class="btn primary" id="ng-make">Create</button><span class="save-msg" id="ng-msg"></span></div></div>`);
+  const make = async () => {
+    const r = await save("group_make", { name: $("#ng-name").value.trim(), parent: ($("#ng-parent") || {}).value || "" });
+    saidMsg($("#ng-msg"), r, "Created.");
+    if (r.ok) setTimeout(() => { closeDrawer(); ctx.refresh(); }, 300);
+  };
+  $("#ng-make").onclick = make;
+  $("#ng-name").onkeydown = e => { if (e.key === "Enter") make(); };
+  $("#ng-name").focus();
+}
+function sessionLabelsDrawer(s, ctx) {
+  const mine = (s.labels || []).map(l => l.name), colorOf = {};
+  (ctx.labels || []).forEach(l => (colorOf[l.name.toLowerCase()] = l.color));
+  const rest = (ctx.labels || []).filter(l => !mine.some(m => m.toLowerCase() === l.name.toLowerCase()));
+  openDrawer(`Labels: ${s.name || s.title || s.id}`, `<div class="readable">
+    <p>Labels cut across groups: a session can have any number, for example <i>orchestrator</i> or <i>needs review</i>. They live in LFG only.</p>
+    <div class="k">On this one</div>
+    <div class="row wrap">${mine.map(n => `<span class="chip lbl c-${esc(colorOf[n.toLowerCase()] || "gray")}">${esc(n)} <a href="#" data-lbl-off="${esc(n)}" aria-label="Remove ${esc(n)}">✕</a></span>`).join("") || '<span class="muted small">None yet.</span>'}</div>
+    ${rest.length ? `<div class="k">Add one you already use</div><div class="row wrap">${rest.map(l => `<button class="chip lbl c-${esc(l.color)}" data-lbl-on="${esc(l.name)}">${esc(l.name)}</button>`).join("")}</div>` : ""}
+    <div class="k">New label</div>
+    <div class="row"><input type="text" id="lbl-new" class="grow" placeholder="e.g. needs review" maxlength="30"><button class="btn primary" id="lbl-add">Add</button></div>
+    <p class="muted small">Change a label's colour, rename it or delete it from Manage labels.</p>
+    <span class="save-msg" id="lbl-msg"></span></div>`);
+  const put = async names => {
+    const r = await save("session_labels", { id: s.id, labels: names });
+    saidMsg($("#lbl-msg"), r, "Saved.");
+    if (r.ok) setTimeout(() => { closeDrawer(); ctx.refresh(); }, 300);
+  };
+  $$("[data-lbl-off]").forEach(a => a.onclick = e => { e.preventDefault(); put(mine.filter(n => n !== a.dataset.lblOff)); });
+  $$("[data-lbl-on]").forEach(b => b.onclick = () => put([...mine, b.dataset.lblOn]));
+  const add = () => { const v = $("#lbl-new").value.trim(); if (v) put([...mine, v]); };
+  $("#lbl-add").onclick = add;
+  $("#lbl-new").onkeydown = e => { if (e.key === "Enter") add(); };
+  $("#lbl-new").focus();
+}
+function labelManagerDrawer(ctx) {
+  const list = ctx.labels || [];
+  openDrawer("Manage labels", `<div class="readable">
+    <p class="muted">Rename a label to the name of another one to merge them. Deleting a label takes it off everything that has it.</p>
+    ${list.map(l => `<div class="lbl-edit" data-lbl-edit="${esc(l.name)}"><span class="chip lbl c-${esc(l.color)}">${esc(l.name)} <span class="n">${l.count}</span></span>
+      <input type="text" class="grow" value="${esc(l.name)}" maxlength="30" data-lbl-rename aria-label="Rename ${esc(l.name)}">${colorDots("data-lbl-color", l.color)}
+      <button class="btn small" data-lbl-save>Rename</button><button class="btn small" data-lbl-del>Delete</button></div>`).join("") || '<p class="muted">No labels yet. Add one from a session or studio chat.</p>'}
+    <span class="save-msg" id="lm-msg"></span></div>`);
+  const run = async (what, body, ok) => { const r = await save(what, body); saidMsg($("#lm-msg"), r, ok); if (r.ok) setTimeout(() => { closeDrawer(); ctx.refresh(); }, 300); };
+  $$("[data-lbl-edit]").forEach(row => {
+    const name = row.dataset.lblEdit;
+    $$("[data-lbl-color]", row).forEach(b => b.onclick = () => run("label_edit", { name, color: b.dataset.lblColor }, "Colour changed."));
+    $("[data-lbl-save]", row).onclick = () => run("label_edit", { name, new_name: $("[data-lbl-rename]", row).value }, "Renamed.");
+    $("[data-lbl-del]", row).onclick = () => run("label_delete", { name }, "Deleted.");
+  });
+}
+/* wires the label filter bar and the Manage buttons inside `root`; `ctx` as for the drawers, `rows` the items shown */
+function wireGroupsAndLabels(root, ctx, rows) {
+  $$("[data-lbl-filter]", root).forEach(b => b.onclick = () => { const f = labelFilter(), k = b.dataset.lblFilter; setLabelFilter(f.includes(k) ? f.filter(x => x !== k) : [...f, k]); ctx.refresh(); });
+  $$("[data-lbl-clear]", root).forEach(a => a.onclick = e => { e.preventDefault(); setLabelFilter([]); ctx.refresh(); });
+  $$("[data-lbl-manage]", root).forEach(b => b.onclick = () => labelManagerDrawer(ctx));
+  $$("[data-grp-manage]", root).forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); groupManagerDrawer(b.dataset.grpManage, ctx); });
+  $$("[data-sess-labels]", root).forEach(b => b.onclick = () => sessionLabelsDrawer(rows.find(x => x.id === b.dataset.sessLabels) || { id: b.dataset.sessLabels }, ctx));
+}
 /* "Starred only" on the Sessions page: remembered like the page's other filters. */
 const SESS_STARRED_KEY = "lfg.sessions.starred";
 const sessStarredOn = () => localStorage.getItem(SESS_STARRED_KEY) === "1";
@@ -2813,20 +2993,22 @@ PAGES.sessions = async () => {
   (sr.runs || []).forEach(j => (runsOf[j.session] || (runsOf[j.session] = [])).push(j));
   if ((sr.runs || []).some(j => ["running", "starting"].includes(j.status))) pageTimer("sess-runs", 4000, () => { if (location.hash.startsWith("#sessions")) softRoute(); });
   const q = (state.sessionFind || "").toLowerCase();
-  const hit = s => !q || [s.name, s.repo, s.worktree, s.branch, s.ticket, s.folder, s.first, s.cwd].join(" ").toLowerCase().includes(q);
+  const filt = liveLabelFilter(d.label_list);
+  const hit = s => labelHit(s, filt) && (!q || [s.name, s.repo, s.worktree, s.branch, s.ticket, s.folder, s.first, s.cwd].join(" ").toLowerCase().includes(q));
   const starredOnly = sessStarredOn(), nStarred = sessStarredCount(d.sessions);
   const rows = sessShown(d.sessions, hit, starredOnly);
   const byRepo = new Map();
   for (const s of rows) {
+    if (s.folder) continue; // sessions in a group are shown in the group tree
     // outside any repo: one heading, then the folder it was started in (~/code, ~/Downloads, ...)
-    const repo = s.folder ? "Your groups" : s.loose ? "Outside a repo" : s.repo || "Other";
+    const repo = s.loose ? "Outside a repo" : s.repo || "Other";
     if (!byRepo.has(repo)) byRepo.set(repo, new Map());
     const g = byRepo.get(repo);
-    const sub = s.loose && !s.folder ? homePath(s.cwd) || "(folder unknown)" : s.group;
+    const sub = s.loose ? homePath(s.cwd) || "(folder unknown)" : s.group;
     if (!g.has(sub)) g.set(sub, []);
     g.get(sub).push(s);
   }
-  const line = s => `<li class="sess" data-sid="${esc(s.id)}"><button class="star${s.starred ? " on" : ""}" data-sess-star='${esc(JSON.stringify([s.id, !s.starred]))}' ${unlocked ? "" : "disabled"} title="${s.starred ? "Starred: kept at the top of its group. Click to unstar" : "Star a session you still care about: it stays at the top of its group and is never folded away"}" aria-label="${s.starred ? "Unstar" : "Star"}">${s.starred ? "★" : "☆"}</button><div class="grow"><div class="title">${esc(s.name)}${s.named ? "" : ' <span class="tag" title="You haven\'t named it (/rename in Claude Code, or Rename here); this name is made up from its ticket, branch and first message">not named</span>'}</div>
+  const line = s => `<li class="sess" data-sid="${esc(s.id)}"><button class="star${s.starred ? " on" : ""}" data-sess-star='${esc(JSON.stringify([s.id, !s.starred]))}' ${unlocked ? "" : "disabled"} title="${s.starred ? "Starred: kept at the top of its group. Click to unstar" : "Star a session you still care about: it stays at the top of its group and is never folded away"}" aria-label="${s.starred ? "Unstar" : "Star"}">${s.starred ? "★" : "☆"}</button><div class="grow"><div class="title">${esc(s.name)}${s.named ? "" : ' <span class="tag" title="You haven\'t named it (/rename in Claude Code, or Rename here); this name is made up from its ticket, branch and first message">not named</span>'} ${labelChips(s)}</div>
       <div class="meta">${ago(s.modified)} · ${plural(s.prompts, "message")}${s.worktree ? ` · worktree <span class="mono">${esc(s.worktree)}</span>` : ""}${s.branch && s.group !== s.branch ? ` · <span class="mono">${esc(s.branch)}</span>` : ""}${s.app ? " · desktop app" : ""}${s.cost != null ? ` · ${usd(s.cost)}` : ""}${s.folder_exists ? "" : ` · <span class="bad-tx">its folder is gone</span>`}</div>
       ${Date.now() - Date.parse(s.modified) < 6 * 36e5 ? `<div class="sess-work" data-sess-work="${esc(s.id)}" data-fill></div>` : ""}
       <details class="more" data-sess-recent="${esc(s.id)}"><summary class="small">Recent messages and what it used</summary><div class="sess-recent small muted"><span class="loading-inline">Loading…</span></div></details>${skillRuns(runsOf[s.id], unlocked)}</div>
@@ -2836,15 +3018,11 @@ PAGES.sessions = async () => {
       <button class="btn small" data-sess-rules="${esc(s.id)}">Rules</button>
       <button class="btn small" data-sess-remind="${esc(s.id)}" ${unlocked ? "" : "disabled"} title="Its next message carries your &quot;How Claude talks to you&quot; rules again, once">Remind it of my style</button>
       <button class="btn small" data-sess-name="${esc(s.id)}" ${unlocked ? "" : "disabled"}>Rename</button>
-      ${s.folder ? `<span class="tag" title="${s.via_pr ? "Joined because it mentions a PR this group follows" : "Your group"}">${esc(s.folder)}${s.via_pr ? " · via PR" : ""} <a href="#" data-sess-ungroup='${esc(JSON.stringify([s.id, s.via_pr ? s.folder : ""]))}' title="Take it out of this group" aria-label="Take it out of ${esc(s.folder)}">✕</a></span>` : ""}
-      <button class="btn small" data-sess-folder="${esc(s.id)}" ${unlocked ? "" : "disabled"} title="Group sessions your own way, e.g. one feature across repos. Only LFG stores this; nothing on disk moves.">${s.folder ? "Change group" : "Group…"}</button>
+      ${s.folder ? `<span class="tag" title="${s.via_pr ? "Joined because it mentions a PR this group follows" : s.via_ticket ? "Joined because it names a ticket this group follows" : "Your group"}">${esc(s.folder)}${s.via_pr ? " · via PR" : s.via_ticket ? " · via ticket" : ""} <a href="#" data-sess-ungroup='${esc(JSON.stringify([s.id, s.via_pr || s.via_ticket ? s.folder : ""]))}' title="Take it out of this group" aria-label="Take it out of ${esc(s.folder)}">✕</a></span>` : ""}
+      <button class="btn small" data-sess-folder="${esc(s.id)}" ${unlocked ? "" : "disabled"} title="Group sessions your own way, e.g. an epic, then its milestones. Only LFG stores this; nothing on disk moves.">${s.folder ? "Change group" : "Add to a group…"}</button>
+      <button class="btn small" data-sess-labels="${esc(s.id)}" ${unlocked ? "" : "disabled"} title="Labels cut across groups, e.g. orchestrator or needs review">Labels…</button>
       <button class="btn small" data-sess-hide='${esc(JSON.stringify([s.id, !s.hidden]))}' ${unlocked ? "" : "disabled"}>${s.hidden ? "Show again" : "Hide"}</button>
       <button class="btn small" data-sess-trash="${esc(s.id)}" ${unlocked ? "" : "disabled"} title="Move this session's file to the Trash">Delete</button></div></li>`;
-  const GP = d.group_prs || {};
-  if (!q) for (const name of Object.keys(GP)) {
-    if (!byRepo.has("Your groups")) byRepo.set("Your groups", new Map());
-    if (!byRepo.get("Your groups").has(name)) byRepo.get("Your groups").set(name, []);
-  }
   /* starred first; sessions not starred and untouched for a week fold away, so the ones you still care about stand out */
   const quiet = s => !s.starred && Date.now() - Date.parse(s.modified) > 7 * 864e5;
   const listOf = ss => {
@@ -2852,16 +3030,18 @@ PAGES.sessions = async () => {
     const live = q ? sorted : sorted.filter(s => !quiet(s)), old = q ? [] : sorted.filter(quiet);
     return `${live.length ? `<ul class="items sess-list">${live.map(line).join("")}</ul>` : ""}${old.length ? `<details class="more sess-old"><summary>${plural(old.length, "older session")}, not starred and untouched for a week</summary><ul class="items sess-list">${old.map(line).join("")}</ul></details>` : ""}`;
   };
-  const prTags = name => (GP[name] || []).map(pr => `<a class="tag mono" href="#prs/${esc(pr.replace("#", "/"))}" title="This group follows ${esc(pr)}: every session that mentions it joins">${esc(pr)}</a>`).join(" ");
-  const groups = [...byRepo].map(([repo, g]) => section(repo, [...g].map(([name, ss]) => `<details class="item" ${q || byRepo.size === 1 || !ss.length || ss.some(s => s.starred || Date.now() - Date.parse(s.modified) < 3 * 864e5) ? "open" : ""}><summary><span class="grow"><b>${esc(name)}</b> ${repo === "Your groups" ? prTags(name) : ""}</span><span class="muted small nowrap">${ss.length ? `${plural(ss.length, "session")} · ${ago(ss[0].modified)}` : "no session mentions it yet"}</span>${repo !== "Your groups" && repo !== "Outside a repo" && unlocked ? ` <button class="btn small" data-sess-done='${esc(JSON.stringify([repo, name]))}' title="Hide these sessions and clean up their worktrees">Done with this</button>` : ""}</summary>${listOf(ss)}</details>`).join(""), plural([...g.values()].flat().length, "session")));
+  const tree = groupTree(rows, d.group_info, filt, { hideEmpty: !!q || starredOnly });
+  const treeSec = tree.length ? [section("Your groups", treeHtml(tree, { unlocked, listOf, tags: name => groupTags(name, d.group_info), open: n => !!q || filt.length > 0 || n.count > 0 }), plural(rows.filter(s => s.folder).length, "session"))] : [];
+  const groups = [...treeSec, ...[...byRepo].map(([repo, g]) => section(repo, [...g].map(([name, ss]) => `<details class="item" ${q || byRepo.size === 1 || !ss.length || ss.some(s => s.starred || Date.now() - Date.parse(s.modified) < 3 * 864e5) ? "open" : ""}><summary><span class="grow"><b>${esc(name)}</b></span><span class="muted small nowrap">${ss.length ? `${plural(ss.length, "session")} · ${ago(ss[0].modified)}` : "nothing in it yet"}</span>${repo !== "Outside a repo" && unlocked ? ` <button class="btn small" data-sess-done='${esc(JSON.stringify([repo, name]))}' title="Hide these sessions and clean up their worktrees">Done with this</button>` : ""}</summary>${listOf(ss)}</details>`).join(""), plural([...g.values()].flat().length, "session")))];
   const lock = unlocked ? "" : `<div class="callout warn">Rename, groups and delete are locked. Run <code>${esc(unlockCmd())}</code> in your terminal to change them here. Copy works either way.</div>`;
   const tab = (on, label, act, title) => `<a href="#" class="tab ${on ? "on" : ""}" data-sess-scope="${act}" title="${esc(title)}">${label}</a>`;
   const tabs = `<div class="tabs page-tabs">${state.repo ? tab(!loose && !allRepos("sessions"), esc(repoName()), "repo", "Sessions in this repo and its worktrees") : ""}${tab(!loose && allRepos("sessions"), "All repos", "all", "Every session, in a repo or not")}${tab(loose, `Outside a repo${d.loose_count ? ` <span class="n">${n(d.loose_count)}</span>` : ""}`, "loose", "Sessions started in a folder that isn't a git repo: your home folder, ~/code, a scratch folder")}</div>`;
   return `${head("Sessions", `Every Claude Code session on this machine, whichever folder you started it in. Copy a resume command and paste it in any terminal: it opens the right folder and picks the session back up.`)}
     ${tabs}
     ${lock}
-    <div class="table-tools"><input type="search" id="sess-find" placeholder="Search names, tickets, branches, repos…" value="${esc(state.sessionFind || "")}"><button class="btn small sess-starred${starredOnly ? " on" : ""}" data-sess-starred aria-pressed="${starredOnly}" title="Show only the sessions you starred">★ Starred only <span class="n">${nStarred}</span></button><span class="count">${plural(rows.length, "session")}${q || starredOnly ? ` of ${d.sessions.length}` : ""}</span>${d.hidden_count ? `<label class="small"><input type="checkbox" id="sess-hidden" ${state.showHidden ? "checked" : ""}> Show ${plural(d.hidden_count, "hidden session")}</label>` : ""}</div>
-    ${rows.length ? groups.join("") : empty(...sessEmptyText(d.sessions, q, starredOnly, esc(d.projects_dir)))}`;
+    <div class="table-tools"><input type="search" id="sess-find" placeholder="Search names, tickets, branches, repos…" value="${esc(state.sessionFind || "")}"><button class="btn small sess-starred${starredOnly ? " on" : ""}" data-sess-starred aria-pressed="${starredOnly}" title="Show only the sessions you starred">★ Starred only <span class="n">${nStarred}</span></button>${unlocked ? `<button class="btn small" data-grp-new title="Make a group to put sessions and studio chats in, inside another group if you like">New group…</button>` : ""}<span class="count">${plural(rows.length, "session")}${q || starredOnly || filt.length ? ` of ${d.sessions.length}` : ""}</span>${d.hidden_count ? `<label class="small"><input type="checkbox" id="sess-hidden" ${state.showHidden ? "checked" : ""}> Show ${plural(d.hidden_count, "hidden session")}</label>` : ""}</div>
+    ${labelFilterBar(d.label_list, filt)}
+    ${rows.length || groups.length ? groups.join("") : empty(...sessEmptyText(d.sessions, q, starredOnly, esc(d.projects_dir)))}`;
 };
 /* Skills run on a session from here: what's running, what each run said last, and what it used. */
 const RUN_ST = { starting: ["Starting", "on"], running: ["Running", "on"], done: ["Done", "ok"], failed: ["Failed", "bad"] };
@@ -3008,15 +3188,16 @@ function wireSessions(root) {
     try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "Copied"; } catch (e) { window.prompt("Copy this:", b.dataset.copy); }
     setTimeout(() => (b.textContent = "Copy resume command"), 1500);
   });
+  const groupsCtx = () => ({ info: state.sessions.group_info || {}, labels: state.sessions.label_list || [], refresh: () => route() });
   const setGroup = async (sid, folder, msgEl, from) => {
-    const r = await save("session_folder", { id: sid, folder, from: from || (((state.sessions.sessions || []).find(x => x.id === sid) || {}).via_pr ? ((state.sessions.sessions || []).find(x => x.id === sid) || {}).folder : "") });
+    const cur = (state.sessions.sessions || []).find(x => x.id === sid) || {};
+    const r = await save("session_folder", { id: sid, folder, from: from || (cur.via_pr || cur.via_ticket ? cur.folder : "") });
     if (msgEl) saidMsg(msgEl, r, folder ? `Added to ${folder}.` : "Taken out.");
     if (r.ok) setTimeout(() => { closeDrawer(); route(); }, 400);
     return r;
   };
   const ask = (sid, kind) => {
     const s = (state.sessions.sessions || []).find(x => x.id === sid) || {};
-    const groups = state.sessions.folders || [];
     if (kind === "name") {
       openDrawer("Rename session", `<div class="readable"><p>Shown in LFG only; Claude Code's own title is left alone. Leave it empty to go back to the automatic name: <i>${esc(s.auto_name || "")}</i>.</p>
         <input type="text" id="sess-val" class="wide" value="${esc(s.name !== s.auto_name ? s.name : "")}" placeholder="${esc(s.auto_name || "")}">
@@ -3027,25 +3208,11 @@ function wireSessions(root) {
       $("#sess-val").focus();
       return;
     }
-    openDrawer("Put this session in a group", `<div class="readable">
-      <p>Groups are your own way of sorting sessions, for example one feature that spans several repos. They live in LFG only: no file or folder on disk moves, and <code>/resume</code> is unchanged. A session is in at most one group.</p>
-      ${s.folder ? `<p>Now in <b>${esc(s.folder)}</b>. <button class="btn small" id="grp-out">Take it out</button></p>` : ""}
-      ${groups.filter(g => g !== s.folder).length ? `<div class="k">Your groups</div><div class="row wrap">${groups.filter(g => g !== s.folder).map(g => `<button class="btn small" data-grp="${esc(g)}">${esc(g)}</button>`).join("")}</div>` : ""}
-      <div class="k">New group</div>
-      <div class="row"><input type="text" id="grp-new" class="grow" placeholder="e.g. ATO-4162 rollout" maxlength="80"><button class="btn primary" id="grp-make">Create and add</button></div>
-      <span class="save-msg" id="sess-msg"></span></div>`);
-    $$("[data-grp]").forEach(b => b.onclick = () => setGroup(sid, b.dataset.grp, $("#sess-msg")));
-    const out = $("#grp-out");
-    if (out) out.onclick = () => setGroup(sid, "", $("#sess-msg"));
-    const make = () => {
-      const v = $("#grp-new").value.trim();
-      if (v.length < 2) { $("#sess-msg").textContent = "Give the group a name of at least 2 characters."; return; }
-      setGroup(sid, v, $("#sess-msg"));
-    };
-    $("#grp-make").onclick = make;
-    $("#grp-new").onkeydown = e => { if (e.key === "Enter") make(); };
+    sessionGroupDrawer(s, groupsCtx());
   };
   $$("[data-sess-ungroup]", root).forEach(a => a.onclick = e => { e.preventDefault(); const [sid, from] = JSON.parse(a.dataset.sessUngroup); setGroup(sid, "", null, from); });
+  $$("[data-grp-new]", root).forEach(b => b.onclick = () => newGroupDrawer(groupsCtx()));
+  wireGroupsAndLabels(root, groupsCtx(), state.sessions.sessions || []);
   /* Starring changes the star and moves the session to the top of its list in place: no reload, no flicker. */
   $$("[data-sess-star]", root).forEach(b => b.onclick = async () => {
     const [id, on] = JSON.parse(b.dataset.sessStar);
@@ -5771,11 +5938,12 @@ let ssPoll = null;
 
 PAGES.studio = async arg => {
   if (arg === "all") {  // every session for the project, and the worktrees they work in
-    const [list, where] = await Promise.all([api("studio"), api("studio_where")]);
+    const [list, where, unlocked] = await Promise.all([api("studio"), api("studio_where"), isUnlocked()]);
+    (list.sessions || []).forEach(x => { x.via_pr = x.via === "pr"; x.via_ticket = x.via === "ticket"; });
     state.sess = { list, d: null, id: null, where };
     state.navSess = list.sessions || [];
     crumbs("studio", "All sessions", "#studio/all");
-    return `<div class="ss-page">${ssWorktrees(where)}${ssAll(list)}</div>`;
+    return `<div class="ss-page">${ssWorktrees(where)}${ssAll(list, unlocked)}</div>`;
   }
   if (!arg) {  // a new session: the same screen as any session, empty, with the composer at the bottom
     const [sug, where] = await Promise.all([api("studio_suggest"), api("studio_where")]);
@@ -5816,18 +5984,29 @@ function ssNew(sug) {
     ${ssComposer({ isNew: true })}`;
 }
 
-function ssAll(list) {
-  const f = state.ssFilter || "mine", all = list.sessions || [];
-  const pick = all.filter(s => f === "all" || (f === "background" ? s.source === "background" : s.source !== "background"));
+function ssAll(list, unlocked) {
+  const f = state.ssFilter || "mine", all = list.sessions || [], lf = liveLabelFilter(list.label_list);
+  const view = localStorage.getItem("lfg.ss.view") === "group" ? "group" : "time";
+  const pick = all.filter(s => (f === "all" || (f === "background" ? s.source === "background" : s.source !== "background")) && labelHit(s, lf));
   const day = t => { const d = (Date.now() - new Date(t || 0)) / 864e5; return d < 1 ? "Today" : d < 7 ? "This week" : d < 31 ? "This month" : "Earlier"; };
   const groups = {}; pick.forEach(s => (groups[ssLive(s.state) ? "Live here" : day(s.updated)] = groups[ssLive(s.state) ? "Live here" : day(s.updated)] || []).push(s));
   const row = s => `<a class="ss-row" href="#studio/${esc(s.id)}" data-title="${esc((s.title + " " + (s.branch || "") + " " + (s.skills || []).join(" ") + " " + (s.issues || []).join(" ")).toLowerCase())}">
-      <span class="grow"><span class="ss-row-t">${esc(s.title)}</span><span class="ss-tags">${ssTagList(s)}</span></span>
+      <span class="grow"><span class="ss-row-t">${esc(s.title)}${labelChips(s)}</span><span class="ss-tags">${ssTagList(s)}${s.folder ? `<span class="tg" title="${s.via === "pr" ? "Joined because it mentions a PR this group follows" : s.via === "ticket" ? "Joined because it names a ticket this group follows" : "Your group"}">${esc(groupPath(s.folder, list.group_info))}</span>` : ""}</span></span>
+      ${unlocked ? `<span class="ss-row-act"><button type="button" class="btn small" data-ss-group="${esc(s.id)}">Add to a group…</button><button type="button" class="btn small" data-sess-labels="${esc(s.id)}">Labels…</button></span>` : ""}
       <span class="ss-row-m"><span>${ago(s.updated)}</span>${s.cost ? `<span class="ss-row-c">${money(s.cost)}</span>` : ""}</span></a>`;
   const chip = (k, l, n) => `<button class="pill${f === k ? " on" : ""}" data-ss-filter="${k}">${l} <span class="muted">${n}</span></button>`;
+  const vchip = (k, l) => `<button class="pill${view === k ? " on" : ""}" data-ss-view="${k}">${l}</button>`;
+  const listOf = rs => `<div class="box ss-list">${rs.map(row).join("")}</div>`;
+  const byTime = () => ["Live here", "Today", "This week", "This month", "Earlier"].filter(g => groups[g]).map(g => `<div class="ss-grp">${g}</div>${listOf(groups[g])}`).join("");
+  const byGroup = () => {
+    const tree = groupTree(pick, list.group_info, lf, { hideEmpty: true }), loose = pick.filter(s => !s.folder);
+    return `${tree.length ? `<div class="ss-grp">Groups</div><div class="ss-tree">${treeHtml(tree, { unlocked, listOf, tags: name => groupTags(name, list.group_info), open: () => true })}</div>` : ""}${loose.length ? `<div class="ss-grp">Unsorted</div>${listOf(loose)}` : ""}`;
+  };
   return `<section class="ss-allbox"><div class="ss-all-h"><h1>All sessions</h1><a class="btn primary small" href="#studio" data-ss-newbtn>New session</a><input type="search" id="ss-find" placeholder="Search by title, branch, skill or issue" autocomplete="off">
-      <span class="seg">${chip("mine", "Yours", all.filter(s => s.source !== "background").length)}${chip("background", "Background", all.filter(s => s.source === "background").length)}${chip("all", "All", all.length)}</span></div>
-    <div class="ss-scrollarea">${["Live here", "Today", "This week", "This month", "Earlier"].filter(g => groups[g]).map(g => `<div class="ss-grp">${g}</div><div class="box ss-list">${groups[g].map(row).join("")}</div>`).join("") || empty("No sessions yet", "Start one from New session. Sessions from your terminal and the desktop app show up here too.")}</div></section>`;
+      <span class="seg">${chip("mine", "Yours", all.filter(s => s.source !== "background").length)}${chip("background", "Background", all.filter(s => s.source === "background").length)}${chip("all", "All", all.length)}</span>
+      <span class="seg" title="Sort the list by when it was last used, or by your groups">${vchip("time", "By time")}${vchip("group", "By group")}</span>${unlocked ? `<button class="btn small" data-grp-new title="Make a group, inside another group if you like">New group…</button>` : ""}</div>
+    ${labelFilterBar(list.label_list, lf)}
+    <div class="ss-scrollarea">${(view === "group" ? byGroup() : byTime()) || empty("No sessions yet", "Start one from New session. Sessions from your terminal and the desktop app show up here too.")}</div></section>`;
 }
 
 function ssComposer(o) {
@@ -6505,6 +6684,14 @@ function wireStudio(root) {
   const go = ssGo;
   // the list: filter and search
   $$("[data-ss-filter]", root).forEach(b => b.onclick = () => { state.ssFilter = b.dataset.ssFilter; route({ soft: true }); });
+  $$("[data-ss-view]", root).forEach(b => b.onclick = () => { localStorage.setItem("lfg.ss.view", b.dataset.ssView); route({ soft: true }); });
+  if (S.list && !S.id) {  // groups and labels on the list: the same drawers as the Sessions page
+    const ctx = { info: S.list.group_info || {}, labels: S.list.label_list || [], refresh: () => route({ soft: true }) };
+    wireGroupsAndLabels(root, ctx, S.list.sessions || []);
+    $$("[data-ss-group]", root).forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); sessionGroupDrawer((S.list.sessions || []).find(x => x.id === b.dataset.ssGroup) || { id: b.dataset.ssGroup }, ctx); });
+    $$("[data-sess-labels]", root).forEach(b => { const go = b.onclick; b.onclick = e => { e.preventDefault(); e.stopPropagation(); go(e); }; });
+    $$("[data-grp-new]", root).forEach(b => b.onclick = () => newGroupDrawer(ctx));
+  }
   const find = $("#ss-find", root);
   if (find) { find.oninput = () => { const q = find.value.trim().toLowerCase(); $$(".ss-row", root).forEach(a => { a.hidden = !!q && !q.split(/\s+/).every(w => a.dataset.title.includes(w)); }); }; if (find.value) find.oninput(); }  // a redraw keeps your search applied
   // the composer
