@@ -105,7 +105,9 @@ FIELDS = [
      "Either way the text also stays on your clipboard.", ("paste", "type")),
     ("dictate.cleanup", "Dictate: clean up with Claude", "bool", "Removes filler words and fixes punctuation. Sends "
      "the text (never audio) to Claude. On by default; off keeps everything on this Mac.", None),
-] + [("models.%s" % a, "Model: %s" % a, "choice", "", MODELS) for a in C.DEFAULT_CONFIG["models"]]
+] + [("models.%s" % a, "Model: %s" % a, "choice",
+       "Always Sonnet: the written summary never runs on Opus." if a == "briefing" else "",
+       ("sonnet",) if a == "briefing" else MODELS) for a in C.DEFAULT_CONFIG["models"]]
 
 
 def _get(d, dotted):

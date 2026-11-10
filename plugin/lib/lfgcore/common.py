@@ -46,7 +46,7 @@ DEFAULT_CONFIG = {
     "models": {
         "product-manager": "sonnet", "architecture-designer": "opus", "software-engineer": "sonnet",
         "ai-engineer": "sonnet", "qa": "sonnet", "security-analyst": "sonnet",
-        "expert-review": "opus", "lane-triage": "haiku",
+        "expert-review": "opus", "lane-triage": "haiku", "briefing": "sonnet",
     },
     "lanes": {"express_max_files": 3, "express_max_lines": 80, "full_impact_nodes": 40},
     "graphs": {"full_rebuild_ratio": 0.3, "docs": True, "sync_timeout_s": 900},

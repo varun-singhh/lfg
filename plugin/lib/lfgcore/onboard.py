@@ -25,11 +25,11 @@ FEATURES = {  # id -> what it is and the dashboard pages it adds (page keys are 
     "planning": {"name": "Planning and the code map", "description": "Issues, briefs, plans and the code graph.",
                  "skills": ["grill", "plan", "map"], "pages": ["issues", "code"]},
 }
-ALWAYS = ["prefs", "talk", "corrections", "home", "studio", "sessions", "todos", "environment", "runs", "usage",
-          "skills", "integrations", "settings", "help"]
-NAV_ORDER = ["prefs", "talk", "corrections", "home", "studio", "sessions", "todos", "environment", "runs", "issues",
-             "checks", "prs", "code", "insights", "docs", "knowledge", "usage", "skills", "integrations", "settings",
-             "help"]
+ALWAYS = ["prefs", "talk", "corrections", "home", "studio", "sessions", "continue", "todos", "environment", "runs",
+          "usage", "skills", "integrations", "settings", "help"]
+NAV_ORDER = ["prefs", "talk", "corrections", "home", "studio", "sessions", "continue", "todos", "environment", "runs",
+             "issues", "checks", "prs", "code", "insights", "docs", "knowledge", "usage", "skills", "integrations",
+             "settings", "help"]
 DEFAULT = ["coding"]
 
 
@@ -193,7 +193,7 @@ def answer_suggestion(fid, yes):
 def view(st=None):
     """What the dashboard needs (api "features"), and what the save endpoints return."""
     st = st or state()
-    titles = dict({p: p.capitalize() for p in NAV_ORDER}, prs="PR reviews")
+    titles = dict({p: p.capitalize() for p in NAV_ORDER}, prs="PR reviews", **{"continue": "Where you left off"})
     try:
         sug = suggestion(st)
     except Exception:  # noqa: BLE001 - a check-in is never worth breaking the page

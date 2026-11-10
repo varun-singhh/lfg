@@ -1486,7 +1486,7 @@ async function offerTours() {
 }
 
 // ------------------------------------------------------------------ pages
-const NAV = [["prefs", "Preferences"], ["talk", "How Claude talks"], ["corrections", "Corrections"], ["home", "Home"], ["studio", "Studio"], ["sessions", "Sessions"], ["todos", "Todos"], ["environment", "Environment"], ["runs", "Runs"], ["issues", "Issues"], ["checks", "Checks"], ["prs", "PR reviews"], ["code", "Code"], ["insights", "Insights"], ["docs", "Docs"],
+const NAV = [["prefs", "Preferences"], ["talk", "How Claude talks"], ["corrections", "Corrections"], ["home", "Home"], ["studio", "Studio"], ["sessions", "Sessions"], ["continue", "Where you left off"], ["todos", "Todos"], ["environment", "Environment"], ["runs", "Runs"], ["issues", "Issues"], ["checks", "Checks"], ["prs", "PR reviews"], ["code", "Code"], ["insights", "Insights"], ["docs", "Docs"],
   ["knowledge", "Knowledge"], ["usage", "Usage"], ["skills", "Skills"], ["integrations", "Integrations"], ["settings", "Settings"], ["help", "Help"]];
 const TITLES = Object.fromEntries(NAV);
 TITLES.onboarding = "Welcome"; TITLES.lfg = "Home";
@@ -3295,6 +3295,190 @@ function wireSessions(root) {
     b.title = "Your style rules go out with the next message you send in that session";
   });
   $$("[data-sess-folder]", root).forEach(b => b.onclick = () => ask(b.dataset.sessFolder, "folder"));
+}
+/* Where you left off: what you were last working on (epics, milestones, big tickets) across every repo, and a
+   briefing for each. Built by LFG from your sessions, tickets and PRs; nothing to fill in. The session actions are
+   the Sessions page's own: the same data-sess-* attributes, wired by wireSessions. */
+const CONT_KIND = { epic: "Epic", ticket: "Ticket", unsorted: "Unsorted" };
+const contHref = k => `#continue/${encodeURIComponent(k || "unsorted")}`;
+const contChips = c => [c.working ? `<span class="tag on">${dot("on")}${n(c.working)} working</span>` : "", c.idle ? `<span class="tag">${n(c.idle)} idle</span>` : "", c.unsorted && c.unsorted > 0 ? `<span class="tag warn">${n(c.unsorted)} not matched</span>` : ""].filter(Boolean).join(" ");
+/* A progress bar with "3 of 8 tickets done", the plain ticket's PR state, or why it cannot be shown. */
+const contAsOf = p => p && p.as_of ? `<span class="muted small cont-asof"> · as of ${ago(p.as_of)}${p.refreshing ? ", refreshing…" : ""}${p.refresh_error ? ", could not refresh: " + esc(p.refresh_error) : ""}</span>` : "";
+function contProgress(p) {
+  if (!p) return "";
+  if (p.unavailable) return `<span class="muted small cont-why">${esc(p.unavailable)}</span>`;
+  if (p.kind === "ticket") {
+    const pr = p.pr;
+    if (p.pr_known === false) return `<span class="muted small">PR state unknown: ${esc((p.notes || []).join("; "))}</span>`;
+    return `<span class="small">${p.finished ? '<span class="tag ok">Done</span>' : `<span class="tag">${esc(p.status || "Not done")}</span>`} ${pr ? `PR <a class="mono" href="#prs/${esc(pr.gh_repo)}/${pr.number}">#${pr.number}</a> · ${esc(String(pr.state || "").replace("_", " "))}` : '<span class="muted">no PR yet</span>'}</span>`;
+  }
+  const w = pct(p.done, p.total);
+  return `<div class="bar cont-bar${p.done === p.total ? " done" : ""}" role="progressbar" aria-valuemin="0" aria-valuemax="${p.total}" aria-valuenow="${p.done}"><span style="width:${w}%"></span></div><span class="small">${n(p.done)} of ${plural(p.total, "ticket")} done</span>${contAsOf(p)}${(p.notes || []).length ? `<span class="muted small" title="${esc(p.notes.join("; "))}"> · some PRs could not be read</span>` : ""}`;
+}
+const contRing = p => {
+  if (!p || p.unavailable || p.total == null) return "";
+  const r = 26, c = 2 * Math.PI * r, w = p.total ? p.done / p.total : 0;
+  return `<svg class="cont-ring" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="${p.done} of ${p.total} tickets done"><circle cx="32" cy="32" r="${r}" fill="none" stroke="var(--line-2)" stroke-width="6"/><circle cx="32" cy="32" r="${r}" fill="none" stroke="${p.done === p.total ? "var(--green)" : "var(--blue)"}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${(c * w).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 32 32)"/><text x="32" y="36" text-anchor="middle" class="cont-ring-t">${pct(p.done, p.total)}%</text></svg>`;
+};
+const contDone = (key, what) => `<label class="cont-done" title="Done: hides this ${what} until there is new activity in it"><input type="checkbox" data-cont-done="${esc(key)}" aria-label="Done"> Done</label>`;
+const contRecent = s => `<li class="cont-recent">${contDone(s.id, "session")}<div class="cont-sess grow" data-cont-open="${esc(s.id)}" tabindex="0" role="button" aria-label="Show ${esc(s.name)}">${dot(s.activity === "working" ? "on" : "")}<div class="grow"><div class="title">${esc(s.name)} ${s.ticket ? `<span class="tag mono">${esc(s.ticket)}</span>` : s.folder ? `<span class="tag">${esc(s.folder)}</span>` : ""}</div>
+  <div class="meta">${s.activity === "working" ? "working now" : "idle"} · ${ago(s.modified)}${s.repo ? ` · ${esc(s.repo)}` : ""}</div></div></div></li>`;
+const contList = d => {
+  const es = d.entries || [], rs = d.recent || [], ck = d.checked || [];
+  const day = section("Last 24 hours", rs.length ? `<div class="box"><ul class="items cont-list">${rs.map(contRecent).join("")}</ul></div>` : '<p class="muted">No session was touched in the last 24 hours.</p>', plural(rs.length, "session"));
+  const entries = es.length ? `<div class="box"><ul class="items cont-list">${es.map(e => `<li class="cont-entry">${contDone(e.key || "unsorted", "entry")}<a class="grow" href="${contHref(e.key)}">
+    <div class="title">${esc(e.title)} ${e.key ? `<span class="tag mono">${esc(e.key)}</span>` : ""} <span class="tag">${CONT_KIND[e.kind] || esc(e.kind)}</span></div>
+    <div class="meta">${ago(e.last_active)}${e.repos.length ? ` · ${esc(e.repos.join(", "))}` : ""} ${contChips(e.sessions)}</div>
+    ${e.kind === "unsorted" ? '<div class="small muted">Sessions that name no ticket and are in no group. Open it to tie each one to a ticket.</div>' : `<div class="cont-prog" data-cont-progress="${esc(e.key)}" ${e.last_progress ? 'data-cont-have="1"' : ""}>${e.last_progress ? contProgress(e.last_progress) : '<span class="muted small loading-inline">Reading progress…</span>'}</div>`}</a></li>`).join("")}</ul></div>`
+    : empty(`Nothing open from the last ${d.active_days || 14} days`, ck.length ? "Everything is checked off." : "When you work in Claude Code or Studio on a ticket or an epic, it shows up here by itself, with how far along it is.");
+  const showing = !!state.contChecked;
+  const done = ck.length ? `<p class="cont-checked"><a href="#" data-cont-showchecked>${showing ? "Hide" : "Show"} ${n(ck.length)} checked off</a></p>${showing ? `<div class="box"><ul class="items">${ck.map(x => `<li class="cont-undo"><span class="grow">${esc(x.title)} <span class="tag">${x.type === "entry" ? "entry" : "session"}</span> <span class="muted small">checked ${ago(x.at)}</span></span><button class="btn small" data-cont-undo="${esc(x.key)}">Undo</button></li>`).join("")}</ul></div>` : ""}` : "";
+  return `${day}${section("Epics and tickets", entries)}${done}`;
+};
+/* One session as a row; clicking it fills the panel on the right. */
+const contSess = (s, need) => `<li class="cont-sess${state.contSel === s.id ? " on" : ""}" data-cont-sess="${esc(s.id)}" tabindex="0" role="button" aria-label="Show ${esc(s.name)}">
+  ${dot(s.activity === "working" ? "on" : "")}<div class="grow"><div class="title">${esc(s.name)} ${s.role === "orchestrator" ? '<span class="tag blue">orchestrator</span>' : ""} ${need.has(s.id) ? '<span class="tag warn">needs you</span>' : ""}</div>
+  <div class="meta">${s.activity === "working" ? "working now" : "idle"} · ${ago(s.modified)}${s.repo ? ` · ${esc(s.repo)}` : ""}${s.ticket ? ` · <span class="mono">${esc(s.ticket)}</span>` : ""}</div></div></li>`;
+const CONT_GO = { review_pr: "Open the PR", question: "Open the question", checks: "Open the PR", idle_pr: "Open the session" };
+function contBrief(d, unlocked) {
+  const e = d.entry || {}, pr = d.progress || {}, all = contSessions(d);
+  const need = new Set((d.needs_you || []).map(i => (/^#studio\//.test(i.target) ? i.target.slice(8) : "")).filter(Boolean));
+  const working = all.filter(s => s.activity === "working").length, idle = all.length - working;
+  const sum = d.summary;
+  const summary = `<div class="box cont-sum"><div class="k">Where you stopped <span class="tag" title="Claude wrote this from the facts on this page; it can be wrong">written automatically</span>${sum ? ` <span class="muted small">${ago(sum.at)}${sum.stale ? " · there is newer work since" : ""}</span>` : ""}</div>
+    ${sum ? `<p class="cont-sum-t">${esc(sum.text)}</p>` : d.summary_error ? "" : '<p class="muted">A short summary is being written. It appears here when it is ready; everything below is already up to date.</p>'}
+    ${d.summary_error ? `<p class="bad-tx small">${esc(d.summary_error)}</p>` : ""}
+    <div class="row"><button class="btn small" data-cont-refresh="${esc(e.key)}" ${unlocked ? "" : "disabled"} title="Write it again now">Refresh summary</button><span class="save-msg" id="cont-sum-msg"></span></div></div>`;
+  const needs = (d.needs_you || []).length ? `<ul class="items box cont-needs">${d.needs_you.map(i => `<li><span class="grow">${esc(i.text)}${i.ticket ? ` <span class="tag mono">${esc(i.ticket)}</span>` : ""}</span><a class="btn small primary" href="${esc(i.target)}">${CONT_GO[i.kind] || "Open"}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing is waiting on you.</p>';
+  const ms = (d.milestones || []).map(m => {
+    const open = m.sessions.some(s => s.activity === "working" || need.has(s.id));
+    return `<details class="item cont-ms" ${open ? "open" : ""}><summary><span class="grow"><b>${esc(m.title)}</b>${m.key ? ` <span class="tag mono">${esc(m.key)}</span>` : ""}</span>${m.total != null ? `<span class="muted small nowrap">${n(m.done)} of ${n(m.total)} done</span>` : ""}<span class="muted small nowrap">${plural(m.sessions.length, "session")}</span></summary>
+      ${m.total ? `<div class="bar cont-bar${m.done === m.total ? " done" : ""}"><span style="width:${pct(m.done, m.total)}%"></span></div>` : ""}
+      ${m.sessions.length ? `<ul class="cont-sessions">${m.sessions.map(s => contSess(s, need)).join("")}</ul>` : '<p class="muted small">No session is working on this yet.</p>'}</details>`;
+  }).join("");
+  const orch = d.orchestrator ? `<ul class="cont-sessions box">${[d.orchestrator, ...(d.other_orchestrators || [])].map(s => contSess(s, need)).join("")}</ul>` : '<p class="muted">No orchestrator found for this: no session or group is named for it.</p>';
+  const lost = (d.unsorted || []).length ? section("Unsorted", `<p class="muted small">These sessions name no ticket and are in no group, so LFG did not guess. Tie one to a ticket and it is placed for good.</p><ul class="cont-sessions box">${d.unsorted.map(s => `${contSess(s, need)}<li class="cont-attach"><button class="btn small" data-cont-attach="${esc(s.id)}" ${unlocked ? "" : "disabled"}>This belongs to…</button></li>`).join("")}</ul>`, plural(d.unsorted.length, "session")) : "";
+  return `<div class="cont-head">${contRing(pr)}<div class="grow"><h1>${esc(e.title || "")}</h1><div class="meta">${e.key ? `<span class="tag mono">${esc(e.key)}</span> ` : ""}<span class="tag">${CONT_KIND[e.kind] || ""}</span> ${working ? `<span class="tag on">${dot("on")}${n(working)} working</span>` : ""} ${(d.needs_you || []).length ? `<span class="tag warn">${n(d.needs_you.length)} need you</span>` : ""} ${idle ? `<span class="tag">${n(idle)} idle</span>` : ""}</div>
+    <div class="cont-prog">${pr.unavailable || pr.kind === "ticket" || pr.total != null ? contProgress(pr) : ""}</div>${(pr.linear_as_of || "") ? `<div class="muted small">dev-graph's copy of Linear, synced ${ago(pr.linear_as_of)}</div>` : ""}</div></div>
+    ${d.gh_note ? `<div class="callout warn small">GitHub could not be fully read, so some items are left out: ${esc(d.gh_note)}</div>` : ""}
+    <div class="cont-grid"><div class="cont-main">${e.key ? summary : ""}${e.key ? section("Needs you", needs) : ""}${e.key ? section("Orchestrator", orch) : ""}${e.key && ms ? section("Milestones", ms) : ""}${lost}</div>
+    <aside class="cont-panel box" id="cont-panel" aria-live="polite"></aside></div>`;
+}
+const contSessions = d => [d.orchestrator, ...(d.other_orchestrators || []), ...(d.milestones || []).flatMap(m => m.sessions), ...(d.unsorted || [])].filter(Boolean);
+/* The panel for one session: what it was for, where it stopped, what it changed, and the Sessions page's actions. */
+function contPanel(s, unlocked) {
+  if (!s) return '<p class="muted">Pick a session to see what it was for and where it stopped.</p>';
+  const dis = unlocked ? "" : "disabled";
+  return `<div class="cont-panel-in" data-sid="${esc(s.id)}"><div class="title">${esc(s.name)}${s.named ? "" : ' <span class="tag">not named</span>'} ${labelChips(s)}</div>
+    <div class="meta">${s.activity === "working" ? "working now" : "idle"} · ${ago(s.modified)}${s.repo ? ` · ${esc(s.repo)}` : ""}${s.worktree ? ` · worktree <span class="mono">${esc(s.worktree)}</span>` : ""}${s.branch ? ` · <span class="mono">${esc(s.branch)}</span>` : ""}${s.folder_exists === false ? ' · <span class="bad-tx">its folder is gone</span>' : ""}</div>
+    <div class="k">What it was for</div><p class="small pre-wrap">${s.first ? esc(s.first) + (s.first.length >= 400 ? "…" : "") : "No first message."}</p>
+    <div class="k">Where it stopped</div><div class="sess-recent small" data-cont-recent="${esc(s.id)}"><span class="loading-inline muted">Loading…</span></div>
+    <div class="sess-actions"><button class="btn small primary" data-copy="${esc(s.resume)}" title="${esc(s.resume)}">Copy resume command</button>
+    <button class="btn small" data-sess-changes='${esc(JSON.stringify([s.id, s.name]))}' title="Every file this session edited, as diffs, from its own transcript">What it changed</button>
+    <button class="btn small" data-sess-skill='${esc(JSON.stringify([s.id, s.name]))}' ${dis} title="Run a skill or an instruction on this session">Run a skill…</button>
+    <button class="btn small" data-sess-rules="${esc(s.id)}">Rules</button>
+    <button class="btn small" data-sess-remind="${esc(s.id)}" ${dis} title="Its next message carries your style rules again, once">Remind it of my style</button>
+    <button class="btn small" data-sess-name="${esc(s.id)}" ${dis}>Rename</button>
+    ${s.folder ? `<span class="tag" title="Your group">${esc(s.folder)}${s.via_pr ? " · via PR" : s.via_ticket ? " · via ticket" : ""}</span>` : ""}
+    <button class="btn small" data-sess-folder="${esc(s.id)}" ${dis}>${s.folder ? "Change group" : "Add to a group…"}</button>
+    <button class="btn small" data-sess-labels="${esc(s.id)}" ${dis}>Labels…</button>
+    <button class="btn small" data-sess-hide='${esc(JSON.stringify([s.id, !s.hidden]))}' ${dis}>${s.hidden ? "Show again" : "Hide"}</button>
+    <button class="btn small" data-sess-trash="${esc(s.id)}" ${dis}>Delete</button>
+    <button class="star${s.starred ? " on" : ""}" data-sess-star='${esc(JSON.stringify([s.id, !s.starred]))}' ${dis} aria-label="${s.starred ? "Unstar" : "Star"}">${s.starred ? "★" : "☆"}</button></div></div>`;
+}
+PAGES.continue = async arg => {
+  if (!arg) {
+    const [d, unlocked] = await Promise.all([api("continue"), isUnlocked()]);
+    state.sessions = { sessions: d.recent || [], group_info: d.group_info || {}, label_list: d.label_list || [], folders: Object.keys(d.group_info || {}) };
+    state.contList = d; state.contData = null; state.contUnlocked = unlocked;
+    return `${head("Where you left off", "What you were last working on, across every repo, newest first. LFG builds this from your sessions, tickets and PRs: there is nothing to fill in.")}${contList(d)}`;
+  }
+  const key = arg === "unsorted" ? "" : arg;
+  const [d, unlocked] = await Promise.all([api("continue_entry", { key }), isUnlocked()]);
+  if (d.available === false) return unavailable(d, "Couldn't build this briefing");
+  const back = '<a class="back" href="#continue">← Where you left off</a>';
+  crumbs("continue", (d.entry && d.entry.title) || "Unsorted", contHref(key));
+  state.sessions = { sessions: contSessions(d), group_info: d.group_info || {}, label_list: d.label_list || [], folders: (d.attach && d.attach.groups) || [] };
+  state.contData = d; state.contUnlocked = unlocked;
+  if (!state.contSel || !contSessions(d).some(s => s.id === state.contSel)) state.contSel = (d.orchestrator || contSessions(d)[0] || {}).id || "";
+  const polls = state.contPolls || (state.contPolls = {});
+  if (key && !d.summary && !d.summary_error && (polls[key] = (polls[key] || 0) + 1) <= 6) pageTimer("cont-sum", 8000, () => { if (location.hash === contHref(key)) softRoute(); });  // the summary is being written: look a few times, then stop
+  return `<div class="cont-back">${back}</div>${contBrief(d, unlocked)}`;
+};
+let CONT_TIMEOUT_MS = 12000, CONT_RETRY_MS = 3000;
+const contLimit = (p, ms) => new Promise((ok, no) => { const t = setTimeout(() => no(new Error("reading it took too long")), ms); p.then(v => { clearTimeout(t); ok(v); }, e => { clearTimeout(t); no(e); }); });
+/* Fills each entry's progress, three at a time. What is already shown stays when a read fails (with the reason); with
+   nothing shown, a failed or slow read says "Progress unavailable" and why, never "Reading…" for good. A stored answer
+   that is being refreshed behind is asked again a few times. */
+async function contFillProgress(els) {
+  const one = async el => {
+    const have = !!el.dataset.contHave;
+    for (let tries = 0; tries < 6; tries++) {
+      let p;
+      try { p = await contLimit(api("continue_progress", { key: el.dataset.contProgress }), CONT_TIMEOUT_MS); }
+      catch (e) {
+        if (!document.body.contains(el)) return;
+        if (have) el.innerHTML += `<span class="muted small"> · could not refresh: ${esc(e.message)}</span>`;
+        else el.innerHTML = `<span class="muted small cont-why">Progress unavailable: ${esc(e.message)}. It is read again next time you open this page.</span>`;
+        return;
+      }
+      if (!document.body.contains(el)) return;
+      el.innerHTML = contProgress(p);
+      el.dataset.contHave = "1";
+      if (!p || !p.refreshing) return;
+      await new Promise(r => setTimeout(r, CONT_RETRY_MS));
+    }
+  };
+  const queue = [...els];
+  await Promise.all([0, 1, 2].map(async () => { while (queue.length) await one(queue.shift()); }));
+}
+async function contDrawPanel(el, list, id) {
+  el.innerHTML = contPanel(list.find(s => s.id === id), state.contUnlocked);
+  wireSessions(el);
+  const box = $("[data-cont-recent]", el);
+  if (!box) return;
+  const r = await api("sessionrecent", { id }).catch(() => null);
+  if (!document.body.contains(box)) return;
+  box.innerHTML = !r || r.available === false ? esc((r && r.why) || "Couldn't read the session.") : (r.turns || []).length
+    ? r.turns.slice(-4).map(t => `<div class="sess-turn ${t.who}"><b>${t.who === "you" ? "You" : "Claude"}</b> <span class="muted">${ago(t.at)}</span><div class="pre-wrap">${esc(t.text)}${t.text.length >= 400 ? "…" : ""}</div></div>`).join("") : "No messages yet.";
+}
+function wireContinue(root) {
+  const d = state.contData, panel = $("#cont-panel", root);
+  contFillProgress($$("[data-cont-progress]", root));  // first, so nothing below can keep the list from filling in
+  $$("[data-cont-done]", root).forEach(b => b.onchange = async () => { b.disabled = true; const r = await save("briefing_done", { key: b.dataset.contDone, on: b.checked }); if (!r.ok) { b.disabled = false; b.checked = !b.checked; return alertMsg(b, r); } route(); });
+  $$("[data-cont-undo]", root).forEach(b => b.onclick = async () => { b.disabled = true; const r = await save("briefing_done", { key: b.dataset.contUndo, on: false }); if (!r.ok) { b.disabled = false; return alertMsg(b, r); } route(); });
+  $$("[data-cont-showchecked]", root).forEach(a => a.onclick = e => { e.preventDefault(); state.contChecked = !state.contChecked; route(); });
+  const openSess = id => { const l = state.contList; if (!l) return; openDrawer("Session", '<div id="cont-drawer-panel" class="cont-panel-in"></div>'); contDrawPanel($("#cont-drawer-panel"), l.recent || [], id); };
+  $$("[data-cont-open]", root).forEach(el => { el.onclick = () => openSess(el.dataset.contOpen); el.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSess(el.dataset.contOpen); } }; });
+  /* the panel: one session at a time, with the Sessions page's own handlers wired on it */
+  const show = async id => {
+    state.contSel = id;
+    $$(".cont-sess", root).forEach(li => li.classList.toggle("on", li.dataset.contSess === id));
+    if (d && panel) await contDrawPanel(panel, contSessions(d), id);
+  };
+  if (d && panel) show(state.contSel);
+  $$("[data-cont-sess]", root).forEach(li => { li.onclick = () => show(li.dataset.contSess); li.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(li.dataset.contSess); } }; });
+  if (d && panel) wireSessions(root);  // the Sessions page's handlers: only a briefing has sessions to act on
+  $$("[data-cont-refresh]", root).forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = "Writing…";
+    const r = await save("briefing_refresh", { key: b.dataset.contRefresh });
+    b.disabled = false; b.textContent = "Refresh summary";
+    if (!r.ok || r.error) return saidMsg($("#cont-sum-msg", root), { ok: false, why: r.error || r.why });
+    route();
+  });
+  $$("[data-cont-attach]", root).forEach(b => b.onclick = () => {
+    const sid = b.dataset.contAttach, a = (d && d.attach) || { tickets: [], groups: [] };
+    openDrawer("This belongs to…", `<div class="readable"><p>Pick the ticket this session was for. LFG puts it in a group that follows that ticket (and makes one if there is none), so it stays there.</p>
+      ${a.tickets.length ? `<div class="k">Recent tickets</div><div class="row wrap">${a.tickets.map(t => `<button class="btn small" data-att-ticket="${esc(t.key)}" title="${esc(t.title)}">${esc(t.key)} · ${esc(String(t.title || "").slice(0, 40))}</button>`).join("")}</div>` : ""}
+      <div class="k">Another ticket</div><div class="row"><input type="text" id="att-val" class="grow" placeholder="e.g. ATO-4162" maxlength="20"><button class="btn primary" id="att-go">Use it</button></div>
+      ${a.groups.length ? `<div class="k">Or one of your groups</div><div class="row wrap">${a.groups.map(g => `<button class="btn small" data-att-group="${esc(g)}">${esc(g)}</button>`).join("")}</div>` : ""}
+      <span class="save-msg" id="att-msg"></span></div>`);
+    const done = r => { saidMsg($("#att-msg"), r, "Placed."); if (r.ok) setTimeout(() => { closeDrawer(); route(); }, 400); };
+    $$("[data-att-ticket]").forEach(x => x.onclick = async () => done(await save("briefing_attach", { id: sid, ticket: x.dataset.attTicket })));
+    $$("[data-att-group]").forEach(x => x.onclick = async () => done(await save("session_folder", { id: sid, folder: x.dataset.attGroup })));
+    $("#att-go").onclick = async () => done(await save("briefing_attach", { id: sid, ticket: $("#att-val").value }));
+  });
+
 }
 /* Environment: every repo and worktree on this machine, and what LFG runs in the background. */
 const MB = b => b == null ? "?" : b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB";
@@ -5438,11 +5622,12 @@ function alertMsg(el, d) {
   saidMsg(m, d);
 }
 
-const NAV_GROUPS = [["Your work", ["home", "sessions", "todos", "environment", "runs", "issues", "checks", "prs"]], ["This project", ["code", "insights", "docs", "knowledge"]], ["LFG", ["prefs", "talk", "corrections", "usage", "skills", "integrations", "settings", "help"]]];
+const NAV_GROUPS = [["Your work", ["home", "sessions", "continue", "todos", "environment", "runs", "issues", "checks", "prs"]], ["This project", ["code", "insights", "docs", "knowledge"]], ["LFG", ["prefs", "talk", "corrections", "usage", "skills", "integrations", "settings", "help"]]];
 /* 24px line icons, drawn for these pages (stroke = currentColor) */
 const ICON = {
   home: "M3 10.5 12 3l9 7.5M5 9v11h5v-6h4v6h5V9",
   sessions: "M4 5h16v11H8l-4 4zM8 9h8M8 12h5",
+  continue: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2",
   environment: "M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01",
   prefs: "M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M14 4v4M8 10v4M16 16v4",
   talk: "M4 5h16v10H9l-5 4zM8 9h8M8 12h5",
@@ -5901,6 +6086,7 @@ function wireView(key, view) {
   if (key === "docs") wireDocs();
   if (key === "prs") { wirePrs(view); wireScoreCharts(view); }
   if (key === "sessions") wireSessions(view);
+  if (key === "continue") wireContinue(view);
   if (key === "knowledge") wireKnowledge(view);
   if (key === "prefs") wirePrefsPage(view);
   if (key === "talk") wireTalk(view);

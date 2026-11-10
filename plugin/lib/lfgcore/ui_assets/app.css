@@ -2633,3 +2633,39 @@ body.sg-open { overflow: hidden; }
 .ss-row:hover .ss-row-act, .ss-row:focus-within .ss-row-act { display: inline-flex; }
 .ss-row .lbl-row { margin-left: 8px; }
 .ss-tree details.item > .box { margin: 0 0 6px; }
+
+/* Where you left off: the list, the briefing and the session panel. Theme variables only, so light and dark both work. */
+.cont-list > li.cont-entry { border-bottom: 1px solid var(--line); }
+.cont-list > li.cont-entry:last-child { border-bottom: 0; }
+.cont-list > li.cont-entry > a { display: block; padding: 12px 14px; color: inherit; text-decoration: none; border-radius: var(--r-sm); }
+.cont-list > li.cont-entry > a:hover { background: var(--line); }
+.cont-prog { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; max-width: 420px; }
+.cont-bar { height: 6px; }
+.cont-bar.done span { background: var(--green); }
+.cont-why { max-width: 60ch; }
+.cont-back { margin-bottom: 10px; }
+.cont-head { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; }
+.cont-head h1 { margin: 0 0 6px; }
+.cont-ring { flex: none; }
+.cont-ring-t { font-size: 15px; font-weight: 600; fill: var(--text); }
+.cont-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 400px); gap: 20px; align-items: start; }
+.cont-panel { position: sticky; top: 16px; padding: 14px 16px; max-height: calc(100vh - 32px); overflow: auto; }
+.cont-panel .k { margin-top: 12px; }
+.cont-panel .sess-actions { margin-top: 12px; justify-content: flex-start; flex: none; }
+.cont-sum { padding: 14px 16px; margin-bottom: 6px; }
+.cont-sum-t { margin: 6px 0 10px; line-height: 1.5; }
+.cont-needs > li { display: flex; gap: 12px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.cont-needs > li:last-child { border-bottom: 0; }
+.cont-sessions { list-style: none; margin: 0; padding: 0; }
+.cont-sess { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: var(--r-xs); }
+.cont-sess:hover { background: var(--line); }
+.cont-sess.on { background: var(--blue-bg); }
+.cont-sess:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.cont-attach { padding: 4px 10px 8px 28px; border-bottom: 1px solid var(--line); }
+.cont-ms .cont-bar { margin: 2px 6px 8px; }
+@media (max-width: 1100px) { .cont-grid { grid-template-columns: minmax(0, 1fr); } .cont-panel { position: static; max-height: none; } }
+.cont-recent, .cont-entry, .cont-undo { display: flex; align-items: center; gap: 10px; padding-left: 12px; border-bottom: 1px solid var(--line); }
+.cont-recent:last-child, .cont-entry:last-child, .cont-undo:last-child { border-bottom: 0; }
+.cont-undo { padding: 8px 12px; }
+.cont-done { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-2); cursor: pointer; flex: none; }
+.cont-checked { margin: 10px 2px; }

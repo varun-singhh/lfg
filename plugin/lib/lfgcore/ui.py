@@ -389,6 +389,17 @@ def api(view, q):
     if view in ("features", "onboarding"):  # about LFG itself, not a repo: work before any project exists
         from . import onboard as OB
         return OB.view()
+    if view in ("continue", "continue_progress", "continue_entry"):  # Where you left off: across every repo
+        from . import briefing as BR
+        if view == "continue":
+            return BR.listing()
+        key = _arg(q, "key").strip().upper()
+        if view == "continue_progress":
+            return BR.progress_view(key)
+        data = BR.briefing(key)
+        if key:
+            BR.maybe_summarize(key, data=data)  # in the background: the page never waits for it
+        return data
     rid = _rid(q)
     if not rid:
         return {"available": False, "why": "No repo yet. Open Claude Code in a git repo; LFG builds its graphs "
@@ -606,6 +617,19 @@ def save(what, body):
     if what == "ui_restart":
         threading.Timer(0.5, _restart).start()
         return {"restarting": True}
+    if what in ("briefing_refresh", "briefing_attach", "briefing_done"):
+        from . import briefing as BR
+        if what == "briefing_done":
+            try:
+                return BR.set_done(body.get("key"), body.get("on", True) is not False)
+            except ValueError as e:
+                raise S.Invalid(str(e)) from None
+        if what == "briefing_refresh":
+            return BR.summarize(str(body.get("key") or "").strip().upper())
+        try:
+            return BR.attach(body.get("id"), body.get("ticket"))
+        except ValueError as e:
+            raise S.Invalid(str(e)) from None
     if what == "worktree_prune":
         from . import env as E
         try:
