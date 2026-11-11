@@ -2,6 +2,17 @@
   "_about": "What's new in each LFG release, said to the user: the walkthrough the dashboard shows once after an update, Help → What's new, and the lines `lfg setup` prints. Each item is one step of the walkthrough: page and sel (optional) say which page to open and what to light up on it. Newest release first. CHANGELOG.md keeps the detailed record.",
   "releases": [
     {
+      "version": "0.6.0",
+      "title": "Where you left off",
+      "items": [
+        {
+          "title": "Where you left off",
+          "text": "A new page under Your work lists every session from the last 24 hours, then the epics and tickets you were last working on, with how many tickets are done. Tick Done on anything you are finished with: it hides until there is new activity in it. Open one to see which sessions are working on it, what is waiting on you, and a short summary of where you stopped. You don't label or organise anything for it.",
+          "page": "continue"
+        }
+      ]
+    },
+    {
       "version": "0.5.0",
       "title": "Groups, labels and clearer re-reviews",
       "items": [

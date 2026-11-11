@@ -4,6 +4,11 @@ All notable changes to LFG. The version lives in `plugin/.claude-plugin/plugin.j
 
 ## Unreleased
 
+## 0.6.0 (2026-11-10)
+
+### Added
+- Where you left off: a page that lists what you were last working on across every repo, with real progress, and opens a briefing for each epic or ticket (who is working on what, what needs you, a written summary), built from your sessions, tickets and PRs
+
 ## 0.5.0 (2026-11-10)
 
 ### Added
