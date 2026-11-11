@@ -2669,3 +2669,10 @@ body.sg-open { overflow: hidden; }
 .cont-undo { padding: 8px 12px; }
 .cont-done { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-2); cursor: pointer; flex: none; }
 .cont-checked { margin: 10px 2px; }
+
+/* the "+" at the end of a tab row and its menu */
+.prtab-add { flex: none; align-self: center; width: 28px; height: 28px; margin-left: 4px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.prtab-add:hover { background: var(--hover); color: var(--text); }
+.prtab-menu { position: fixed; z-index: 60; min-width: 150px; padding: 4px; background: var(--page); border: 1px solid var(--line-2); border-radius: var(--r-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); display: flex; flex-direction: column; }
+.prtab-menu button { text-align: left; padding: 7px 10px; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.prtab-menu button:hover, .prtab-menu button:focus-visible { background: var(--hover); }

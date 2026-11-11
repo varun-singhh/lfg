@@ -1,0 +1,18 @@
+{
+  "changelog": {
+    "Added": [
+      "A \"+\" at the end of the tab row opens a menu with New studio and New PR review"
+    ],
+    "Fixed": [
+      "A browser tab stays on its repo: clicking an alert for another repo no longer switches the tab you are in, it opens that repo in a new browser tab or the tab that already has it",
+      "Each browser tab keeps its own appearance (colour) and repo across a reload, and another tab's choice no longer changes it; a new tab starts from the last one chosen"
+    ]
+  },
+  "whats_new": [
+    {
+      "title": "Tabs keep their own repo and colour",
+      "text": "A new browser tab starts from your last repo and colour, then keeps its own: changing them in one tab no longer changes another. A finished-review alert for another repo opens in its own tab instead of moving the one you are in. The tab row ends with a + for a new studio or PR review.",
+      "page": "prs"
+    }
+  ]
+}

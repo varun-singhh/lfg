@@ -1,11 +1,31 @@
 /* The full-screen pages (product home, intro) never flash the dashboard shell while the first data loads. */
 (h => { if (!h || h === "#" || /^#(lfg|onboarding|unlock=)/.test(h)) document.body.classList.add("bare"); })(location.hash);
-/* Appearance (Settings → Appearance), kept per browser: mode, a light and a dark theme, accent, density, text size,
+/* Per-tab settings: each tab keeps its own value in sessionStorage, which survives a reload of that tab and is not shared.
+   A tab with none yet starts from the last value chosen in any tab (localStorage) and keeps that from then on, so
+   changing it in one tab never changes another. `own`: set for this tab only (the shared default stays as it is). */
+function tabPrefGet(key) {
+  try {
+    let v = sessionStorage.getItem(key);
+    if (v == null) { v = localStorage.getItem(key); if (v != null) sessionStorage.setItem(key, v); }
+    return v;
+  } catch (e) { try { return localStorage.getItem(key); } catch (e2) { return null; } }
+}
+function tabPrefSet(key, v, own) {
+  try { sessionStorage.setItem(key, v); } catch (e) { /* private window: the shared one still works */ }
+  if (!own) { try { localStorage.setItem(key, v); } catch (e) { /* this visit only */ } }
+}
+function tabPrefClear(key) {
+  try { sessionStorage.removeItem(key); } catch (e) { /* ignore */ }
+  try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
+}
+/* Appearance (Settings → Appearance), kept per tab (a new tab starts from the last one chosen): mode, a light and a dark theme, accent, density, text size,
    glow and motion. Applied before the first paint, and again when the system switches light/dark. */
 const AP_DEFAULT = { mode: "system", light: "lfg", dark: "midnight", accent: "orange", density: "comfortable", text: "m", glow: "on", motion: "on" };
 function apRead() {
   try {
-    const saved = JSON.parse(localStorage.getItem("lfg.appearance") || "{}");
+    let raw = tabPrefGet("lfg.appearance");
+    if (raw == null) { raw = JSON.stringify({ v: 2 }); tabPrefSet("lfg.appearance", raw, true); }  // this tab is on the defaults, and stays there
+    const saved = JSON.parse(raw);
     if (!saved.v && saved.accent === "blue") delete saved.accent;  // blue was the default before v2, not a choice
     return Object.assign({}, AP_DEFAULT, saved);
   } catch (e) { return Object.assign({}, AP_DEFAULT); }
@@ -17,7 +37,7 @@ function apApply(a) {
   r.mode = dark ? "dark" : "light"; r.theme = dark ? a.dark : a.light;
   r.accent = a.accent; r.density = a.density; r.text = a.text; r.glow = a.glow; r.motion = a.motion;
 }
-function apSet(k, v) { const a = apRead(); a[k] = v; a.v = 2; try { localStorage.setItem("lfg.appearance", JSON.stringify(a)); } catch (e) { /* private window: this visit only */ } apApply(a); apFavicon(); return a; }
+function apSet(k, v) { const a = apRead(); a[k] = v; a.v = 2; tabPrefSet("lfg.appearance", JSON.stringify(a)); apApply(a); apFavicon(); return a; }
 /* The logo, drawn in the accent colour (inline, so it follows the theme); the favicon is rebuilt to match. */
 let LOGO_N = 2e6;  // logos drawn outside a page; a page numbers its own from 1
 function logoSvg(size) {
@@ -73,7 +93,7 @@ function ago(ts) {
 const pct = (a, b) => (b ? Math.round((100 * a) / b) : 0);
 const plural = (k, w) => `${n(k)} ${w}${k === 1 ? "" : "s"}`;
 const words = s => String(s || "").replace(/[-_]+/g, " ").replace(/\.md$/, "");
-const state = { repo: localStorage.getItem("lfg.repo") || "", branch: "", repos: [], cache: {} };
+const state = { repo: tabPrefGet("lfg.repo") || "", branch: "", repos: [], cache: {} };
 const branchPref = () => "lfg.branch." + state.repo;
 
 async function api(view, params = {}) {
@@ -816,12 +836,12 @@ function settingsAppearance() {
       ${row("Background glow", "The faint coloured light behind the page.", seg("glow", [["on", "On"], ["off", "Off"]]))}
       ${row("Motion", "Animations and transitions.", seg("motion", [["on", "On"], ["off", "Reduced"]]))}
     </div>
-    <div class="set-actions"><button class="btn" data-ap-reset>Reset to default</button><span class="muted small">Saved in this browser.</span></div>`;
+    <div class="set-actions"><button class="btn" data-ap-reset>Reset to default</button><span class="muted small">Saved for this tab; new tabs start from the last one you chose.</span></div>`;
 }
 document.addEventListener("click", e => {
   const b = e.target.closest("[data-ap]");
   if (b) { apSet(b.dataset.ap, b.dataset.v); $$(`[data-ap="${b.dataset.ap}"]`).forEach(x => x.classList.toggle("on", x === b)); return; }
-  if (e.target.closest("[data-ap-reset]")) { try { localStorage.removeItem("lfg.appearance"); } catch (err) { /* ignore */ } apApply(); apFavicon(); route({ soft: true }); }
+  if (e.target.closest("[data-ap-reset]")) { tabPrefClear("lfg.appearance"); apApply(); apFavicon(); route({ soft: true }); }
 });
 function settingsGeneral() {
   const { cfg, unlocked } = state.settings;
@@ -4909,7 +4929,7 @@ async function prTicket(t) {
 function followRepo(full) {
   const short = full.split("/")[1], hit = (state.repos || []).filter(x => x.name === short);
   if (hit.length !== 1 || hit[0].id === state.repo) return;
-  state.repo = hit[0].id; localStorage.setItem("lfg.repo", state.repo);
+  state.repo = hit[0].id; tabPrefSet("lfg.repo", state.repo);
   const sel = $("#repo"); if (sel) sel.value = state.repo;
   loadBranches();
 }
@@ -5756,8 +5776,10 @@ const tabBtns = (kind, t) => {
 };
 function tabStrip(kind) {
   const tabs = tabsOf(kind);
-  return `<div class="pr-doc-tabs" role="tablist" data-tabstrip="${kind}"${tabs.length ? "" : " hidden"}>${tabs.map(t => { const k = tabKey(kind, t); return `<a class="prtab${tabOn(kind, k) ? " on" : ""}${t.pinned ? " pinned" : ""}" href="${tabHref(kind, k)}" draggable="true" data-tab="${tabData(kind, k)}" title="${esc(TABSETS[kind].tip(t))}">${TABSETS[kind].label(t)}${tabBtns(kind, t)}</a>`; }).join("")}</div>`;
+  return `<div class="pr-doc-tabs" role="tablist" data-tabstrip="${kind}"${tabs.length ? "" : " hidden"}>${tabs.map(t => { const k = tabKey(kind, t); return `<a class="prtab${tabOn(kind, k) ? " on" : ""}${t.pinned ? " pinned" : ""}" href="${tabHref(kind, k)}" draggable="true" data-tab="${tabData(kind, k)}" title="${esc(TABSETS[kind].tip(t))}">${TABSETS[kind].label(t)}${tabBtns(kind, t)}</a>`; }).join("")}<button type="button" class="prtab-add" data-tab-add aria-haspopup="menu" aria-label="New tab" title="New studio or PR review">+</button></div>`;
 }
+/* The "+" menu: the same two things the sidebar offers. */
+const tabAddMenu = () => `<div class="prtab-menu" role="menu"><button type="button" role="menuitem" data-tab-new="studio">New studio</button><button type="button" role="menuitem" data-tab-new="prs">New PR review</button></div>`;
 const tabNavRow = (kind, t, cls) => { const k = tabKey(kind, t); return `<a class="${cls}${tabOn(kind, k) ? " on" : ""}${t.pinned ? " pinned" : ""}" href="${tabHref(kind, k)}" draggable="true" data-tab="${tabData(kind, k)}" title="${esc(TABSETS[kind].tip(t))}"><span class="tab-l">${TABSETS[kind].label(t)}</span>${tabBtns(kind, t)}</a>`; };
 document.addEventListener("click", e => {
   const b = e.target.closest("[data-tab-x], [data-tab-pin]");
@@ -5842,11 +5864,28 @@ setRail(localStorage.getItem("lfg.side") === "rail");
 document.addEventListener("click", e => { if (e.target.closest("#side-tog")) setRail(!document.body.classList.contains("rail")); });
 document.addEventListener("keydown", e => { if (e.key === "\\" && (e.metaKey || e.ctrlKey) && !e.altKey) { e.preventDefault(); setRail(!document.body.classList.contains("rail")); } });
 document.addEventListener("click", e => { if (e.target.closest("[data-stop]")) e.stopPropagation(); }, true);  // a link in a clickable row opens only itself
+const newStudio = () => { state.ssFresh = true; if (location.hash === "#studio") route(); else location.hash = "#studio"; };
+const closeTabMenu = () => { const m = $(".prtab-menu"); if (m) m.remove(); };
+document.addEventListener("click", e => {
+  const add = e.target.closest("[data-tab-add]"), pick = e.target.closest("[data-tab-new]");
+  if (pick) { e.preventDefault(); closeTabMenu(); if (pick.dataset.tabNew === "studio") newStudio(); else if (location.hash === "#prs") route(); else location.hash = "#prs"; return; }
+  if (add) {
+    e.preventDefault(); e.stopPropagation();
+    if ($(".prtab-menu")) return closeTabMenu();
+    const r = add.getBoundingClientRect(), host = document.createElement("div");
+    host.innerHTML = tabAddMenu();
+    const m = host.firstChild; m.style.top = Math.round(r.bottom + 4) + "px"; m.style.left = Math.round(Math.min(r.left, innerWidth - 170)) + "px";
+    document.body.appendChild(m);
+    return;
+  }
+  if (!e.target.closest(".prtab-menu")) closeTabMenu();
+}, true);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeTabMenu(); });
 document.addEventListener("click", e => {
   const t = e.target.closest("[data-ns-toggle], [data-ns-new]");
   if (!t) return;
   e.preventDefault();
-  if (t.hasAttribute("data-ns-new")) { state.ssFresh = true; if (location.hash === "#studio") route(); else location.hash = "#studio"; return; }
+  if (t.hasAttribute("data-ns-new")) { newStudio(); return; }
   const box = t.closest(".ns"), open = !box.classList.contains("open");
   box.classList.toggle("open", open); t.setAttribute("aria-expanded", open); localStorage.setItem("lfg.nav.sessions", open ? "1" : "0");
 });
@@ -7073,14 +7112,45 @@ function wireStudio(root) {
    this tab is in the background and you allowed it, as system notifications. A click opens the page. */
 const NOTES = { last: "", seen: localStorage.getItem("lfg.notes.seen") || "", events: [] };
 const NOTE_ICON = { review: "review", diff: "review", fix: "runs", linear: "todos", checks: "checks", sonar: "checks" };
+/* Alerts and tabs: which repo an alert is for. A tab stays on its repo: an alert for another repo goes to the tab that
+   already has that repo (the tabs ask each other over a BroadcastChannel) or opens a new browser tab, and never moves
+   this one. A page cannot raise another tab, so that tab opens the page, flashes its title and this one says so. */
+const TAB_ID = Math.random().toString(36).slice(2), TAB_ASKS = {};
+let TABCHAN = null;
+try { TABCHAN = new BroadcastChannel("lfg-tabs"); } catch (e) { /* no BroadcastChannel: every other repo's alert opens a new tab */ }
+if (TABCHAN) TABCHAN.onmessage = e => {
+  const m = e.data || {};
+  if (m.t === "who" && m.repo && m.repo === state.repo) TABCHAN.postMessage({ t: "me", repo: m.repo, id: TAB_ID, ask: m.ask });
+  else if (m.t === "me" && TAB_ASKS[m.ask]) TAB_ASKS[m.ask](m.id);
+  else if (m.t === "go" && m.to === TAB_ID) {
+    if (m.href && location.hash !== m.href) location.hash = m.href;
+    window.focus();
+    if (document.visibilityState !== "visible" && !String(document.title).startsWith("● ")) {
+      const was = document.title; document.title = "● " + was;
+      document.addEventListener("visibilitychange", () => { document.title = was; }, { once: true });
+    }
+  }
+};
+/* The id of another tab showing `repo`, or null when none answers within `ms`. */
+function findRepoTab(repo, ms) {
+  return new Promise(done => {
+    if (!TABCHAN) return done(null);
+    const ask = Math.random().toString(36).slice(2);
+    const end = v => { delete TAB_ASKS[ask]; done(v); };
+    TAB_ASKS[ask] = end;
+    TABCHAN.postMessage({ t: "who", repo, ask });
+    setTimeout(() => end(null), ms);
+  });
+}
+const noteRepoHere = ev => !ev.repo || ev.repo === state.repo || !state.repos.some(r => r.id === ev.repo);
 async function openNote(ev) {
   closeBell();
-  if (ev.repo && ev.repo !== state.repo && state.repos.some(r => r.id === ev.repo)) {
-    state.repo = ev.repo; localStorage.setItem("lfg.repo", ev.repo);
-    const sel = $("#repo"); if (sel) sel.value = ev.repo;
-    await loadBranches();
+  if (noteRepoHere(ev)) { if (ev.href && location.hash !== ev.href) location.hash = ev.href; else route(); return; }
+  const id = await findRepoTab(ev.repo, 250);
+  if (id) { TABCHAN.postMessage({ t: "go", to: id, href: ev.href || "" }); toast({ ok: true, title: `Opened in your other tab for ${repoName(ev.repo)}` }); return; }
+  if (!window.open(location.pathname + "?repo=" + encodeURIComponent(ev.repo) + (ev.href || ""), "_blank")) {
+    toast({ ok: false, title: `Your browser blocked the new tab for ${repoName(ev.repo)}: allow pop-ups for LFG` });
   }
-  if (ev.href && location.hash !== ev.href) location.hash = ev.href; else route();
 }
 function noteHtml(ev, cls) {
   const proj = ev.repo && ev.repo !== state.repo ? `<span class="brtag">${esc(repoName(ev.repo))}</span>` : "";
@@ -7156,7 +7226,7 @@ async function init() {
   }
   $("#drawer-close").onclick = closeDrawer;
   const linked = new URLSearchParams(location.search).get("repo");  // opened from a macOS notification
-  if (linked) { state.repo = linked; localStorage.setItem("lfg.repo", linked); history.replaceState(null, "", location.pathname + location.hash); }
+  if (linked) { state.repo = linked; tabPrefSet("lfg.repo", linked, true); history.replaceState(null, "", location.pathname + location.hash); }
   mountBell();
   setTimeout(loadNavSessions, 300);
   $("#drawer").onclick = e => { if (e.target.id === "drawer") closeDrawer(); };
@@ -7181,9 +7251,10 @@ async function init() {
   const r = await api("repos");
   state.repos = r.repos || [];
   if (!state.repos.some(x => x.id === state.repo)) state.repo = state.repos[0] ? state.repos[0].id : "";
+  if (state.repo) tabPrefSet("lfg.repo", state.repo, true);  // this tab stays on this repo, whatever another tab picks next
   $("#repo").innerHTML = state.repos.map(x => `<option value="${esc(x.id)}" title="${esc(x.root || x.id)}" ${x.id === state.repo ? "selected" : ""}>${esc(x.name || x.id)}</option>`).join("") || "<option>no projects yet</option>";
   $("#repo").onchange = async () => {
-    state.repo = $("#repo").value; localStorage.setItem("lfg.repo", state.repo); state.navSess = [];
+    state.repo = $("#repo").value; tabPrefSet("lfg.repo", state.repo); state.navSess = [];
     if (state.crumb) crumbs(state.crumb.page, state.crumb.item, state.crumb.itemHref);  // the new repo's name, top and tab
     await loadBranches();
     loadNavSessions();
